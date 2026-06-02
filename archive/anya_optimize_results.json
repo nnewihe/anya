@@ -1,0 +1,59 @@
+{
+  "search_results": [
+    {
+      "params": {
+        "ENERGY_DECAY_BALL_DEAD": 0.08,
+        "ENERGY_DECAY_BALL_ROLLING": 0.15,
+        "ABSOLUTE_BALL_LOST_TIMEOUT_IDLE": 4.0,
+        "ENERGY_DECAY_PLAYER_WALK": 0.1
+      },
+      "total_score": -448.41,
+      "avg_score": -7.4735,
+      "total_rallies": 60
+    },
+    {
+      "params": {
+        "ENERGY_DECAY_BALL_DEAD": 0.08,
+        "ENERGY_DECAY_BALL_ROLLING": 0.15,
+        "ABSOLUTE_BALL_LOST_TIMEOUT_IDLE": 4.0,
+        "ENERGY_DECAY_PLAYER_WALK": 0.2
+      },
+      "total_score": -363.17,
+      "avg_score": -6.0528,
+      "total_rallies": 60
+    },
+    {
+      "params": {
+        "ENERGY_DECAY_BALL_DEAD": 0.08,
+        "ENERGY_DECAY_BALL_ROLLING": 0.15,
+        "ABSOLUTE_BALL_LOST_TIMEOUT_IDLE": 4.0,
+        "ENERGY_DECAY_PLAYER_WALK": 0.35
+      },
+      "total_score": -462.12,
+      "avg_score": -7.702,
+      "total_rallies": 60
+    },
+    {
+      "params": {
+        "ENERGY_DECAY_BALL_DEAD": 0.08,
+        "ENERGY_DECAY_BALL_ROLLING": 0.15,
+        "ABSOLUTE_BALL_LOST_TIMEOUT_IDLE": 6.0,
+        "ENERGY_DECAY_PLAYER_WALK": 0.1
+      },
+      "total_score": -352.47,
+      "avg_score": -5.8745,
+      "total_rallies": 60
+    },
+    {
+      "params": {
+        "ENERGY_DECAY_BALL_DEAD": 0.08,
+        "ENERGY_DECAY_BALL_ROLLING": 0.15,
+        "ABSOLUTE_BALL_LOST_TIMEOUT_IDLE": 6.0,
+        "ENERGY_DECAY_PLAYER_WALK": 0.2
+      },
+      "total_score": -324.62,
+      "avg_score": -5.4103,
+      "total_rallies": 60
+    }
+  ]
+}

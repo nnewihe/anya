@@ -1,0 +1,559 @@
+{
+  "total_score": -278.74,
+  "avg_score": -4.6457,
+  "total_rallies": 60,
+  "folders": {
+    "21": {
+      "folder_score": -19.05,
+      "near_rallies": 11,
+      "matched": 8,
+      "rallies": [
+        {
+          "gt_start": 25.36,
+          "gt_end": 44.24,
+          "pred_end": 47.98,
+          "delta": 3.74,
+          "score": 8.26,
+          "tag": "OVERRUN +3.74s"
+        },
+        {
+          "gt_start": 57.29,
+          "gt_end": 88.46,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 218.38,
+          "gt_end": 238.84,
+          "pred_end": 239.41,
+          "delta": 0.57,
+          "score": 10.0,
+          "tag": "GOLDEN +0.57s"
+        },
+        {
+          "gt_start": 249.35,
+          "gt_end": 255.99,
+          "pred_end": 276.88,
+          "delta": 20.89,
+          "score": -8.89,
+          "tag": "OVERRUN +20.89s"
+        },
+        {
+          "gt_start": 257.52,
+          "gt_end": 276.08,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 287.95,
+          "gt_end": 292.33,
+          "pred_end": 294.26,
+          "delta": 1.94,
+          "score": 10.0,
+          "tag": "GOLDEN +1.94s"
+        },
+        {
+          "gt_start": 304.24,
+          "gt_end": 312.11,
+          "pred_end": 328.26,
+          "delta": 16.15,
+          "score": -4.15,
+          "tag": "OVERRUN +16.15s"
+        },
+        {
+          "gt_start": 321.25,
+          "gt_end": 328.16,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 338.5,
+          "gt_end": 342.38,
+          "pred_end": 343.94,
+          "delta": 1.57,
+          "score": 10.0,
+          "tag": "GOLDEN +1.57s"
+        },
+        {
+          "gt_start": 355.36,
+          "gt_end": 361.43,
+          "pred_end": 361.93,
+          "delta": 0.5,
+          "score": 10.0,
+          "tag": "GOLDEN +0.50s"
+        },
+        {
+          "gt_start": 374.34,
+          "gt_end": 379.61,
+          "pred_end": 385.89,
+          "delta": 6.27,
+          "score": 5.73,
+          "tag": "OVERRUN +6.27s"
+        }
+      ],
+      "elapsed_sec": 769.7
+    },
+    "22": {
+      "folder_score": 47.28,
+      "near_rallies": 11,
+      "matched": 11,
+      "rallies": [
+        {
+          "gt_start": 106.21,
+          "gt_end": 115.98,
+          "pred_end": 120.09,
+          "delta": 4.1,
+          "score": 7.9,
+          "tag": "OVERRUN +4.10s"
+        },
+        {
+          "gt_start": 134.67,
+          "gt_end": 142.11,
+          "pred_end": 140.91,
+          "delta": -1.2,
+          "score": -12.01,
+          "tag": "EARLY -1.20s"
+        },
+        {
+          "gt_start": 155.32,
+          "gt_end": 160.16,
+          "pred_end": 161.83,
+          "delta": 1.67,
+          "score": 10.0,
+          "tag": "GOLDEN +1.67s"
+        },
+        {
+          "gt_start": 163.66,
+          "gt_end": 170.84,
+          "pred_end": 180.35,
+          "delta": 9.51,
+          "score": 2.49,
+          "tag": "OVERRUN +9.51s"
+        },
+        {
+          "gt_start": 193.33,
+          "gt_end": 208.11,
+          "pred_end": 209.48,
+          "delta": 1.37,
+          "score": 10.0,
+          "tag": "GOLDEN +1.37s"
+        },
+        {
+          "gt_start": 225.96,
+          "gt_end": 234.0,
+          "pred_end": 237.67,
+          "delta": 3.67,
+          "score": 8.33,
+          "tag": "OVERRUN +3.67s"
+        },
+        {
+          "gt_start": 248.78,
+          "gt_end": 256.76,
+          "pred_end": 257.09,
+          "delta": 0.33,
+          "score": 10.0,
+          "tag": "GOLDEN +0.33s"
+        },
+        {
+          "gt_start": 263.56,
+          "gt_end": 272.21,
+          "pred_end": 273.47,
+          "delta": 1.27,
+          "score": 10.0,
+          "tag": "GOLDEN +1.27s"
+        },
+        {
+          "gt_start": 337.4,
+          "gt_end": 351.22,
+          "pred_end": 354.12,
+          "delta": 2.9,
+          "score": 9.1,
+          "tag": "OVERRUN +2.90s"
+        },
+        {
+          "gt_start": 373.91,
+          "gt_end": 390.66,
+          "pred_end": 393.83,
+          "delta": 3.17,
+          "score": 8.83,
+          "tag": "OVERRUN +3.17s"
+        },
+        {
+          "gt_start": 404.64,
+          "gt_end": 410.84,
+          "pred_end": 409.11,
+          "delta": -1.74,
+          "score": -17.35,
+          "tag": "EARLY -1.74s"
+        }
+      ],
+      "elapsed_sec": 861.1
+    },
+    "24": {
+      "folder_score": 17.65,
+      "near_rallies": 2,
+      "matched": 2,
+      "rallies": [
+        {
+          "gt_start": 13.08,
+          "gt_end": 18.77,
+          "pred_end": 23.12,
+          "delta": 4.35,
+          "score": 7.65,
+          "tag": "OVERRUN +4.35s"
+        },
+        {
+          "gt_start": 31.56,
+          "gt_end": 65.7,
+          "pred_end": 66.8,
+          "delta": 1.1,
+          "score": 10.0,
+          "tag": "GOLDEN +1.10s"
+        }
+      ],
+      "elapsed_sec": 1259.1
+    },
+    "25": {
+      "folder_score": -29.29,
+      "near_rallies": 5,
+      "matched": 3,
+      "rallies": [
+        {
+          "gt_start": 43.24,
+          "gt_end": 55.19,
+          "pred_end": 60.53,
+          "delta": 5.34,
+          "score": 6.66,
+          "tag": "OVERRUN +5.34s"
+        },
+        {
+          "gt_start": 74.64,
+          "gt_end": 81.58,
+          "pred_end": 84.68,
+          "delta": 3.1,
+          "score": 8.9,
+          "tag": "OVERRUN +3.10s"
+        },
+        {
+          "gt_start": 95.4,
+          "gt_end": 104.67,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 123.72,
+          "gt_end": 136.1,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 165.33,
+          "gt_end": 175.14,
+          "pred_end": 191.99,
+          "delta": 16.85,
+          "score": -4.85,
+          "tag": "OVERRUN +16.85s"
+        }
+      ],
+      "elapsed_sec": 750.9
+    },
+    "26": {
+      "folder_score": -19.91,
+      "near_rallies": 2,
+      "matched": 1,
+      "rallies": [
+        {
+          "gt_start": 365.23,
+          "gt_end": 372.71,
+          "pred_end": 384.62,
+          "delta": 11.91,
+          "score": 0.09,
+          "tag": "OVERRUN +11.91s"
+        },
+        {
+          "gt_start": 378.11,
+          "gt_end": 388.39,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        }
+      ],
+      "elapsed_sec": 494.6
+    },
+    "35": {
+      "folder_score": 10.0,
+      "near_rallies": 1,
+      "matched": 1,
+      "rallies": [
+        {
+          "gt_start": 79.41,
+          "gt_end": 87.51,
+          "pred_end": 87.95,
+          "delta": 0.44,
+          "score": 10.0,
+          "tag": "GOLDEN +0.44s"
+        }
+      ],
+      "elapsed_sec": 2180.9
+    },
+    "36": {
+      "folder_score": -14.54,
+      "near_rallies": 8,
+      "matched": 6,
+      "rallies": [
+        {
+          "gt_start": 271.57,
+          "gt_end": 277.21,
+          "pred_end": 277.64,
+          "delta": 0.43,
+          "score": 10.0,
+          "tag": "GOLDEN +0.43s"
+        },
+        {
+          "gt_start": 280.85,
+          "gt_end": 289.32,
+          "pred_end": 313.58,
+          "delta": 24.26,
+          "score": -12.26,
+          "tag": "OVERRUN +24.26s"
+        },
+        {
+          "gt_start": 291.99,
+          "gt_end": 305.57,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 327.73,
+          "gt_end": 332.97,
+          "pred_end": 346.91,
+          "delta": 13.95,
+          "score": -1.95,
+          "tag": "OVERRUN +13.95s"
+        },
+        {
+          "gt_start": 334.97,
+          "gt_end": 341.51,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 369.74,
+          "gt_end": 373.01,
+          "pred_end": 374.21,
+          "delta": 1.2,
+          "score": 10.0,
+          "tag": "GOLDEN +1.20s"
+        },
+        {
+          "gt_start": 384.95,
+          "gt_end": 391.66,
+          "pred_end": 393.46,
+          "delta": 1.8,
+          "score": 10.0,
+          "tag": "GOLDEN +1.80s"
+        },
+        {
+          "gt_start": 403.94,
+          "gt_end": 408.57,
+          "pred_end": 410.91,
+          "delta": 2.34,
+          "score": 9.66,
+          "tag": "OVERRUN +2.34s"
+        }
+      ],
+      "elapsed_sec": 683.9
+    },
+    "38": {
+      "folder_score": -72.24,
+      "near_rallies": 8,
+      "matched": 4,
+      "rallies": [
+        {
+          "gt_start": 25.99,
+          "gt_end": 50.73,
+          "pred_end": 55.31,
+          "delta": 4.57,
+          "score": 7.43,
+          "tag": "OVERRUN +4.57s"
+        },
+        {
+          "gt_start": 59.78,
+          "gt_end": 64.26,
+          "pred_end": 81.77,
+          "delta": 17.5,
+          "score": -5.5,
+          "tag": "OVERRUN +17.50s"
+        },
+        {
+          "gt_start": 64.66,
+          "gt_end": 72.62,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 96.5,
+          "gt_end": 107.32,
+          "pred_end": 107.81,
+          "delta": 0.48,
+          "score": 10.0,
+          "tag": "GOLDEN +0.48s"
+        },
+        {
+          "gt_start": 152.09,
+          "gt_end": 157.19,
+          "pred_end": 173.36,
+          "delta": 16.17,
+          "score": -4.17,
+          "tag": "OVERRUN +16.17s"
+        },
+        {
+          "gt_start": 159.49,
+          "gt_end": 169.99,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 182.35,
+          "gt_end": 186.42,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 199.88,
+          "gt_end": 206.06,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        }
+      ],
+      "elapsed_sec": 2666.0
+    },
+    "43": {
+      "folder_score": -198.64,
+      "near_rallies": 12,
+      "matched": 3,
+      "rallies": [
+        {
+          "gt_start": 27.18,
+          "gt_end": 33.97,
+          "pred_end": 51.92,
+          "delta": 17.95,
+          "score": -5.95,
+          "tag": "OVERRUN +17.95s"
+        },
+        {
+          "gt_start": 40.16,
+          "gt_end": 47.43,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 118.32,
+          "gt_end": 123.11,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 132.89,
+          "gt_end": 146.9,
+          "pred_end": 151.66,
+          "delta": 4.75,
+          "score": 7.25,
+          "tag": "OVERRUN +4.75s"
+        },
+        {
+          "gt_start": 160.63,
+          "gt_end": 167.52,
+          "pred_end": 199.45,
+          "delta": 31.93,
+          "score": -19.93,
+          "tag": "OVERRUN +31.93s"
+        },
+        {
+          "gt_start": 170.92,
+          "gt_end": 190.91,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 203.94,
+          "gt_end": 212.58,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 230.27,
+          "gt_end": 240.76,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 249.91,
+          "gt_end": 255.18,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 278.15,
+          "gt_end": 286.23,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 313.7,
+          "gt_end": 317.36,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        },
+        {
+          "gt_start": 321.76,
+          "gt_end": 331.21,
+          "pred_end": null,
+          "delta": null,
+          "score": -20.0,
+          "tag": "MISS"
+        }
+      ],
+      "elapsed_sec": 1624.0
+    }
+  }
+}
