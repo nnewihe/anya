@@ -160,29 +160,72 @@ def _trace_active_zone_weight(trace: list, active_zone) -> float:
     return inside / len(trace)
 
 
+def _box_center(box):
+    """Return the (cx, cy) center of a bounding box, or None."""
+    if box is None:
+        return None
+    x1, y1, x2, y2 = box
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+def _origin_side(ball_xy, near_box, far_box) -> str:
+    """
+    Classify a serve's origin as "near" or "far" by which player box the ball is
+    closest to at the moment the segment opens.
+
+    A near serve's ball originates at the near player (large-y, bottom of frame);
+    a far serve's ball originates at the far player (small-y, top of frame).  We
+    compare the ball-to-box-center distance for whichever boxes are present.
+    Falls back to "near" when neither box is available (conservative: lets the
+    near-side serve-gated pipeline own ambiguous cases).
+    """
+    if ball_xy is None:
+        return "near"
+    near_c = _box_center(near_box)
+    far_c  = _box_center(far_box)
+    if near_c is None and far_c is None:
+        return "near"
+    if far_c is None:
+        return "near"
+    if near_c is None:
+        return "far"
+    d_near = math.hypot(ball_xy[0] - near_c[0], ball_xy[1] - near_c[1])
+    d_far  = math.hypot(ball_xy[0] - far_c[0],  ball_xy[1] - far_c[1])
+    return "far" if d_far < d_near else "near"
+
+
 def _merge_segments(segments, gap_threshold_sec=RALLY_GAP_THRESHOLD_SEC):
-    """Merge adjacent segments whose gap < gap_threshold_sec."""
+    """
+    Merge adjacent segments whose gap < gap_threshold_sec.
+
+    Each segment is (start, end, origin); the merged segment keeps the origin of
+    its FIRST sub-segment (the serve that opened the run).
+    """
     if not segments:
         return []
     merged = [list(segments[0])]
-    for start, end in segments[1:]:
+    for start, end, origin in segments[1:]:
         if start - merged[-1][1] < gap_threshold_sec:
             merged[-1][1] = end
         else:
-            merged.append([start, end])
+            merged.append([start, end, origin])
     return [tuple(s) for s in merged]
 
 
 def _apply_preroll(segments, pre_roll_sec=RALLY_PRE_ROLL_SEC):
-    return [(max(0.0, start - pre_roll_sec), end) for start, end in segments]
+    return [(max(0.0, start - pre_roll_sec), end, origin)
+            for start, end, origin in segments]
 
 
-def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
-    if output_path is None:
-        video_dir  = os.path.dirname(os.path.abspath(video_path))
-        video_stem = os.path.splitext(os.path.basename(video_path))[0]
-        output_path = os.path.join(video_dir, f"{video_stem}_rallies.mp4")
+def collect_rally_segments(video_path, headless=False, start_frame=0):
+    """
+    Run the trace-driven rally detector and return its segments.
 
+    Returns a list of (start_sec, end_sec, origin) in source-video time, where
+    origin ∈ {"near", "far"} is the serve side classified by the nearest player
+    box at the moment the segment opened.  Performs no video writing — the caller
+    (detect_rallies or the combined orchestrator) decides what to do with them.
+    """
     # ── Probe video ───────────────────────────────────────────────────────
     _probe = cv2.VideoCapture(video_path)
     orig_fps    = _probe.get(cv2.CAP_PROP_FPS)
@@ -219,8 +262,9 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
     player_vel = _SmoothedVelocity(COUPLING_WINDOW_SEC)
 
     raw_segments = []
-    seg_start: float = None
-    last_ts:   float = 0.0
+    seg_start:  float = None
+    seg_origin: str   = "near"
+    last_ts:    float = 0.0
     interrupted = False
 
     try:
@@ -234,6 +278,7 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
             last_ts   = telemetry.timestamp
 
             near_box = telemetry.near_player_box
+            far_box  = telemetry.far_player_box
             dets = [
                 (c["pixel_center"][0], c["pixel_center"][1], c["conf"])
                 for c in (telemetry.active_ball_candidates or [])
@@ -278,6 +323,9 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
             if trace_active:
                 if seg_start is None:
                     seg_start = video_time_offset + telemetry.timestamp
+                    # Classify serve origin by the nearest player box at the
+                    # moment the segment opens (the serve contact / toss).
+                    seg_origin = _origin_side(status.position, near_box, far_box)
             else:
                 if seg_start is not None:
                     raw_end = video_time_offset + (
@@ -286,7 +334,7 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
                         else telemetry.timestamp
                     )
                     padded_end = min(raw_end + RALLY_END_PAD_SEC, video_duration_sec)
-                    raw_segments.append((seg_start, padded_end))
+                    raw_segments.append((seg_start, padded_end, seg_origin))
                     seg_start = None
 
             if not headless:
@@ -307,7 +355,7 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
                 else last_ts
             )
             padded_end = min(raw_end + RALLY_END_PAD_SEC, video_duration_sec)
-            raw_segments.append((seg_start, padded_end))
+            raw_segments.append((seg_start, padded_end, seg_origin))
 
         cap.release()
         if not headless:
@@ -322,8 +370,22 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
     print(f"[RALLY] After merging (gap < {RALLY_GAP_THRESHOLD_SEC:.0f}s): {len(merged)} segment(s)")
 
     final = _apply_preroll(merged, RALLY_PRE_ROLL_SEC)
+    n_far  = sum(1 for *_, o in final if o == "far")
+    n_near = len(final) - n_far
+    print(f"[RALLY] Segment origins: {n_near} near, {n_far} far")
+    return final
 
-    create_highlights_ffmpeg(video_path, final, output_path)
+
+def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
+    if output_path is None:
+        video_dir  = os.path.dirname(os.path.abspath(video_path))
+        video_stem = os.path.splitext(os.path.basename(video_path))[0]
+        output_path = os.path.join(video_dir, f"{video_stem}_rallies.mp4")
+
+    final = collect_rally_segments(video_path, headless, start_frame)
+
+    # Standalone rally detector keeps every segment regardless of serve origin.
+    create_highlights_ffmpeg(video_path, [(s, e) for s, e, _ in final], output_path)
 
     print(f"\n[DONE] Output   : {output_path}")
     print(f"[DONE] Segments : {len(final)}")
