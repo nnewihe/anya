@@ -49,8 +49,9 @@ class AnyaTelemetryProvider:
         self.ball_model   = YOLO("/Users/tennis/Documents/Code/Laptop/weights/ball/weights/best.pt")
         self.trophy_model = YOLO(Config.DEFAULT_NEAR_TROPHY_MODEL_PATH)
 
-        # Define the cache path
-        self.active_zone_cache_path = "active_zone_config.json"
+        # Define the cache path — alongside the input video, not the CWD.
+        video_dir = os.path.dirname(os.path.abspath(self.video_path))
+        self.active_zone_cache_path = os.path.join(video_dir, "active_zone_config.json")
 
         # 1. Initialize Court Geometry (at 960x540 resolution)
         self.court_vertices, self.frame_shape = init_court(

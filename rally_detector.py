@@ -17,9 +17,13 @@ Segment rules
 """
 
 import argparse
+import math
 import os
+from collections import deque
+from typing import Deque, Optional, Tuple
 
 import cv2
+import numpy as np
 
 from anya_base import AnyaTelemetryProvider
 from ball_tracker import BallTrackManager, make_image_row_perspective
@@ -30,115 +34,153 @@ RALLY_GAP_THRESHOLD_SEC = 4.0
 RALLY_PRE_ROLL_SEC      = 1.5
 RALLY_END_PAD_SEC       = 1.0
 
-# ── Perspective-aware court-corridor filter ───────────────────────────────────
-# The camera sits ~18 ft behind the baseline at ~10 ft height, so adjacent-court
-# rallies bleed into the left / right edges of the frame.  We suppress traces
-# that reside primarily outside the main-court corridor defined by the user-
-# selected court vertices (BL, BR, TR, TL at 960×540).
+# ── Player-carry (velocity-coupling) suppression ──────────────────────────────
+# When the near player walks while holding the ball, the ball's pixel velocity is
+# coupled to the player's body velocity — same direction, same magnitude — so the
+# ball appears to "ride along" with the player.  When the ball is actually struck
+# (serve toss or stroke) it decouples: it flies far faster than the body and on
+# its own heading.  We smooth both velocity vectors over a short window and treat
+# the trace as a carried ball (suppress it) while it stays coupled to the player.
 #
-# For a trace point at row y, the corridor's left and right pixel boundaries are
-# found by linearly interpolating along the court's left edge (BL→TL) and right
-# edge (BR→TR).  The interpolation parameter t is clamped to [0, 1], so points
-# beyond either baseline simply use that baseline's x-values as fixed walls.
-#
-# A trace whose points are < COURT_WEIGHT_MIN inside the corridor is classified
-# as an adjacent-court trace and does not count as an active rally.
-COURT_WEIGHT_MIN      = 0.25   # suppress trace if fewer than 25 % of points are in-corridor
-# Player-box suppression: a trace that stays mostly inside a player bounding box
-# is a false positive on a player (shirt logo, racket glare, etc.).  Real ball
-# contacts pass through the box briefly, so only a small fraction of their trace
-# points land inside — those traces are kept.
-PLAYER_BOX_WEIGHT_MIN = 0.25   # suppress trace if fewer than 25 % of points are outside boxes
+# coupling ratio = |v_ball - v_player| / |v_ball|
+#   • ≈ 0  → ball rides with the body (carried)   → suppress
+#   • ≈ 1+ → ball moves independently (struck)     → keep
+COUPLING_WINDOW_SEC       = 0.40   # smoothing window for both velocity estimates
+COUPLING_MIN_PLAYER_SPEED = 25.0   # px/s; the player must actually be walking
+COUPLING_RATIO_MAX        = 0.50   # carried if ratio below this (and player moving)
 
 
-def _trace_court_weight(trace: list, court_vertices: list) -> float:
+class _SmoothedVelocity:
     """
-    Return the fraction of trace points that fall inside the court corridor
-    defined by *court_vertices* = [BL, BR, TR, TL].
+    Sliding-window velocity estimator over a stream of (t, x, y) pixel samples.
 
-    Left boundary interpolates BL→TL; right boundary interpolates BR→TR.
-    t is clamped to [0, 1] so points beyond either baseline extend that
-    baseline's boundary horizontally rather than extrapolating.
-
-    Returns 1.0 for an empty trace (no penalty on a brand-new track).
+    Velocity is the displacement between the oldest and newest samples inside a
+    `window_sec` window divided by their time span — a cheap, jitter-tolerant
+    smoother.  Samples older than the window are pruned on every add.
     """
-    if not trace or not court_vertices:
-        return 1.0
 
-    BL, BR, TR, TL = court_vertices
-    bl_x, bl_y = float(BL[0]), float(BL[1])
-    br_x, br_y = float(BR[0]), float(BR[1])
-    tl_x, tl_y = float(TL[0]), float(TL[1])
-    tr_x, tr_y = float(TR[0]), float(TR[1])
+    def __init__(self, window_sec: float):
+        self.window_sec = float(window_sec)
+        self._pts: Deque[Tuple[float, float, float]] = deque()
 
-    # y-span between the two baselines (near baseline is lower in the frame → larger y)
-    near_y = max(bl_y, br_y)
-    far_y  = min(tl_y, tr_y)
-    span_y = near_y - far_y
+    def add(self, t: float, x: float, y: float) -> None:
+        self._pts.append((float(t), float(x), float(y)))
+        cutoff = float(t) - self.window_sec
+        while self._pts and self._pts[0][0] < cutoff:
+            self._pts.popleft()
 
-    inside = 0
-    for (x, y) in trace:
-        y = float(y)
-        if span_y > 0:
-            t = max(0.0, min(1.0, (y - far_y) / span_y))
-        else:
-            t = 0.5
-        left_x  = tl_x + t * (bl_x - tl_x)
-        right_x = tr_x + t * (br_x - tr_x)
-        if left_x <= float(x) <= right_x:
-            inside += 1
-
-    return inside / len(trace)
+    def velocity(self) -> Optional[Tuple[float, float]]:
+        """(vx, vy) in px/s over the window, or None if span/samples insufficient."""
+        if len(self._pts) < 2:
+            return None
+        t0, x0, y0 = self._pts[0]
+        t1, x1, y1 = self._pts[-1]
+        dt = t1 - t0
+        if dt <= 0:
+            return None
+        return ((x1 - x0) / dt, (y1 - y0) / dt)
 
 
-def _in_box(x: float, y: float, box, padding: float = 10.0) -> bool:
-    """Return True if (x, y) falls inside *box* expanded by *padding* pixels."""
+def _coupling_ratio(v_ball, v_player) -> Tuple[Optional[float], float]:
+    """
+    Return (ratio, player_speed) where ratio = |v_ball - v_player| / |v_ball|.
+
+    ratio is None when it cannot be computed (missing velocity or a near-zero
+    ball speed).  player_speed (px/s) is returned alongside so the caller can
+    require the player to actually be moving before declaring a carried ball.
+    """
+    if v_ball is None or v_player is None:
+        return None, 0.0
+    bx, by = v_ball
+    px, py = v_player
+    ball_speed   = math.hypot(bx, by)
+    player_speed = math.hypot(px, py)
+    if ball_speed < 1e-6:
+        return None, player_speed
+    return math.hypot(bx - px, by - py) / ball_speed, player_speed
+
+
+def _is_carried(v_ball, v_player) -> Tuple[bool, Optional[float]]:
+    """
+    Decide whether the ball is being carried (coupled to a walking player).
+
+    Carried when the player is genuinely moving (≥ COUPLING_MIN_PLAYER_SPEED) and
+    the ball's velocity closely matches it (ratio < COUPLING_RATIO_MAX).  Returns
+    (carried, ratio) — ratio is surfaced for the debug overlay.
+    """
+    ratio, player_speed = _coupling_ratio(v_ball, v_player)
+    if ratio is None:
+        return False, None
+    carried = ratio < COUPLING_RATIO_MAX and player_speed >= COUPLING_MIN_PLAYER_SPEED
+    return carried, ratio
+
+
+def _box_center(box):
+    """Return the (cx, cy) center of a bounding box, or None."""
     if box is None:
-        return False
+        return None
     x1, y1, x2, y2 = box
-    return (x1 - padding) <= x <= (x2 + padding) and (y1 - padding) <= y <= (y2 + padding)
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
 
 
-def _trace_player_box_weight(trace: list, near_box, far_box) -> float:
+def _origin_side(ball_xy, near_box, far_box) -> str:
     """
-    Return the fraction of trace points that fall *outside* both player boxes.
+    Classify a serve's origin as "near" or "far" by which player box the ball is
+    closest to at the moment the segment opens.
 
-    A real ball passing through a contact briefly dips into a player box for a
-    small fraction of its trace; a false positive locked onto a player feature
-    stays inside the box for most of its life.  Returns 1.0 for an empty trace.
+    A near serve's ball originates at the near player (large-y, bottom of frame);
+    a far serve's ball originates at the far player (small-y, top of frame).  We
+    compare the ball-to-box-center distance for whichever boxes are present.
+    Falls back to "near" when neither box is available (conservative: lets the
+    near-side serve-gated pipeline own ambiguous cases).
     """
-    if not trace:
-        return 1.0
-    outside = sum(
-        1 for (x, y) in trace
-        if not _in_box(x, y, near_box) and not _in_box(x, y, far_box)
-    )
-    return outside / len(trace)
+    if ball_xy is None:
+        return "near"
+    near_c = _box_center(near_box)
+    far_c  = _box_center(far_box)
+    if near_c is None and far_c is None:
+        return "near"
+    if far_c is None:
+        return "near"
+    if near_c is None:
+        return "far"
+    d_near = math.hypot(ball_xy[0] - near_c[0], ball_xy[1] - near_c[1])
+    d_far  = math.hypot(ball_xy[0] - far_c[0],  ball_xy[1] - far_c[1])
+    return "far" if d_far < d_near else "near"
 
 
 def _merge_segments(segments, gap_threshold_sec=RALLY_GAP_THRESHOLD_SEC):
-    """Merge adjacent segments whose gap < gap_threshold_sec."""
+    """
+    Merge adjacent segments whose gap < gap_threshold_sec.
+
+    Each segment is (start, end, origin); the merged segment keeps the origin of
+    its FIRST sub-segment (the serve that opened the run).
+    """
     if not segments:
         return []
     merged = [list(segments[0])]
-    for start, end in segments[1:]:
+    for start, end, origin in segments[1:]:
         if start - merged[-1][1] < gap_threshold_sec:
             merged[-1][1] = end
         else:
-            merged.append([start, end])
+            merged.append([start, end, origin])
     return [tuple(s) for s in merged]
 
 
 def _apply_preroll(segments, pre_roll_sec=RALLY_PRE_ROLL_SEC):
-    return [(max(0.0, start - pre_roll_sec), end) for start, end in segments]
+    return [(max(0.0, start - pre_roll_sec), end, origin)
+            for start, end, origin in segments]
 
 
-def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
-    if output_path is None:
-        video_dir  = os.path.dirname(os.path.abspath(video_path))
-        video_stem = os.path.splitext(os.path.basename(video_path))[0]
-        output_path = os.path.join(video_dir, f"{video_stem}_rallies.mp4")
+def collect_rally_segments(video_path, headless=False, start_frame=0):
+    """
+    Run the trace-driven rally detector and return its segments.
 
+    Returns a list of (start_sec, end_sec, origin) in source-video time, where
+    origin ∈ {"near", "far"} is the serve side classified by the nearest player
+    box at the moment the segment opened.  Performs no video writing — the caller
+    (detect_rallies or the combined orchestrator) decides what to do with them.
+    """
     # ── Probe video ───────────────────────────────────────────────────────
     _probe = cv2.VideoCapture(video_path)
     orig_fps    = _probe.get(cv2.CAP_PROP_FPS)
@@ -153,9 +195,6 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
     telemetry_provider = AnyaTelemetryProvider(video_path)
     telemetry_provider.update_state("ACTIVE")
 
-    # ── Court vertices for the corridor filter ────────────────────────────
-    court_vertices = telemetry_provider.court_vertices   # [BL, BR, TR, TL] at 960×540
-
     # ── Ball tracker (independent from TransitionEngine) ──────────────────
     ball_tracker = BallTrackManager(
         fps=telemetry_provider.fps,
@@ -168,9 +207,16 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         print(f"[RALLY] Seeking to frame {start_frame}")
 
+    # Smoothed velocity windows for the carry-coupling test (Idea C).  The ball
+    # window is fed the IMM-smoothed ball position; the player window is fed the
+    # near-player-box centroid.
+    ball_vel   = _SmoothedVelocity(COUPLING_WINDOW_SEC)
+    player_vel = _SmoothedVelocity(COUPLING_WINDOW_SEC)
+
     raw_segments = []
-    seg_start: float = None
-    last_ts:   float = 0.0
+    seg_start:  float = None
+    seg_origin: str   = "near"
+    last_ts:    float = 0.0
     interrupted = False
 
     try:
@@ -191,26 +237,34 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
             ]
             status = ball_tracker.update(dets, telemetry.timestamp)
 
-            # Suppress traces that live primarily outside the main court corridor
-            # (adjacent-court interference) or inside a player bounding box (false
-            # positives on player features).  Brief passes through a player box —
-            # real ball contacts — score well because only a small fraction of the
-            # trace points land inside the box.
-            if status.has_moving_trace:
-                court_weight  = _trace_court_weight(status.trace, court_vertices)
-                player_weight = _trace_player_box_weight(status.trace, near_box, far_box)
-            else:
-                court_weight  = 1.0
-                player_weight = 1.0
-            trace_active = (
-                status.has_moving_trace
-                and court_weight  >= COURT_WEIGHT_MIN
-                and player_weight >= PLAYER_BOX_WEIGHT_MIN
-            )
+            # Feed the velocity windows every frame so they stay populated across
+            # the carry → strike transition (Idea C).  Ball: IMM-smoothed position;
+            # player: near-player-box centroid.
+            if status.position is not None:
+                ball_vel.add(telemetry.timestamp, status.position[0], status.position[1])
+            if near_box is not None:
+                player_vel.add(
+                    telemetry.timestamp,
+                    (near_box[0] + near_box[2]) / 2.0,
+                    (near_box[1] + near_box[3]) / 2.0,
+                )
+
+            # Suppress balls whose velocity is coupled to a walking player
+            # (carried, not struck).
+            carried        = False
+            coupling_ratio = None
+            if status.has_moving_trace and status.position is not None:
+                carried, coupling_ratio = _is_carried(
+                    ball_vel.velocity(), player_vel.velocity()
+                )
+            trace_active = status.has_moving_trace and not carried
 
             if trace_active:
                 if seg_start is None:
                     seg_start = video_time_offset + telemetry.timestamp
+                    # Classify serve origin by the nearest player box at the
+                    # moment the segment opens (the serve contact / toss).
+                    seg_origin = _origin_side(status.position, near_box, far_box)
             else:
                 if seg_start is not None:
                     raw_end = video_time_offset + (
@@ -219,11 +273,11 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
                         else telemetry.timestamp
                     )
                     padded_end = min(raw_end + RALLY_END_PAD_SEC, video_duration_sec)
-                    raw_segments.append((seg_start, padded_end))
+                    raw_segments.append((seg_start, padded_end, seg_origin))
                     seg_start = None
 
             if not headless:
-                _render_overlay(frame, status, court_weight, player_weight)
+                _render_overlay(frame, status, carried, coupling_ratio)
                 cv2.imshow("Rally Detector", frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
@@ -240,7 +294,7 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
                 else last_ts
             )
             padded_end = min(raw_end + RALLY_END_PAD_SEC, video_duration_sec)
-            raw_segments.append((seg_start, padded_end))
+            raw_segments.append((seg_start, padded_end, seg_origin))
 
         cap.release()
         if not headless:
@@ -255,22 +309,36 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
     print(f"[RALLY] After merging (gap < {RALLY_GAP_THRESHOLD_SEC:.0f}s): {len(merged)} segment(s)")
 
     final = _apply_preroll(merged, RALLY_PRE_ROLL_SEC)
+    n_far  = sum(1 for *_, o in final if o == "far")
+    n_near = len(final) - n_far
+    print(f"[RALLY] Segment origins: {n_near} near, {n_far} far")
+    return final
 
-    create_highlights_ffmpeg(video_path, final, output_path)
+
+def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
+    if output_path is None:
+        video_dir  = os.path.dirname(os.path.abspath(video_path))
+        video_stem = os.path.splitext(os.path.basename(video_path))[0]
+        output_path = os.path.join(video_dir, f"{video_stem}_rallies.mp4")
+
+    final = collect_rally_segments(video_path, headless, start_frame)
+
+    # Standalone rally detector keeps every segment regardless of serve origin.
+    create_highlights_ffmpeg(video_path, [(s, e) for s, e, _ in final], output_path)
 
     print(f"\n[DONE] Output   : {output_path}")
     print(f"[DONE] Segments : {len(final)}")
 
 
-def _render_overlay(frame, status, court_weight: float = 1.0, player_weight: float = 1.0):
-    """Minimal debug overlay — trace liveness, court/player weights, and ball trail."""
-    suppressed = status.has_moving_trace and (
-        court_weight < COURT_WEIGHT_MIN or player_weight < PLAYER_BOX_WEIGHT_MIN
-    )
+def _render_overlay(frame, status, carried: bool = False,
+                    coupling_ratio: Optional[float] = None):
+    """Minimal debug overlay — trace liveness, carry state, and ball trail."""
+    suppressed = status.has_moving_trace and carried
     alive = status.has_moving_trace and not suppressed
     color = (0, 255, 0) if alive else ((0, 100, 255) if suppressed else (0, 255, 255))
     tag   = "ALIVE" if alive else ("SUPPRESSED" if suppressed else "DEAD")
-    label = f"TRACE: {tag}  {status.speed_px_s:.0f}px/s  court={court_weight:.2f}  box={player_weight:.2f}"
+    carry_txt = "carry" if carried else ("ratio=%.2f" % coupling_ratio if coupling_ratio is not None else "ratio=--")
+    label = f"TRACE: {tag}  {status.speed_px_s:.0f}px/s  {carry_txt}"
     cv2.putText(frame, label, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
     trace = status.trace
