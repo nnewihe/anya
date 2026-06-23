@@ -60,6 +60,7 @@ import math
 import numpy as np
 
 from ball_tracker import BallTrackManager, TrackStatus, make_image_row_perspective
+from utilities import Config
 
 
 # =====================================================================
@@ -98,9 +99,33 @@ class SignalPriorityConfig:
 
 
 class TransitionEngine:
-    def __init__(self, fps: float, cfg: Optional[SignalPriorityConfig] = None):
+    """
+    Parameterized by which player/baseline it gates on, so the far-side pass
+    can reuse this exact algorithm (see FarSideTransitionEngine below) instead
+    of a bespoke implementation:
+      - player_box_attr / player_world_attr: TelemetryFrame fields to read for
+        the gating player's box/world position (near_player_* by default).
+      - baseline_y_ft: court-Y of the baseline being served from (0 = near).
+      - direction: sign such that (world_y - baseline_y_ft) * direction > 0
+        when the player is correctly positioned behind that baseline
+        (-1 for near, since near_player_world.y is negative behind y=0).
+    """
+
+    def __init__(self, fps: float, cfg: Optional[SignalPriorityConfig] = None,
+                 side_label: str = "near",
+                 player_box_attr: str = "near_player_box",
+                 player_world_attr: str = "near_player_world",
+                 baseline_y_ft: float = 0.0,
+                 direction: float = -1.0):
         self.fps = fps
         self.cfg = cfg or SignalPriorityConfig()
+
+        self._side_label        = side_label
+        self._player_box_attr   = player_box_attr
+        self._player_world_attr = player_world_attr
+        self._baseline_y_ft     = baseline_y_ft
+        self._direction         = direction
+        self._log_suffix        = "" if side_label == "near" else f" ({side_label} side)"
 
         # ------------------------------------------------------------------
         # WAITING / ARMED-band geometry (unchanged — point-start ZONE gating)
@@ -201,20 +226,21 @@ class TransitionEngine:
         frame = history[-1]
         now   = frame.timestamp
 
-        if frame.near_player_world is None:
+        world = getattr(frame, self._player_world_attr, None)
+        if world is None:
             self.near_ready_start_time = None
             return "WAITING"
 
-        _, wy   = frame.near_player_world
-        dist_ft = abs(wy)
-        in_zone = wy < 0 and self.READY_MIN_DIST_FT <= dist_ft <= self.READY_MAX_DIST_FT
+        _, wy       = world
+        signed_dist = (wy - self._baseline_y_ft) * self._direction
+        in_zone     = self.READY_MIN_DIST_FT <= signed_dist <= self.READY_MAX_DIST_FT
 
         if in_zone:
             if self.near_ready_start_time is None:
                 self.near_ready_start_time = now
             elapsed = now - self.near_ready_start_time
             if elapsed > self.READY_WAIT_TIME_SEC:
-                print(f"[TRANSITION] WAITING -> ARMED. "
+                print(f"[TRANSITION] WAITING -> ARMED{self._log_suffix}. "
                       f"Player held ready for {elapsed:.1f}s.")
                 self.near_ready_start_time = None
                 return "ARMED"
@@ -231,10 +257,11 @@ class TransitionEngine:
         now   = frame.timestamp
 
         in_band = False
-        if frame.near_player_world is not None:
-            _, wy   = frame.near_player_world
-            dist_ft = abs(wy)
-            in_band = wy < 0 and self.READY_MIN_DIST_FT <= dist_ft <= self.READY_MAX_DIST_FT
+        world = getattr(frame, self._player_world_attr, None)
+        if world is not None:
+            _, wy       = world
+            signed_dist = (wy - self._baseline_y_ft) * self._direction
+            in_band     = self.READY_MIN_DIST_FT <= signed_dist <= self.READY_MAX_DIST_FT
 
         self.armed_band_history.append((now, in_band))
         while (self.armed_band_history and
@@ -253,15 +280,16 @@ class TransitionEngine:
                 )
                 out_ratio = time_out / total_time
                 if out_ratio > self.ARMED_OUT_RATIO_THRESHOLD:
-                    print(f"[TRANSITION] ARMED -> WAITING. "
+                    print(f"[TRANSITION] ARMED -> WAITING{self._log_suffix}. "
                           f"Out of band {out_ratio:.0%} over {total_time:.1f}s.")
                     self._reset_armed_state()
                     return "WAITING"
 
-        if not in_band or frame.near_player_box is None:
+        player_box = getattr(frame, self._player_box_attr, None)
+        if not in_band or player_box is None:
             return "ARMED"
 
-        nx1, ny1, nx2, ny2 = frame.near_player_box
+        nx1, ny1, nx2, ny2 = player_box
 
         # --- Trophy pose (Tier-1 confirmer, low weight) ---
         trophy_score = getattr(frame, "trophy_score", 0.0) or 0.0
@@ -297,7 +325,7 @@ class TransitionEngine:
 
             toss_h_str = (f"{self.toss_min_y_px:.1f}px (above {ny1})"
                           if self.toss_min_y_px is not None else "N/A")
-            print(f"[TRANSITION] ARMED -> ACTIVE. "
+            print(f"[TRANSITION] ARMED -> ACTIVE{self._log_suffix}. "
                   f"Serve detected! Score: {serve_score:.2f}  "
                   f"(trophy {max_trophy:.2f}*{self.cfg.trophy_weight} + "
                   f"toss {max_toss:.2f}*{self.cfg.toss_weight})  "
@@ -375,13 +403,12 @@ class TransitionEngine:
         candidates = frame.active_ball_candidates or []
 
         # ---- 1. Feed this frame's ball detections to the tracker ----
-        # Detections inside the near player's box are excluded from the trace:
-        # the racket/arm/body frequently throws off ball-shaped false positives
-        # right where the near player stands, and unlike the far side we have a
-        # reliable box for them every frame.
-        nbox = frame.near_player_box
-        if nbox is not None:
-            nx1, ny1, nx2, ny2 = nbox
+        # Detections inside the gating player's box are excluded from the
+        # trace: the racket/arm/body frequently throws off ball-shaped false
+        # positives right where that player stands.
+        pbox = getattr(frame, self._player_box_attr, None)
+        if pbox is not None:
+            nx1, ny1, nx2, ny2 = pbox
             candidates = [
                 c for c in candidates
                 if not (nx1 <= c["pixel_center"][0] <= nx2 and
@@ -462,7 +489,7 @@ class TransitionEngine:
         print(f"\n[TRANSITION] ACTIVE -> WAITING (trace {status.state}; {vel_note}). "
               f"Lasted {elapsed:.1f}s. Rewind to t={death_t:.2f}s.")
 
-        next_world = frame.near_player_world
+        next_world = getattr(frame, self._player_world_attr, None)
         self._reset_active_state()
 
         if self.cfg.fast_rearm:
@@ -470,21 +497,22 @@ class TransitionEngine:
         return "WAITING"
 
     # ------------------------------------------------------------------
-    # Tier-2 helpers — near-player velocity
+    # Tier-2 helpers — gating-player velocity
     # ------------------------------------------------------------------
     def _update_player_velocity(self, frame, now: float) -> None:
         """
-        Maintain a short rolling window of the near player's world-y position and
-        derive a walking speed (ft/s). A window (not a frame-to-frame diff) is
-        used because the player model only runs every ACTIVE_PLAYER_STRIDE frames
-        in anya_base — consecutive frames often repeat a cached position, which a
-        naive diff would read as 0 then spike. Over a ~0.5 s window there is at
-        least one genuine refresh, giving a stable estimate.
+        Maintain a short rolling window of the gating player's world-y position
+        and derive a walking speed (ft/s). A window (not a frame-to-frame diff)
+        is used because the player model only runs every ACTIVE_PLAYER_STRIDE
+        frames in anya_base — consecutive frames often repeat a cached position,
+        which a naive diff would read as 0 then spike. Over a ~0.5 s window
+        there is at least one genuine refresh, giving a stable estimate.
         """
-        if not self.cfg.use_player_velocity or frame.near_player_world is None:
+        world = getattr(frame, self._player_world_attr, None)
+        if not self.cfg.use_player_velocity or world is None:
             return
 
-        _, wy = frame.near_player_world
+        _, wy = world
         self._player_world_history.append((now, float(wy)))
         while (self._player_world_history and
                now - self._player_world_history[0][0] > self.cfg.player_velocity_window_s):
@@ -516,17 +544,17 @@ class TransitionEngine:
     # ==================================================================
     # Helpers — reset / init
     # ==================================================================
-    def _post_active_next_state(self, near_pos, default_state: str) -> str:
+    def _post_active_next_state(self, player_pos, default_state: str) -> str:
         """
         On ACTIVE -> WAITING, bypass WAITING if the player is already inside the
         ready band — go straight to ARMED for the next point. Cuts dead time
         between consecutive serves from the same end.
         """
-        if near_pos is not None:
-            _, wy   = near_pos
-            dist_ft = abs(wy)
-            if wy < 0 and self.READY_MIN_DIST_FT <= dist_ft <= self.READY_MAX_DIST_FT:
-                print("[BYPASS] Player already at baseline. Jumping to ARMED.")
+        if player_pos is not None:
+            _, wy       = player_pos
+            signed_dist = (wy - self._baseline_y_ft) * self._direction
+            if self.READY_MIN_DIST_FT <= signed_dist <= self.READY_MAX_DIST_FT:
+                print(f"[BYPASS] Player already at baseline{self._log_suffix}. Jumping to ARMED.")
                 self._reset_armed_state()
                 return "ARMED"
         return default_state
@@ -560,3 +588,89 @@ class TransitionEngine:
         self.active_start_time      = now
         self.last_active_trace_time = now   # dead-timeout clock starts at ACTIVE entry
         self.last_transition_time   = None
+
+
+# =====================================================================
+# Far-side variant — identical algorithm, far baseline + far-player fields
+# =====================================================================
+class FarSideTransitionEngine(TransitionEngine):
+    """
+    Far-side serve detector. Runs the same WAITING -> ARMED -> ACTIVE
+    algorithm as TransitionEngine for the WAITING and ACTIVE phases
+    (ready-band gating, ball-trace point-end), gating on far_player_box /
+    far_player_world and the far baseline (Config.COURT_LENGTH_FT) instead of
+    the near ones, with a wider ready band for far-court position noise.
+
+    The ARMED -> ACTIVE decision is overridden entirely: there is no
+    trophy/toss weighted score here — the far side has no ball-toss or
+    trophy-pose signal of its own, so ARMED -> ACTIVE fires solely off
+    frame.far_serve_score (see anya_base.FarSideTelemetryProvider /
+    serve_stgcn.ServeSTGCNDetector), reusing cfg.serve_score_threshold as the
+    probability cutoff.
+    """
+
+    def __init__(self, fps: float, cfg: Optional[SignalPriorityConfig] = None):
+        super().__init__(
+            fps, cfg,
+            side_label="far",
+            player_box_attr="far_player_box",
+            player_world_attr="far_player_world",
+            baseline_y_ft=Config.COURT_LENGTH_FT,
+            direction=1.0,
+        )
+        # Wider ready band than the near side: far-court world-position
+        # estimates are noisier (homography amplifies feet-pixel jitter more
+        # at this distance), so a tight +/-baseline window misses real
+        # ready-position dwells.
+        self.READY_MIN_DIST_FT = -6.0
+        self.READY_MAX_DIST_FT = 6.0
+
+    # ==================================================================
+    # ARMED -> ACTIVE  or  ARMED -> WAITING  (ST-GCN-only serve decision)
+    # ==================================================================
+    def _check_armed(self, history: deque) -> str:
+        frame = history[-1]
+        now   = frame.timestamp
+
+        in_band = False
+        world = getattr(frame, self._player_world_attr, None)
+        if world is not None:
+            _, wy       = world
+            signed_dist = (wy - self._baseline_y_ft) * self._direction
+            in_band     = self.READY_MIN_DIST_FT <= signed_dist <= self.READY_MAX_DIST_FT
+
+        self.armed_band_history.append((now, in_band))
+        while (self.armed_band_history and
+               now - self.armed_band_history[0][0] > self.ARMED_BAND_WINDOW_SEC):
+            self.armed_band_history.popleft()
+
+        if len(self.armed_band_history) > 1:
+            total_time = self.armed_band_history[-1][0] - self.armed_band_history[0][0]
+            if total_time > 1.0:
+                time_out = sum(
+                    self.armed_band_history[i + 1][0] - self.armed_band_history[i][0]
+                    for i in range(len(self.armed_band_history) - 1)
+                    if not self.armed_band_history[i][1]
+                )
+                out_ratio = time_out / total_time
+                if out_ratio > self.ARMED_OUT_RATIO_THRESHOLD:
+                    print(f"[TRANSITION] ARMED -> WAITING{self._log_suffix}. "
+                          f"Out of band {out_ratio:.0%} over {total_time:.1f}s.")
+                    self._reset_armed_state()
+                    return "WAITING"
+
+        player_box = getattr(frame, self._player_box_attr, None)
+        if not in_band or player_box is None:
+            return "ARMED"
+
+        stgcn_score = getattr(frame, "far_serve_score", 0.0) or 0.0
+        self.last_serve_scores = {"stgcn_score": stgcn_score, "serve_score": stgcn_score}
+
+        if stgcn_score >= self.cfg.serve_score_threshold:
+            print(f"[TRANSITION] ARMED -> ACTIVE{self._log_suffix}. "
+                  f"Serve detected! ST-GCN score: {stgcn_score:.2f}")
+            self._reset_armed_state()
+            self._init_active(now)
+            return "ACTIVE"
+
+        return "ARMED"

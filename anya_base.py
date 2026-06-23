@@ -21,6 +21,7 @@ from utilities import (Config, _is_in_exclusion_zone, init_court,
                                create_auto_exclusion_zones,
                                get_exclusion_zones_from_frames, Point3D, Box)
 from collections import deque
+from serve_stgcn import ServeSTGCNDetector
 
 @dataclass
 class TelemetryFrame:
@@ -29,10 +30,12 @@ class TelemetryFrame:
     state: str
     near_player_box: Optional[Tuple[int, int, int, int]] = None
     near_player_world: Optional[Tuple[float, float]] = None
-    far_player_box: Optional[Tuple[int, int, int, int]] = None   # far-side player (ACTIVE)
+    far_player_box: Optional[Tuple[int, int, int, int]] = None    # far-side player
+    far_player_world: Optional[Tuple[float, float]] = None        # far-side player, world coords
     toss_ball_candidates: List[dict] = None
     active_ball_candidates: List[dict] = None
     trophy_score: float = 0.0          # Probability of trophy/serve pose (ARMED state)
+    far_serve_score: float = 0.0       # Far-side serve probability from serve_stgcn.pt (ARMED state)
     pose_landmarks: Any = None         # MediaPipe results (future use)
     player_crop: Any = None            # BGR crop of near player (ACTIVE state, for GaitAnalyzer)
     player_crop_rect: Any = None       # (cx1, cy1, cx2, cy2) frame coords of player_crop
@@ -73,7 +76,7 @@ class AnyaTelemetryProvider:
                 num_frames=50,
                 conf=0.04,
                 eps=12,
-                padding=5,
+                padding=0,
                 ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
                 analysis_size=(960, 540),
             )
@@ -349,7 +352,7 @@ class AnyaTelemetryProvider:
 
         return near_box, near_world, far_box
 
-    def process_frame(self, frame) -> TelemetryFrame:
+    def process_frame(self, frame, orig_frame=None) -> TelemetryFrame:
         self.frame_counter += 1
         timestamp = self.frame_counter / self.fps
 
@@ -365,8 +368,9 @@ class AnyaTelemetryProvider:
         # In ACTIVE state, run the player models every ACTIVE_PLAYER_STRIDE frames and
         # hold the cached results in between — the player position changes slowly and
         # the boxes are only used for ball-detection filtering and the near-player timer.
-        # Far player is detected via the user-defined ROI (Config.FAR_PLAYER_IMGSZ) in
-        # ACTIVE state; full-frame detection is used in WAITING/ARMED states.
+        # Far player here is just the incidental "other player" output of
+        # _track_near_player (full-frame detection); FarSideTelemetryProvider
+        # runs its own dedicated far-baseline tracking for the far-side pass.
         if (self.current_state == "ACTIVE"
                 and self.frame_counter % self.ACTIVE_PLAYER_STRIDE != 0
                 and self._cached_player_boxes[0] is not None):
@@ -405,7 +409,7 @@ class AnyaTelemetryProvider:
                         conf=0.05,
                         eps=5,
                         min_samples=15,
-                        padding=5,
+                        padding=0,
                         ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
                     )
                     self._armed_collection_done = True
@@ -531,3 +535,336 @@ class AnyaTelemetryProvider:
             self._armed_collection_done  = False
             self._last_trophy_score      = 0.0   # don't carry score from previous ARMED entry
             print("[INFO] ARMED entered — starting dynamic exclusion zone collection (0-0.5s)")
+
+
+class FarSideTelemetryProvider:
+    """
+    Telemetry provider for the separate far-side serve-detection pass.
+
+    Mirrors AnyaTelemetryProvider's WAITING/ACTIVE mechanism, pointed at the
+    far baseline (Config.COURT_LENGTH_FT) instead of the near one (y=0):
+      - Far player is detected full-frame and selected by world-distance
+        proximity to the far baseline plus a singles-sideline gate (the
+        mirror of _track_near_player's near-baseline selection) — no static/
+        hand-clicked search ROI.
+      - ARMED entry is gated by the far player settling into the ready band
+        behind the far baseline (WAITING -> ARMED), exactly like the near side.
+
+    Unlike the near side, ARMED has no trophy-pose or ball-toss signal: the
+    far-side serve decision is made solely by serve_stgcn.pt classifying a
+    rolling window of upper-body joint-graph kinematics from the far player's
+    padded box (see ServeSTGCNDetector, FarSideTransitionEngine._check_armed).
+
+    Reuses the cached court/homography/active-zone artifacts from the
+    near-side pass on this same video (run the near-side pass at least once
+    first so the active-zone polygon cache exists).
+    """
+
+    def __init__(self, video_path: str):
+        self.video_path = video_path
+        self._init_video_props()
+
+        self.player_model = YOLO("yolo26n.pt")
+        self.ball_model   = YOLO("/Users/tennis/Documents/Code/Laptop/weights/ball/weights/best.pt")
+        self.far_serve_detector = ServeSTGCNDetector()
+
+        video_dir = os.path.dirname(os.path.abspath(video_path))
+        self.active_zone_cache_path = os.path.join(video_dir, "active_zone_config.json")
+
+        self.court_vertices, self.frame_shape = init_court(
+            self.video_path, analysis_size=(960, 540)
+        )
+        self.H = self._compute_homography()
+        self.active_zone_polygon = self._load_polygon(
+            self.active_zone_cache_path,
+            "Run the near-side pass on this video at least once first to define it.",
+        )
+
+        print("\n[INFO] Scanning video for static exclusion zones (far-side pass)...")
+        try:
+            self.static_exclusion_zones = create_auto_exclusion_zones(
+                self.video_path, self.ball_model,
+                num_frames=50,
+                conf=0.04,
+                eps=12,
+                padding=0,
+                ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
+                analysis_size=(960, 540),
+            )
+            print(f"[INFO] Found {len(self.static_exclusion_zones)} static exclusion zone(s)")
+        except Exception as e:
+            print(f"[WARN] Could not compute static exclusion zones: {e}")
+            self.static_exclusion_zones = []
+
+        # Dynamic exclusion zones — recomputed on each ARMED entry (mirrors near side)
+        self.dynamic_exclusion_zones: List = []
+        self._armed_frame_buffer: List = []
+        self._armed_entry_time: Optional[float] = None
+        self._armed_collection_done: bool = False
+        self.ARMED_DYNAMIC_COLLECTION_SEC = 0.5
+        self.ARMED_DYNAMIC_SAMPLE_FRAMES  = 5
+
+        self.current_state = "WAITING"
+        self.frame_counter = 0
+        buffer_size = int(self.fps * Config.TELEMETRY_BUFFER_SECONDS)
+        self.telemetry_history = deque(maxlen=buffer_size)
+
+        # Cached far-player box/world for ACTIVE-state striding
+        self.ACTIVE_PLAYER_STRIDE = 4
+        self._cached_player_boxes: Tuple = (None, None, [])   # (far_box, far_world, all_boxes)
+
+        # Far-player world-position smoothing: at far-court distance, a few
+        # pixels of bounding-box jitter on the feet gets amplified by the
+        # homography into several feet of world-coordinate noise — enough to
+        # make the ready-band test flicker frame-to-frame even when the player
+        # is standing still. A short rolling average absorbs that without
+        # changing the near side's algorithm (which doesn't need it at close
+        # range).
+        self.FAR_WORLD_SMOOTH_WINDOW_SEC = 0.3
+        self._far_world_history: deque = deque()   # (t, wx, wy)
+
+    @staticmethod
+    def _load_polygon(cache_path: str, hint: str) -> np.ndarray:
+        """Load an 8-point polygon (list of [x, y] pairs) cached at cache_path."""
+        if not os.path.exists(cache_path):
+            raise RuntimeError(f"No cached polygon at {cache_path}. {hint}")
+        with open(cache_path, "r") as f:
+            points = json.load(f)
+        return np.array(points, dtype=np.int32)
+
+    def _init_video_props(self):
+        cap = cv2.VideoCapture(self.video_path)
+        self.fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        self.width = 960
+        self.height = 540
+        cap.release()
+
+    def _compute_homography(self):
+        BL, BR, TR, TL = self.court_vertices
+        dst_pts = np.array([
+            [0, 0], [Config.COURT_WIDTH_FT, 0],
+            [Config.COURT_WIDTH_FT, Config.COURT_LENGTH_FT], [0, Config.COURT_LENGTH_FT],
+        ], dtype=np.float32)
+        src_pts = np.array([BL, BR, TR, TL], dtype=np.float32)
+        H, _ = cv2.findHomography(src_pts, dst_pts)
+        return H
+
+    def get_world_pos(self, px_x, px_y):
+        if self.H is None: return 0.0, 0.0
+        pt_px = np.array([[[px_x, px_y]]], dtype=np.float32)
+        pt_world = cv2.perspectiveTransform(pt_px, self.H)
+        return pt_world[0][0][0], pt_world[0][0][1]
+
+    @property
+    def exclusion_zones(self) -> List:
+        return self.static_exclusion_zones + self.dynamic_exclusion_zones
+
+    def _is_in_active_zone(self, cx: float, cy: float) -> bool:
+        return cv2.pointPolygonTest(
+            self.active_zone_polygon, (float(cx), float(cy)), False
+        ) >= 0
+
+    def _is_in_player_box(self, ball_cx, ball_cy, player_box, padding=15):
+        """Check if ball center is within player bounding box + padding."""
+        if player_box is None:
+            return False
+        x1, y1, x2, y2 = player_box
+        return (x1 - padding <= ball_cx <= x2 + padding and
+                y1 - padding <= ball_cy <= y2 + padding)
+
+    def _is_in_any_player_box(self, ball_cx, ball_cy, player_boxes, padding=0):
+        """Check if ball center is within ANY of the given player boxes + padding."""
+        return any(self._is_in_player_box(ball_cx, ball_cy, box, padding=padding)
+                   for box in (player_boxes or []))
+
+    def _track_far_player(self, frame):
+        """
+        Detect all players full-frame and select the far player, mirroring
+        AnyaTelemetryProvider._track_near_player's near-baseline selection:
+
+          1. Feet closer (world distance) to the far baseline
+             (Config.COURT_LENGTH_FT) than to the near baseline (y=0).
+          2. Feet x within the singles sidelines (0..COURT_WIDTH_FT), extended
+             indefinitely beyond the baseline, plus a small homography-
+             tolerance padding (FAR_PLAYER_X_PAD_FT) — this is what actually
+             rejects spectators/ball kids standing laterally outside the
+             court, regardless of how far behind the baseline they are.
+
+        Returns (far_box, far_world, all_boxes) — all_boxes is every detected
+        player box this frame (near players, doubles partners, etc.), used to
+        exclude ball detections from any player's body, not just the gating
+        far player's.
+        """
+        results = self.player_model(frame, verbose=False, conf=0.2, imgsz=Config.PLAYER_IMGSZ)
+
+        if not (results and results[0].boxes):
+            return None, None, []
+
+        candidates = []
+        for b in results[0].boxes:
+            if int(b.cls[0]) != Config.DEFAULT_PLAYER_CLASS_INDEX:
+                continue
+            x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+            cx = (x1 + x2) / 2.0
+            wx, wy = self.get_world_pos(cx, y2)
+            candidates.append((x1, y1, x2, y2, wx, wy))
+
+        if not candidates:
+            return None, None, []
+
+        pad = Config.FAR_PLAYER_X_PAD_FT
+        far_candidates = [
+            c for c in candidates
+            if (abs(c[5] - Config.COURT_LENGTH_FT) < abs(c[5]) and       # criterion 1
+                -pad <= c[4] <= Config.COURT_WIDTH_FT + pad)             # criterion 2
+        ]
+
+        if not far_candidates:
+            return None, None, []
+
+        all_boxes = [c[:4] for c in candidates]
+        far = min(far_candidates, key=lambda c: abs(c[5] - Config.COURT_LENGTH_FT))
+        far_box   = far[:4]
+        far_world = (far[4], far[5])
+        return far_box, far_world, all_boxes
+
+    def _smoothed_far_world(self, world, now: float) -> Optional[Tuple[float, float]]:
+        """
+        Rolling-average smoothing for far_player_world over
+        FAR_WORLD_SMOOTH_WINDOW_SEC. A missed detection this frame doesn't
+        reset the window — it just isn't added — so a single dropped frame
+        decays out naturally rather than abruptly invalidating the estimate.
+        Returns None only once the window is empty (no recent detection at all).
+        """
+        if world is not None:
+            self._far_world_history.append((now, world[0], world[1]))
+        while (self._far_world_history and
+               now - self._far_world_history[0][0] > self.FAR_WORLD_SMOOTH_WINDOW_SEC):
+            self._far_world_history.popleft()
+
+        if not self._far_world_history:
+            return None
+
+        n = len(self._far_world_history)
+        avg_wx = sum(s[1] for s in self._far_world_history) / n
+        avg_wy = sum(s[2] for s in self._far_world_history) / n
+        return (avg_wx, avg_wy)
+
+    def process_frame(self, frame, orig_frame=None) -> TelemetryFrame:
+        self.frame_counter += 1
+        timestamp = self.frame_counter / self.fps
+
+        telemetry = TelemetryFrame(
+            frame_id=self.frame_counter,
+            timestamp=timestamp,
+            state=self.current_state,
+            toss_ball_candidates=[],
+            active_ball_candidates=[],
+        )
+
+        # 1. Track far player (mirrors AnyaTelemetryProvider's near-player
+        #    tracking/striding, selecting by far-baseline proximity instead).
+        #    The world position is smoothed (see _smoothed_far_world) before
+        #    being cached/used — raw per-frame homography noise at far-court
+        #    distance is large enough to break the ready-band dwell check.
+        if (self.current_state == "ACTIVE"
+                and self.frame_counter % self.ACTIVE_PLAYER_STRIDE != 0
+                and self._cached_player_boxes[0] is not None):
+            f_box, f_world, all_player_boxes = self._cached_player_boxes
+        else:
+            f_box, raw_world, all_player_boxes = self._track_far_player(frame)
+            f_world = self._smoothed_far_world(raw_world, timestamp)
+            self._cached_player_boxes = (f_box, f_world, all_player_boxes)
+        telemetry.far_player_box   = f_box
+        telemetry.far_player_world = f_world
+
+        # 2. ARMED — buffer frames for dynamic exclusion zone computation (0-0.5s window)
+        if self.current_state == "ARMED":
+            now_t = timestamp
+            if (not self._armed_collection_done
+                    and self._armed_entry_time is not None):
+                elapsed = now_t - self._armed_entry_time
+                if elapsed <= self.ARMED_DYNAMIC_COLLECTION_SEC:
+                    self._armed_frame_buffer.append(frame.copy())
+                elif len(self._armed_frame_buffer) >= 1:
+                    self.dynamic_exclusion_zones = get_exclusion_zones_from_frames(
+                        self._armed_frame_buffer,
+                        self.ball_model,
+                        sample_size=self.ARMED_DYNAMIC_SAMPLE_FRAMES,
+                        conf=0.05,
+                        eps=5,
+                        min_samples=15,
+                        padding=0,
+                        ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
+                    )
+                    self._armed_collection_done = True
+                    self._armed_frame_buffer    = []
+                    print(f"[INFO] Dynamic exclusion zones (far side): "
+                          f"{len(self.dynamic_exclusion_zones)} zone(s)")
+
+        # 2b. ARMED detector — serve_stgcn.pt classification of the far player's
+        # padded box. This is the sole far-side serve signal (no toss/trophy):
+        # the crop is taken at native video resolution (orig_frame), scaled up
+        # from the box's 960x540 coordinates rather than resized/interpolated,
+        # since the far player is small enough at this distance that resize
+        # interpolation would blur exactly the pose detail the model needs.
+        if self.current_state == "ARMED" and f_box:
+            fx1, fy1, fx2, fy2 = f_box
+            pw, ph = fx2 - fx1, fy2 - fy1
+
+            if orig_frame is not None:
+                oh, ow = orig_frame.shape[:2]
+                sx, sy = ow / float(self.width), oh / float(self.height)
+                nx1, ny1, nx2, ny2 = fx1 * sx, fy1 * sy, fx2 * sx, fy2 * sy
+                npw, nph = nx2 - nx1, ny2 - ny1
+                pad_x, pad_y = npw * Config.FAR_SERVE_LSTM_PAD, nph * Config.FAR_SERVE_LSTM_PAD
+                cx1 = max(0, int(nx1 - pad_x)); cy1 = max(0, int(ny1 - pad_y))
+                cx2 = min(ow, int(nx2 + pad_x)); cy2 = min(oh, int(ny2 + pad_y))
+                crop = orig_frame[cy1:cy2, cx1:cx2]
+            else:
+                fh, fw = frame.shape[:2]
+                pad_x, pad_y = pw * Config.FAR_SERVE_LSTM_PAD, ph * Config.FAR_SERVE_LSTM_PAD
+                cx1 = max(0, int(fx1 - pad_x)); cy1 = max(0, int(fy1 - pad_y))
+                cx2 = min(fw, int(fx2 + pad_x)); cy2 = min(fh, int(fy2 + pad_y))
+                crop = frame[cy1:cy2, cx1:cx2]
+
+            self.far_serve_detector.update(crop)
+            telemetry.far_serve_score = self.far_serve_detector.score()
+
+        # 3. ACTIVE — whole-court ball detection. Unlike the near side, ALL
+        #    detected player boxes are excluded here (every phase, whenever
+        #    boxes are available) — racket/arm motion is otherwise picked up
+        #    as a ball candidate too readily at this scale.
+        if self.current_state == "ACTIVE":
+            ball_res = self.ball_model(
+                frame, verbose=False, conf=Config.ACTIVE_BALL_CONF, imgsz=Config.BALL_IMGSZ,
+            )
+            if ball_res and ball_res[0].boxes:
+                for b in ball_res[0].boxes:
+                    bx1, by1, bx2, by2 = b.xyxy[0].tolist()
+                    bcx, bcy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
+
+                    if (self._is_in_active_zone(bcx, bcy) and
+                            not _is_in_exclusion_zone(bcx, bcy, self.exclusion_zones) and
+                            not self._is_in_any_player_box(bcx, bcy, all_player_boxes, padding=0)):
+                        telemetry.active_ball_candidates.append({
+                            "box":          (bx1, by1, bx2, by2),
+                            "conf":         float(b.conf[0]),
+                            "pixel_center": (bcx, bcy),
+                        })
+
+        self.telemetry_history.append(telemetry)
+        return telemetry
+
+    def update_state(self, new_state: str):
+        old_state = self.current_state
+        self.current_state = new_state
+
+        if new_state == "ARMED" and old_state != "ARMED":
+            now = self.frame_counter / self.fps
+            self.dynamic_exclusion_zones = []
+            self._armed_frame_buffer     = []
+            self._armed_entry_time       = now
+            self._armed_collection_done  = False
+            self.far_serve_detector.reset()
+            print("[INFO] ARMED entered (far side) — starting dynamic exclusion zone collection (0-0.5s)")

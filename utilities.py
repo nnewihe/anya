@@ -29,9 +29,10 @@ class Config:
     PLAYER_IMGSZ = 960
     BALL_IMGSZ = 1920
     TOSS_BALL_IMGSZ = 320
-    FAR_PLAYER_IMGSZ = 960          # YOLO inference size for far-player ROI detection
-    FAR_ROI_BOTTOM_TOLERANCE = 5    # px — reject far-player detections whose bottom is within
-                                    # this many pixels of the ROI bottom (near-player intrusion)
+    FAR_PLAYER_X_PAD_FT  = 3.0      # homography-tolerance padding beyond the singles sidelines
+                                     # for far-player feet (mirrors NEAR_PLAYER_X_PAD_FT)
+    FAR_SERVE_LSTM_PAD   = 0.30     # padding fraction (of box w/h) around the far player's box
+                                     # before cropping for the serve_lstm.pt classifier
     ACTIVE_BALL_CONF = 0.15   # confidence threshold for whole-court ball detection (ACTIVE)
     TOSS_BALL_CONF   = 0.10   # confidence threshold for toss ROI ball detection (ARMED)
     TROPHY_IMGSZ = 320
@@ -392,8 +393,8 @@ def init_far_player_roi(
                 return pt1, pt2
             else:
                 print("[FAR ROI] Analysis size changed — re-selecting ROI.")
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"[FAR ROI] Cache corrupt ({e}), re-selecting.")
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
+            print(f"[FAR ROI] Cache corrupt or wrong format ({e}), re-selecting.")
 
     base = get_reference_frame(video_path, target_idx=target_idx)
     if analysis_size is not None:

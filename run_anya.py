@@ -5,8 +5,8 @@ import os
 import cv2
 import numpy as np
 
-from anya_base import AnyaTelemetryProvider, TelemetryFrame
-from anya_transitions import TransitionEngine
+from anya_base import AnyaTelemetryProvider, FarSideTelemetryProvider, TelemetryFrame
+from anya_transitions import TransitionEngine, FarSideTransitionEngine
 from utilities import create_highlights_ffmpeg, create_highlights_ffmpeg_multisource
 
 
@@ -22,16 +22,22 @@ GAP_THRESHOLD_SEC   = 240.0   # 4 minutes — spans short changeovers within a r
 # Core segment-collection loop (shared by single and dual pipeline modes)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
+def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
+                       provider_factory=None, engine_factory=None, pass_label="NEAR"):
     """
     Run the Anya pipeline on a single video and return the detected active segments.
 
     Parameters
     ----------
-    video_path  : source video file
-    headless    : suppress all OpenCV windows
-    start_frame : seek to this frame before starting (default 0)
-    csv_path    : explicit CSV output path; defaults to <video_dir>/<stem>_telemetry.csv
+    video_path       : source video file
+    headless         : suppress all OpenCV windows
+    start_frame      : seek to this frame before starting (default 0)
+    csv_path         : explicit CSV output path; defaults to <video_dir>/<stem>_telemetry.csv
+    provider_factory : callable(video_path) -> telemetry provider; defaults to the
+                       near-side AnyaTelemetryProvider
+    engine_factory   : callable(telemetry_provider) -> transition engine; defaults
+                       to the near-side TransitionEngine
+    pass_label       : human-readable tag for log output (e.g. "NEAR", "FAR")
 
     Returns
     -------
@@ -39,6 +45,9 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
     point_number    : total points detected
     csv_path        : path to the written telemetry CSV
     """
+    provider_factory = provider_factory or AnyaTelemetryProvider
+    engine_factory    = engine_factory    or (lambda provider: TransitionEngine(fps=provider.fps))
+
     # ── Default CSV path ──────────────────────────────────────────────────
     if csv_path is None:
         video_dir  = os.path.dirname(os.path.abspath(video_path))
@@ -53,8 +62,8 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
         orig_fps = 30.0
 
     # ── Initialize pipeline components ───────────────────────────────────
-    telemetry_provider = AnyaTelemetryProvider(video_path)
-    engine             = TransitionEngine(fps=telemetry_provider.fps)
+    telemetry_provider = provider_factory(video_path)
+    engine             = engine_factory(telemetry_provider)
 
     # ── CSV telemetry writer ──────────────────────────────────────────────
     _CSV_COLS = [
@@ -114,12 +123,14 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
                     state="WAITING",
                     near_player_box=last.near_player_box,
                     near_player_world=last.near_player_world,
+                    far_player_box=last.far_player_box,
+                    far_player_world=last.far_player_world,
                     toss_ball_candidates=[],
                     active_ball_candidates=[],
                 )
                 telemetry_provider.telemetry_history.append(telemetry)
             else:
-                telemetry = telemetry_provider.process_frame(frame)
+                telemetry = telemetry_provider.process_frame(frame, orig_frame=orig_frame)
 
             last_telemetry_ts = telemetry.timestamp
 
@@ -174,10 +185,10 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
         if not headless:
             cv2.destroyAllWindows()
 
-    print(f"[COLLECT] {os.path.basename(video_path)}: {point_number} points, "
+    print(f"[COLLECT-{pass_label}] {os.path.basename(video_path)}: {point_number} points, "
           f"{len(active_segments)} segments")
     if interrupted:
-        print("[COLLECT] (pipeline interrupted — segments cover completed detections only)")
+        print(f"[COLLECT-{pass_label}] (pipeline interrupted — segments cover completed detections only)")
 
     return active_segments, point_number, csv_path
 
@@ -186,24 +197,81 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
 # Single-video pipeline (unchanged public behaviour)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=0):
+def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=0,
+                       far_side_first=False):
+    """
+    Run the near-side and far-side serve detectors as two completely separate
+    full-video passes over the same source file, then merge their active
+    segments chronologically into a single highlight reel.
+
+    The two passes are independent state machines (see AnyaTelemetryProvider /
+    TransitionEngine for near-side, FarSideTelemetryProvider /
+    FarSideTransitionEngine for far-side) — neither sees the other's state.
+    By default the near-side pass runs first; pass far_side_first=True to
+    reverse the processing order (purely a scheduling choice — the merged
+    output is identical either way since segments are sorted by time).
+    """
     # ── Default output path ───────────────────────────────────────────────
     if output_path is None:
         video_dir  = os.path.dirname(os.path.abspath(video_path))
         video_stem = os.path.splitext(os.path.basename(video_path))[0]
         output_path = os.path.join(video_dir, f"{video_stem}_highlights.mp4")
 
-    csv_path = os.path.splitext(output_path)[0] + "_telemetry.csv"
+    csv_base = os.path.splitext(output_path)[0] + "_telemetry"
+    near_csv = f"{csv_base}_near.csv"
+    far_csv  = f"{csv_base}_far.csv"
 
-    active_segments, point_number, _ = _collect_segments(
-        video_path, headless, start_frame, csv_path=csv_path
-    )
+    def _run_near_pass():
+        print("\n[PASS] Near-side serve detection …")
+        return _collect_segments(video_path, headless, start_frame,
+                                  csv_path=near_csv, pass_label="NEAR")
 
-    create_highlights_ffmpeg(video_path, active_segments, output_path)
+    def _run_far_pass():
+        print("\n[PASS] Far-side serve detection …")
+        return _collect_segments(
+            video_path, headless, start_frame, csv_path=far_csv,
+            provider_factory=FarSideTelemetryProvider,
+            engine_factory=lambda p: FarSideTransitionEngine(fps=p.fps),
+            pass_label="FAR",
+        )
 
-    print(f"\n[DONE] Output video  : {output_path}")
-    print(f"[DONE] Telemetry CSV : {csv_path}")
-    print(f"[DONE] Points recorded: {point_number}")
+    if far_side_first:
+        segs_far, points_far, _   = _run_far_pass()
+        segs_near, points_near, _ = _run_near_pass()
+    else:
+        segs_near, points_near, _ = _run_near_pass()
+        segs_far, points_far, _   = _run_far_pass()
+
+    merged_segments = _merge_overlapping_segments(segs_near + segs_far)
+
+    create_highlights_ffmpeg(video_path, merged_segments, output_path)
+
+    print(f"\n[DONE] Output video       : {output_path}")
+    print(f"[DONE] Near telemetry CSV : {near_csv}")
+    print(f"[DONE] Far  telemetry CSV : {far_csv}")
+    print(f"[DONE] Near-side points   : {points_near}  ({len(segs_near)} segments)")
+    print(f"[DONE] Far-side points    : {points_far}  ({len(segs_far)} segments)")
+    print(f"[DONE] Merged segments    : {len(merged_segments)}")
+
+
+def _merge_overlapping_segments(segments, gap_threshold_sec=0.0):
+    """
+    Sort segments by start time and merge any that overlap or touch (gap <=
+    gap_threshold_sec). Used to combine the near-side and far-side passes'
+    independently-detected segments — the same point can occasionally be
+    flagged by both passes, and this collapses such duplicates into one.
+    """
+    if not segments:
+        return []
+    segments = sorted(segments)
+    merged   = [segments[0]]
+    for start, end in segments[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end + gap_threshold_sec:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -456,13 +524,16 @@ def render_debug_panel(state, engine, telemetry_provider):
     panel_width, panel_height = 500, 300
     panel = np.ones((panel_height, panel_width, 3), dtype=np.uint8) * 240  # Light gray bg
 
+    frame = telemetry_provider.telemetry_history[-1] if telemetry_provider.telemetry_history else None
+
     if state == "ACTIVE":
         render_active_debug(panel, engine)
     elif state == "ARMED":
-        render_armed_debug(panel, engine)
+        render_armed_debug(panel, engine, frame)
     else:
         cv2.putText(panel, "WAITING FOR PLAYER", (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (80, 80, 80), 1)
+        render_baseline_distance(panel, engine, frame, y=70)
 
     return panel
 
@@ -522,7 +593,7 @@ def render_active_debug(panel, engine):
                 (x0, y), cv2.FONT_HERSHEY_SIMPLEX, fs, (80, 80, 80), 1)
 
 
-def render_armed_debug(panel, engine):
+def render_armed_debug(panel, engine, frame=None):
     """Render serve scores during ARMED state."""
     x0      = 12
     bar_w   = 200
@@ -534,11 +605,17 @@ def render_armed_debug(panel, engine):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 2, cv2.LINE_AA)
 
     scores = engine.last_serve_scores
-    rows = [
-        ("Trophy Score", scores.get("trophy_score", 0.0), (0, 120, 255)),
-        ("Toss Score",   scores.get("toss_score",   0.0), (0, 200, 200)),
-        ("Serve Score",  scores.get("serve_score",  0.0), None),
-    ]
+    if "stgcn_score" in scores:
+        rows = [
+            ("ST-GCN Score", scores.get("stgcn_score", 0.0), (0, 160, 220)),
+            ("Serve Score",  scores.get("serve_score", 0.0), None),
+        ]
+    else:
+        rows = [
+            ("Trophy Score", scores.get("trophy_score", 0.0), (0, 120, 255)),
+            ("Toss Score",   scores.get("toss_score",   0.0), (0, 200, 200)),
+            ("Serve Score",  scores.get("serve_score",  0.0), None),
+        ]
 
     y = 65
     for label, value, color in rows:
@@ -555,6 +632,32 @@ def render_armed_debug(panel, engine):
             thresh_x = bx + int(0.55 * bar_w)
             cv2.line(panel, (thresh_x, y - bar_h + 2), (thresh_x, y + 2), (0, 0, 0), 2)
         y += lh
+
+    render_baseline_distance(panel, engine, frame, y=y + 10)
+
+
+def render_baseline_distance(panel, engine, frame, y):
+    """
+    Show the gating player's world-space distance from the baseline being
+    served from (engine._baseline_y_ft) — positive means correctly positioned
+    behind it, within the ready band [READY_MIN_DIST_FT, READY_MAX_DIST_FT].
+    """
+    if frame is None:
+        return
+
+    world = getattr(frame, engine._player_world_attr, None)
+    if world is None:
+        cv2.putText(panel, f"{engine._player_world_attr}: not detected this frame",
+                    (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 200), 1, cv2.LINE_AA)
+        return
+
+    dist_ft = (world[1] - engine._baseline_y_ft) * engine._direction
+    in_band = engine.READY_MIN_DIST_FT <= dist_ft <= engine.READY_MAX_DIST_FT
+    color   = (0, 160, 0) if in_band else (0, 100, 220)
+    cv2.putText(panel,
+                f"Feet -> baseline: {dist_ft:+.2f} ft  "
+                f"(ready band {engine.READY_MIN_DIST_FT:+.1f} to {engine.READY_MAX_DIST_FT:+.1f})",
+                (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
 
 if __name__ == "__main__":
@@ -606,10 +709,20 @@ Examples:
             "Used for chronological sorting of the merged segment list (default: 0.0)."
         ),
     )
+    parser.add_argument(
+        "--far-side-first",
+        action="store_true",
+        help=(
+            "[Single mode only] Run the far-side serve-detection pass before the "
+            "near-side pass (default: near-side runs first). Both passes always run; "
+            "this only controls processing order — the merged output is unaffected."
+        ),
+    )
     args = parser.parse_args()
 
     if len(args.input) == 1:
-        run_anya_pipeline(args.input[0], args.output, args.headless, args.start_frame)
+        run_anya_pipeline(args.input[0], args.output, args.headless, args.start_frame,
+                           far_side_first=args.far_side_first)
     elif len(args.input) == 2:
         run_anya_pipeline_dual(
             args.input[0], args.input[1],

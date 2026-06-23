@@ -1,0 +1,13 @@
+{
+  "far_roi_y_max_frac": 0.594,
+  "rise_vy_px_s": 94.226,
+  "verticality_min": 2.74,
+  "area_cv_max": 0.466,
+  "area_growth_min": 1.116,
+  "link_px": 133.004,
+  "recovery_px": 135.17,
+  "gate_maha": 10.503,
+  "audio_peak_k": 1.77,
+  "audio_pre_apex_tol_s": 0.198,
+  "audio_post_desc_tol_s": 0.203
+}

@@ -1,0 +1,8 @@
+{
+  "court_x_min_frac": 0.08515625,
+  "court_x_max_frac": 0.953125,
+  "far_roi_y_max_frac": 0.4305555555555556,
+  "far_roi_y_min_frac": 0.25555555555555554,
+  "frame_w": 1280,
+  "frame_h": 720
+}
