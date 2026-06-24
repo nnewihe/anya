@@ -27,7 +27,8 @@ class Config:
     ANALYSIS_WIDTH = 960
     ANALYSIS_HEIGHT = 540
     PLAYER_IMGSZ = 960
-    BALL_IMGSZ = 1920
+    BALL_IMGSZ = 1920         # exclusion-zone scans (stationary objects; keep high)
+    ACTIVE_BALL_IMGSZ = 960  # per-frame ball detection in ACTIVE state (input is 960px wide)
     TOSS_BALL_IMGSZ = 320
     FAR_PLAYER_X_PAD_FT  = 3.0      # homography-tolerance padding beyond the singles sidelines
                                      # for far-player feet (mirrors NEAR_PLAYER_X_PAD_FT)
@@ -278,6 +279,37 @@ def _is_in_exclusion_zone(x, y, exclusion_zones):
         if x1 <= x <= x2 and y1 <= y <= y2:
             return True
     return False
+
+
+def _exclusion_zone_cache_path(video_path: str) -> str:
+    video_dir  = os.path.dirname(os.path.abspath(video_path))
+    video_name = os.path.splitext(os.path.basename(video_path))[0]
+    return os.path.join(video_dir, f"{video_name}_exclusion_cache.json")
+
+
+def load_cached_exclusion_zones(video_path: str):
+    """Return cached static exclusion zones for video_path, or None if not cached."""
+    path = _exclusion_zone_cache_path(video_path)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        zones = [tuple(z) for z in data]
+        print(f"[INFO] Loaded {len(zones)} static exclusion zone(s) from cache")
+        return zones
+    except Exception as e:
+        print(f"[WARN] Exclusion zone cache unreadable ({e}), recomputing")
+        return None
+
+
+def save_cached_exclusion_zones(video_path: str, zones) -> None:
+    """Persist static exclusion zones alongside the video for future runs."""
+    try:
+        with open(_exclusion_zone_cache_path(video_path), "w") as f:
+            json.dump([list(z) for z in zones], f)
+    except Exception as e:
+        print(f"[WARN] Could not save exclusion zone cache: {e}")
 
 
 def _court_cache_path(video_path: str) -> str:
@@ -632,6 +664,7 @@ def create_highlights_ffmpeg(
     video_path: str,
     segments: List[Tuple[float, float]],
     output_path: str,
+    pre_roll: float = 0.0,
 ) -> None:
     """
     Cut active segments from video_path using FFMPEG (preserves audio) and
@@ -642,12 +675,13 @@ def create_highlights_ffmpeg(
     video_path  : path to the original source video
     segments    : list of (start_sec, end_sec) in source video time
     output_path : destination path for the highlight reel
+    pre_roll    : seconds to extend each segment's start backward (clamped to 0)
     """
     if not segments:
         print("[HIGHLIGHT] No active segments to export.")
         return
 
-    valid = [(s, e) for s, e in segments if e > s]
+    valid = [(max(0.0, s - pre_roll), e) for s, e in segments if e > s]
     if not valid:
         print("[HIGHLIGHT] All segments are zero-length — nothing to export.")
         return

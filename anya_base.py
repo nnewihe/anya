@@ -19,7 +19,8 @@ from typing import List, Optional, Tuple, Any
 from sklearn.cluster import DBSCAN
 from utilities import (Config, _is_in_exclusion_zone, init_court,
                                create_auto_exclusion_zones,
-                               get_exclusion_zones_from_frames, Point3D, Box)
+                               get_exclusion_zones_from_frames, Point3D, Box,
+                               load_cached_exclusion_zones, save_cached_exclusion_zones)
 from collections import deque
 from serve_stgcn import ServeSTGCNDetector
 
@@ -68,22 +69,28 @@ class AnyaTelemetryProvider:
         # 3. Compute the active-zone polygon from court vertices (used in ACTIVE state)
         self.active_zone_polygon = self._get_or_define_active_zone()
 
-        # 4. Compute static exclusion zones from full video scan (one-time at startup)
-        print("\n[INFO] Scanning video for static exclusion zones...")
-        try:
-            self.static_exclusion_zones = create_auto_exclusion_zones(
-                self.video_path, self.ball_model,
-                num_frames=50,
-                conf=0.04,
-                eps=12,
-                padding=0,
-                ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
-                analysis_size=(960, 540),
-            )
-            print(f"[INFO] Found {len(self.static_exclusion_zones)} static exclusion zone(s)")
-        except Exception as e:
-            print(f"[WARN] Could not compute static exclusion zones: {e}")
-            self.static_exclusion_zones = []
+        # 4. Compute static exclusion zones from full video scan (one-time at startup).
+        #    Result is cached to disk so the far-side pass (and future runs) skip the scan.
+        cached = load_cached_exclusion_zones(self.video_path)
+        if cached is not None:
+            self.static_exclusion_zones = cached
+        else:
+            print("\n[INFO] Scanning video for static exclusion zones...")
+            try:
+                self.static_exclusion_zones = create_auto_exclusion_zones(
+                    self.video_path, self.ball_model,
+                    num_frames=50,
+                    conf=0.04,
+                    eps=12,
+                    padding=0,
+                    ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
+                    analysis_size=(960, 540),
+                )
+                print(f"[INFO] Found {len(self.static_exclusion_zones)} static exclusion zone(s)")
+                save_cached_exclusion_zones(self.video_path, self.static_exclusion_zones)
+            except Exception as e:
+                print(f"[WARN] Could not compute static exclusion zones: {e}")
+                self.static_exclusion_zones = []
 
         # Dynamic exclusion zones — recomputed on each ARMED entry
         self.dynamic_exclusion_zones: List = []
@@ -494,7 +501,7 @@ class AnyaTelemetryProvider:
         # in TransitionEngine.  Only runs in ACTIVE (point-end authority).
         if self.current_state == "ACTIVE":
             ball_res = self.ball_model(
-                frame, verbose=False, conf=Config.ACTIVE_BALL_CONF, imgsz=Config.BALL_IMGSZ,
+                frame, verbose=False, conf=Config.ACTIVE_BALL_CONF, imgsz=Config.ACTIVE_BALL_IMGSZ,
             )
 
             if ball_res and ball_res[0].boxes:
@@ -580,21 +587,26 @@ class FarSideTelemetryProvider:
             "Run the near-side pass on this video at least once first to define it.",
         )
 
-        print("\n[INFO] Scanning video for static exclusion zones (far-side pass)...")
-        try:
-            self.static_exclusion_zones = create_auto_exclusion_zones(
-                self.video_path, self.ball_model,
-                num_frames=50,
-                conf=0.04,
-                eps=12,
-                padding=0,
-                ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
-                analysis_size=(960, 540),
-            )
-            print(f"[INFO] Found {len(self.static_exclusion_zones)} static exclusion zone(s)")
-        except Exception as e:
-            print(f"[WARN] Could not compute static exclusion zones: {e}")
-            self.static_exclusion_zones = []
+        cached = load_cached_exclusion_zones(self.video_path)
+        if cached is not None:
+            self.static_exclusion_zones = cached
+        else:
+            print("\n[INFO] Scanning video for static exclusion zones (far-side pass)...")
+            try:
+                self.static_exclusion_zones = create_auto_exclusion_zones(
+                    self.video_path, self.ball_model,
+                    num_frames=50,
+                    conf=0.04,
+                    eps=12,
+                    padding=0,
+                    ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
+                    analysis_size=(960, 540),
+                )
+                print(f"[INFO] Found {len(self.static_exclusion_zones)} static exclusion zone(s)")
+                save_cached_exclusion_zones(self.video_path, self.static_exclusion_zones)
+            except Exception as e:
+                print(f"[WARN] Could not compute static exclusion zones: {e}")
+                self.static_exclusion_zones = []
 
         # Dynamic exclusion zones — recomputed on each ARMED entry (mirrors near side)
         self.dynamic_exclusion_zones: List = []
@@ -837,7 +849,7 @@ class FarSideTelemetryProvider:
         #    as a ball candidate too readily at this scale.
         if self.current_state == "ACTIVE":
             ball_res = self.ball_model(
-                frame, verbose=False, conf=Config.ACTIVE_BALL_CONF, imgsz=Config.BALL_IMGSZ,
+                frame, verbose=False, conf=Config.ACTIVE_BALL_CONF, imgsz=Config.ACTIVE_BALL_IMGSZ,
             )
             if ball_res and ball_res[0].boxes:
                 for b in ball_res[0].boxes:

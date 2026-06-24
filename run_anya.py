@@ -1,4 +1,5 @@
 import argparse
+import concurrent.futures
 import csv
 import os
 
@@ -97,7 +98,7 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         print(f"[DEBUG] Seeking to frame {start_frame}")
 
-    WAITING_STRIDE = 3
+    WAITING_STRIDE = 6
     interrupted    = False
 
     try:
@@ -106,12 +107,18 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
             if not success:
                 break
 
-            frame = cv2.resize(orig_frame, (960, 540), interpolation=cv2.INTER_LINEAR)
-
             skip_inference = (
                 telemetry_provider.current_state == "WAITING"
                 and telemetry_provider.frame_counter % WAITING_STRIDE != 0
                 and bool(telemetry_provider.telemetry_history)
+            )
+
+            # Resize only when the frame will be consumed (inference or display).
+            # In headless mode the resized frame is unused on skipped WAITING frames.
+            frame = (
+                cv2.resize(orig_frame, (960, 540), interpolation=cv2.INTER_LINEAR)
+                if not (skip_inference and headless)
+                else None
             )
 
             if skip_inference:
@@ -235,16 +242,33 @@ def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=
             pass_label="FAR",
         )
 
-    if far_side_first:
-        segs_far, points_far, _   = _run_far_pass()
-        segs_near, points_near, _ = _run_near_pass()
+    if headless:
+        # In headless mode the two passes are fully independent — run them
+        # concurrently.  OpenCV display calls are not thread-safe, so
+        # parallelism is restricted to headless runs.
+        order = [_run_far_pass, _run_near_pass] if far_side_first else [_run_near_pass, _run_far_pass]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            fut_a = pool.submit(order[0])
+            fut_b = pool.submit(order[1])
+            results_a = fut_a.result()
+            results_b = fut_b.result()
+        if far_side_first:
+            segs_far,  points_far,  _ = results_a
+            segs_near, points_near, _ = results_b
+        else:
+            segs_near, points_near, _ = results_a
+            segs_far,  points_far,  _ = results_b
     else:
-        segs_near, points_near, _ = _run_near_pass()
-        segs_far, points_far, _   = _run_far_pass()
+        if far_side_first:
+            segs_far, points_far, _   = _run_far_pass()
+            segs_near, points_near, _ = _run_near_pass()
+        else:
+            segs_near, points_near, _ = _run_near_pass()
+            segs_far, points_far, _   = _run_far_pass()
 
     merged_segments = _merge_overlapping_segments(segs_near + segs_far)
 
-    create_highlights_ffmpeg(video_path, merged_segments, output_path)
+    create_highlights_ffmpeg(video_path, merged_segments, output_path, pre_roll=0.5)
 
     print(f"\n[DONE] Output video       : {output_path}")
     print(f"[DONE] Near telemetry CSV : {near_csv}")
