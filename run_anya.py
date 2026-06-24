@@ -266,16 +266,25 @@ def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=
             segs_near, points_near, _ = _run_near_pass()
             segs_far, points_far, _   = _run_far_pass()
 
-    merged_segments = _merge_overlapping_segments(segs_near + segs_far)
+    tagged_near = [(s, e, 'NEAR') for s, e in segs_near]
+    tagged_far  = [(s, e, 'FAR')  for s, e in segs_far]
+    merged_tagged    = _merge_overlapping_segments_tagged(tagged_near + tagged_far,
+                                                          gap_threshold_sec=3.0)
+    filtered_segments = _filter_short_isolated_segments(merged_tagged, short_sec=5.0)
 
-    create_highlights_ffmpeg(video_path, merged_segments, output_path, pre_roll=0.5)
+    # Untagged count for the summary line
+    n_merged   = len(merged_tagged)
+    n_filtered = n_merged - len(filtered_segments)
+
+    create_highlights_ffmpeg(video_path, filtered_segments, output_path,
+                             pre_roll=0.5, merge_gap_sec=0.0)
 
     print(f"\n[DONE] Output video       : {output_path}")
     print(f"[DONE] Near telemetry CSV : {near_csv}")
     print(f"[DONE] Far  telemetry CSV : {far_csv}")
     print(f"[DONE] Near-side points   : {points_near}  ({len(segs_near)} segments)")
     print(f"[DONE] Far-side points    : {points_far}  ({len(segs_far)} segments)")
-    print(f"[DONE] Merged segments    : {len(merged_segments)}")
+    print(f"[DONE] Merged segments    : {n_merged}  ({n_filtered} short side-inconsistent filtered)")
 
 
 def _merge_overlapping_segments(segments, gap_threshold_sec=0.0):
@@ -296,6 +305,75 @@ def _merge_overlapping_segments(segments, gap_threshold_sec=0.0):
         else:
             merged.append((start, end))
     return merged
+
+
+def _merge_overlapping_segments_tagged(segments, gap_threshold_sec=0.0):
+    """
+    Like _merge_overlapping_segments but accepts (start, end, side) triples and
+    tracks the dominant side ('NEAR', 'FAR', or 'MIXED') of each merged group.
+
+    Returns list of (start, end, dominant_side).
+    """
+    if not segments:
+        return []
+    segments = sorted(segments)
+    # Internal: [start, end, {side: count}]
+    groups = [[segments[0][0], segments[0][1], {segments[0][2]: 1}]]
+    for start, end, side in segments[1:]:
+        last = groups[-1]
+        if start <= last[1] + gap_threshold_sec:
+            last[1] = max(last[1], end)
+            last[2][side] = last[2].get(side, 0) + 1
+        else:
+            groups.append([start, end, {side: 1}])
+
+    result = []
+    for start, end, counts in groups:
+        if len(counts) == 1:
+            dominant = next(iter(counts))
+        else:
+            max_count = max(counts.values())
+            leaders = [s for s, c in counts.items() if c == max_count]
+            dominant = leaders[0] if len(leaders) == 1 else 'MIXED'
+        result.append((start, end, dominant))
+    return result
+
+
+def _filter_short_isolated_segments(tagged_segments, short_sec=5.0):
+    """
+    Evaluate each short merged segment against its neighbors' dominant sides.
+
+    Rules (applied in order):
+      1. Both neighbors are the same non-MIXED side A and this segment is a
+         different non-MIXED side B → discard (sandwiched false positive).
+      2. This segment matches either neighbor's side → keep (ace / real short point).
+      3. Neighbors are different sides → keep (ambiguous context, err on caution).
+      4. Segment is long, has no neighbors, or a neighbor is MIXED → keep.
+
+    Returns plain (start, end) list with side tags stripped.
+    """
+    n = len(tagged_segments)
+    result = []
+    for i, (start, end, side) in enumerate(tagged_segments):
+        if end - start >= short_sec:
+            result.append((start, end))
+            continue
+
+        prev_side = tagged_segments[i - 1][2] if i > 0     else None
+        next_side = tagged_segments[i + 1][2] if i < n - 1 else None
+
+        # Rule 1: sandwiched between two identical opposing sides → discard
+        if (prev_side and next_side
+                and prev_side == next_side
+                and prev_side != 'MIXED'
+                and side not in (prev_side, 'MIXED')):
+            print(f"[FILTER] Dropping short segment {start:.2f}s–{end:.2f}s "
+                  f"({end - start:.1f}s, {side}): neighbors both {prev_side}")
+            continue
+
+        result.append((start, end))
+
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
