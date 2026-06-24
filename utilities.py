@@ -665,6 +665,7 @@ def create_highlights_ffmpeg(
     segments: List[Tuple[float, float]],
     output_path: str,
     pre_roll: float = 0.0,
+    merge_gap_sec: float = 3.0,
 ) -> None:
     """
     Cut active segments from video_path using FFMPEG (preserves audio) and
@@ -672,21 +673,35 @@ def create_highlights_ffmpeg(
 
     Parameters
     ----------
-    video_path  : path to the original source video
-    segments    : list of (start_sec, end_sec) in source video time
-    output_path : destination path for the highlight reel
-    pre_roll    : seconds to extend each segment's start backward (clamped to 0)
+    video_path    : path to the original source video
+    segments      : list of (start_sec, end_sec) in source video time
+    output_path   : destination path for the highlight reel
+    pre_roll      : seconds to extend each segment's start backward (clamped to 0)
+    merge_gap_sec : merge consecutive segments whose gap is <= this value (default 3.0s)
     """
     if not segments:
         print("[HIGHLIGHT] No active segments to export.")
         return
 
-    valid = [(max(0.0, s - pre_roll), e) for s, e in segments if e > s]
-    if not valid:
+    # Apply pre_roll first, then merge — so extended starts can close gaps too.
+    extended = [(max(0.0, s - pre_roll), e) for s, e in segments if e > s]
+    if not extended:
         print("[HIGHLIGHT] All segments are zero-length — nothing to export.")
         return
 
-    print(f"\n[HIGHLIGHT] Creating highlight reel: {len(valid)} segment(s) → {output_path}")
+    # Merge segments whose gap is within merge_gap_sec.
+    extended.sort()
+    valid = [extended[0]]
+    for start, end in extended[1:]:
+        if start - valid[-1][1] <= merge_gap_sec:
+            valid[-1] = (valid[-1][0], max(valid[-1][1], end))
+        else:
+            valid.append((start, end))
+
+    n_raw = len(extended)
+    n_merged = len(valid)
+    merged_note = f" ({n_raw - n_merged} merged)" if n_merged < n_raw else ""
+    print(f"\n[HIGHLIGHT] Creating highlight reel: {n_merged} segment(s){merged_note} → {output_path}")
 
     tmpdir = tempfile.mkdtemp(prefix="anya_highlights_")
     try:
