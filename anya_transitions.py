@@ -86,6 +86,15 @@ class SignalPriorityConfig:
     trace_dead_timeout_s: float = 3.5   # trace-dark grace before ending      (was 3.0)
     move_velocity_floor_px_s: float = 20.0  # perspective-scaled; below = not live motion
 
+    # ---- Serve-trace directional confirmation ----
+    # An ACTIVE window is only committed as a real segment when the ball trace
+    # shows both a downward component (gravity after serve contact) and a
+    # horizontal component (ball traveling toward/away from the net).
+    # Windows where no such trace is seen (e.g. pre-serve ground bouncing) are
+    # silently discarded — ST-GCN detection alone is not sufficient.
+    trace_downward_px_s:   float = 40.0  # min net dy/dt required (px/s, positive = down)
+    trace_horizontal_px_s: float = 30.0  # min |dx/dt| required (px/s)
+
     # ---- Tier 2: near-player velocity modulation of the dead-timeout ----
     use_player_velocity:     bool  = True
     player_velocity_window_s: float = 0.5   # robust to the ACTIVE player-detect stride
@@ -178,6 +187,7 @@ class TransitionEngine:
         self.active_start_time: float = 0.0
         self._trace_ball_history: deque = deque()      # (t, px, py) for the overlay
         self.last_active_trace_time: float = 0.0       # last frame with GENUINE motion
+        self._trace_confirmed: bool = False             # True once a downward+horiz trace seen
 
         # Tier-2: near-player velocity (windowed, robust to player-detect stride)
         self._player_world_history: deque = deque()    # (t, world_y_ft)
@@ -186,6 +196,9 @@ class TransitionEngine:
 
         # Signal to the main loop: timestamp to truncate output on transition.
         self.last_transition_time: Optional[float] = None
+        # Whether the last ACTIVE window should be committed as a segment.
+        # False when the window is discarded (no confirmed serve trace).
+        self.last_active_committed: bool = True
 
         # Debug snapshot for HUD / CSV (keys consumed by run_anya are preserved;
         # the three trailing keys are new and harmless to existing consumers).
@@ -441,6 +454,10 @@ class TransitionEngine:
         # ball lets the timeout run instead of holding the point open forever.
         if genuinely_moving:
             self.last_active_trace_time = now
+            # First time we see genuine motion: check if the direction is serve-like
+            # (downward + horizontal). Only needs to be confirmed once per window.
+            if not self._trace_confirmed:
+                self._try_confirm_trace()
 
         # ---- 4. Tier-2: update windowed near-player velocity ----
         self._update_player_velocity(frame, now)
@@ -476,20 +493,35 @@ class TransitionEngine:
         if trace_dead_for < effective_timeout:
             return "ACTIVE"
 
-        # ---- 7. Point over — rewind to the last real ball detection ----
+        # ---- 7. Point over ----
+        next_world = getattr(frame, self._player_world_attr, None)
+
+        if not self._trace_confirmed:
+            # No confirmed serve trace observed — this ACTIVE window was a false start
+            # (e.g. pre-serve ground bouncing). Discard it without emitting a segment.
+            print(f"\n[DISCARD] ACTIVE window at {self.active_start_time:.2f}s discarded "
+                  f"(no confirmed serve trace after {elapsed:.1f}s{self._log_suffix})")
+            self.last_active_committed = False
+            self.last_transition_time  = None
+            self._reset_active_state()
+            if self.cfg.fast_rearm:
+                return self._post_active_next_state(next_world, "WAITING")
+            return "WAITING"
+
+        # Trace was confirmed — commit the segment, rewind to last real detection.
         death_t = self.ball_tracker.last_detection_time
         if death_t is None:
             death_t = self.last_active_trace_time
         death_t = max(self.active_start_time, death_t)
 
-        self.last_transition_time = death_t
+        self.last_active_committed = True
+        self.last_transition_time  = death_t
         vel_note = (f"player {self.player_velocity_ft_s:.1f} ft/s, "
                     f"timeout {effective_timeout:.1f}s"
                     if self.player_velocity_valid else f"timeout {effective_timeout:.1f}s")
         print(f"\n[TRANSITION] ACTIVE -> WAITING (trace {status.state}; {vel_note}). "
               f"Lasted {elapsed:.1f}s. Rewind to t={death_t:.2f}s.")
 
-        next_world = getattr(frame, self._player_world_attr, None)
         self._reset_active_state()
 
         if self.cfg.fast_rearm:
@@ -578,10 +610,45 @@ class TransitionEngine:
         self._trace_ball_history.clear()
         self.active_start_time      = 0.0
         self.last_active_trace_time = 0.0
+        self._trace_confirmed       = False
         self._player_world_history.clear()
         self.player_velocity_ft_s   = 0.0
         self.player_velocity_valid  = False
         self.ball_tracker.reset()
+
+    def _try_confirm_trace(self) -> None:
+        """
+        Check whether the current trace shows a serve-like trajectory:
+        net downward (gravity after contact) and net horizontal (ball traveling
+        toward/away from the net). Uses the most recent 0.3 s of trace_points().
+        Sets self._trace_confirmed = True on first qualifying observation.
+        """
+        pts = list(self._trace_ball_history)  # (t, x, y)
+        if len(pts) < 2:
+            return
+
+        # Use the last 0.3 s; fall back to all available points if fewer.
+        t_cutoff = pts[-1][0] - 0.3
+        recent = [(t, x, y) for t, x, y in pts if t >= t_cutoff]
+        if len(recent) < 2:
+            recent = pts[-min(5, len(pts)):]
+        if len(recent) < 2:
+            return
+
+        t0, x0, y0 = recent[0]
+        t1, x1, y1 = recent[-1]
+        dt = t1 - t0
+        if dt <= 0:
+            return
+
+        dy_per_s = (y1 - y0) / dt   # positive = ball moving downward (pixel Y increases)
+        dx_per_s = abs(x1 - x0) / dt
+
+        if (dy_per_s >= self.cfg.trace_downward_px_s and
+                dx_per_s >= self.cfg.trace_horizontal_px_s):
+            self._trace_confirmed = True
+            print(f"[TRACE-CONFIRM{self._log_suffix}] Serve trace confirmed: "
+                  f"dy/dt={dy_per_s:.0f} px/s ↓, dx/dt={dx_per_s:.0f} px/s ↔")
 
     def _init_active(self, now: float) -> None:
         self._reset_active_state()

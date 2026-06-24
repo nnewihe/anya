@@ -24,21 +24,26 @@ GAP_THRESHOLD_SEC   = 240.0   # 4 minutes — spans short changeovers within a r
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
-                       provider_factory=None, engine_factory=None, pass_label="NEAR"):
+                       provider_factory=None, engine_factory=None, pass_label="NEAR",
+                       telemetry_provider=None):
     """
     Run the Anya pipeline on a single video and return the detected active segments.
 
     Parameters
     ----------
-    video_path       : source video file
-    headless         : suppress all OpenCV windows
-    start_frame      : seek to this frame before starting (default 0)
-    csv_path         : explicit CSV output path; defaults to <video_dir>/<stem>_telemetry.csv
-    provider_factory : callable(video_path) -> telemetry provider; defaults to the
-                       near-side AnyaTelemetryProvider
-    engine_factory   : callable(telemetry_provider) -> transition engine; defaults
-                       to the near-side TransitionEngine
-    pass_label       : human-readable tag for log output (e.g. "NEAR", "FAR")
+    video_path          : source video file
+    headless            : suppress all OpenCV windows
+    start_frame         : seek to this frame before starting (default 0)
+    csv_path            : explicit CSV output path; defaults to <video_dir>/<stem>_telemetry.csv
+    provider_factory    : callable(video_path) -> telemetry provider; defaults to the
+                          near-side AnyaTelemetryProvider.  Ignored if telemetry_provider
+                          is supplied directly.
+    engine_factory      : callable(telemetry_provider) -> transition engine; defaults
+                          to the near-side TransitionEngine
+    pass_label          : human-readable tag for log output (e.g. "NEAR", "FAR")
+    telemetry_provider  : pre-built provider instance.  When supplied, provider_factory
+                          is not called.  Pass a pre-built provider to avoid triggering
+                          OpenCV GUI calls (namedWindow etc.) from a background thread.
 
     Returns
     -------
@@ -63,8 +68,9 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
         orig_fps = 30.0
 
     # ── Initialize pipeline components ───────────────────────────────────
-    telemetry_provider = provider_factory(video_path)
-    engine             = engine_factory(telemetry_provider)
+    if telemetry_provider is None:
+        telemetry_provider = provider_factory(video_path)
+    engine = engine_factory(telemetry_provider)
 
     # ── CSV telemetry writer ──────────────────────────────────────────────
     _CSV_COLS = [
@@ -153,12 +159,15 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
                     frame_in_point  = 0
                     current_segment_start = video_time_offset + telemetry.timestamp
                 elif old_state == "ACTIVE":
-                    end_t = (engine.last_transition_time
-                             if engine.last_transition_time is not None
-                             else telemetry.timestamp)
-                    padded_end = min(video_time_offset + end_t + HIGHLIGHT_END_PAD_SEC,
-                                     video_duration_sec)
-                    active_segments.append((current_segment_start, padded_end))
+                    if engine.last_active_committed:
+                        end_t = (engine.last_transition_time
+                                 if engine.last_transition_time is not None
+                                 else telemetry.timestamp)
+                        padded_end = min(video_time_offset + end_t + HIGHLIGHT_END_PAD_SEC,
+                                         video_duration_sec)
+                        active_segments.append((current_segment_start, padded_end))
+                    else:
+                        point_number -= 1  # not a real point
                 telemetry_provider.update_state(new_state)
 
             current_state = telemetry_provider.current_state
@@ -183,9 +192,10 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
 
     finally:
         if telemetry_provider.current_state == "ACTIVE":
-            padded_end = min(video_time_offset + last_telemetry_ts + HIGHLIGHT_END_PAD_SEC,
-                             video_duration_sec)
-            active_segments.append((current_segment_start, padded_end))
+            if engine.last_active_committed or engine._trace_confirmed:
+                padded_end = min(video_time_offset + last_telemetry_ts + HIGHLIGHT_END_PAD_SEC,
+                                 video_duration_sec)
+                active_segments.append((current_segment_start, padded_end))
 
         cap.release()
         csv_file.close()
@@ -228,18 +238,29 @@ def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=
     near_csv = f"{csv_base}_near.csv"
     far_csv  = f"{csv_base}_far.csv"
 
+    # Initialize providers on the main thread so that any OpenCV GUI calls
+    # (namedWindow, imshow) happen here rather than inside a background thread —
+    # macOS OpenCV requires all window operations to run on the main thread.
+    # Both providers cache their setup to disk, so the thread-spawned processing
+    # loops never need to open a window.
+    print("\n[INIT] Initializing near-side provider …")
+    _near_provider = AnyaTelemetryProvider(video_path)
+    print("[INIT] Initializing far-side provider …")
+    _far_provider  = FarSideTelemetryProvider(video_path)
+
     def _run_near_pass():
         print("\n[PASS] Near-side serve detection …")
         return _collect_segments(video_path, headless, start_frame,
-                                  csv_path=near_csv, pass_label="NEAR")
+                                  csv_path=near_csv, pass_label="NEAR",
+                                  telemetry_provider=_near_provider)
 
     def _run_far_pass():
         print("\n[PASS] Far-side serve detection …")
         return _collect_segments(
             video_path, headless, start_frame, csv_path=far_csv,
-            provider_factory=FarSideTelemetryProvider,
             engine_factory=lambda p: FarSideTransitionEngine(fps=p.fps),
             pass_label="FAR",
+            telemetry_provider=_far_provider,
         )
 
     if headless:
