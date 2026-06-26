@@ -1,0 +1,10 @@
+# Minimal requirements to run rally_detector + the GUI app
+# (torch / torch_geometric / mediapipe are no longer needed here)
+
+opencv-python>=4.8
+numpy>=1.24
+ultralytics>=8.0
+filterpy>=1.4
+scikit-learn>=1.3
+PyQt6>=6.5
+pyinstaller>=6.0   # only needed to build the distributable app

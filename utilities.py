@@ -17,6 +17,7 @@ import subprocess
 import argparse
 import tempfile
 import shutil
+from pathlib import Path
 
 
     
@@ -43,7 +44,7 @@ class Config:
     NEAR_PLAYER_X_PAD_FT = 3.0   # homography-tolerance padding beyond near-baseline width
     DEFAULT_BALL_CLASS_INDEX = 0
     DEFAULT_PLAYER_CLASS_INDEX = 0
-    DEFAULT_NEAR_TROPHY_MODEL_PATH  = "/Users/tennis/Documents/Code/Laptop/weights/trophy_pose_cls2/weights/best.pt"
+    DEFAULT_NEAR_TROPHY_MODEL_PATH  = str(Path(__file__).parent / "models" / "trophy_best.pt")
     DEFAULT_NEAR_TROPHY_CLASS_INDEX = 1
     DEFAULT_TROPHY_PAD              = 0.30
     TELEMETRY_BUFFER_SECONDS = 5.0

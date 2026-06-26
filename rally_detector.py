@@ -172,7 +172,7 @@ def _apply_preroll(segments, pre_roll_sec=RALLY_PRE_ROLL_SEC):
             for start, end, origin in segments]
 
 
-def collect_rally_segments(video_path, headless=False, start_frame=0):
+def collect_rally_segments(video_path, headless=False, start_frame=0, progress_cb=None):
     """
     Run the trace-driven rally detector and return its segments.
 
@@ -180,6 +180,8 @@ def collect_rally_segments(video_path, headless=False, start_frame=0):
     origin ∈ {"near", "far"} is the serve side classified by the nearest player
     box at the moment the segment opened.  Performs no video writing — the caller
     (detect_rallies or the combined orchestrator) decides what to do with them.
+
+    progress_cb: optional callable(current_frame, total_frames) called every 30 frames.
     """
     # ── Probe video ───────────────────────────────────────────────────────
     _probe = cv2.VideoCapture(video_path)
@@ -218,6 +220,7 @@ def collect_rally_segments(video_path, headless=False, start_frame=0):
     seg_origin: str   = "near"
     last_ts:    float = 0.0
     interrupted = False
+    frame_num   = start_frame
 
     try:
         while cap.isOpened():
@@ -225,9 +228,13 @@ def collect_rally_segments(video_path, headless=False, start_frame=0):
             if not success:
                 break
 
+            frame_num += 1
             frame    = cv2.resize(orig_frame, (960, 540), interpolation=cv2.INTER_LINEAR)
             telemetry = telemetry_provider.process_frame(frame)
             last_ts   = telemetry.timestamp
+
+            if progress_cb is not None and frame_num % 30 == 0:
+                progress_cb(frame_num - start_frame, total_frames - start_frame)
 
             near_box = telemetry.near_player_box
             far_box  = telemetry.far_player_box
@@ -315,13 +322,13 @@ def collect_rally_segments(video_path, headless=False, start_frame=0):
     return final
 
 
-def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
+def detect_rallies(video_path, output_path=None, headless=False, start_frame=0, progress_cb=None):
     if output_path is None:
         video_dir  = os.path.dirname(os.path.abspath(video_path))
         video_stem = os.path.splitext(os.path.basename(video_path))[0]
         output_path = os.path.join(video_dir, f"{video_stem}_rallies.mp4")
 
-    final = collect_rally_segments(video_path, headless, start_frame)
+    final = collect_rally_segments(video_path, headless, start_frame, progress_cb)
 
     # Standalone rally detector keeps every segment regardless of serve origin.
     create_highlights_ffmpeg(video_path, [(s, e) for s, e, _ in final], output_path)

@@ -13,6 +13,7 @@ import json
 import os
 import random
 import math
+from pathlib import Path
 
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Any
@@ -22,7 +23,8 @@ from utilities import (Config, _is_in_exclusion_zone, init_court,
                                get_exclusion_zones_from_frames, Point3D, Box,
                                load_cached_exclusion_zones, save_cached_exclusion_zones)
 from collections import deque
-from serve_stgcn import ServeSTGCNDetector
+
+_MODELS_DIR = Path(__file__).parent / "models"
 
 @dataclass
 class TelemetryFrame:
@@ -49,9 +51,9 @@ class AnyaTelemetryProvider:
         self._init_video_props()
 
         # Models
-        self.player_model = YOLO("yolo26n.pt")
-        self.ball_model   = YOLO("/Users/tennis/Documents/Code/Laptop/weights/ball/weights/best.pt")
-        self.trophy_model = YOLO(Config.DEFAULT_NEAR_TROPHY_MODEL_PATH)
+        self.player_model   = YOLO(str(_MODELS_DIR / "yolo26n.pt"))
+        self.ball_model     = YOLO(str(_MODELS_DIR / "ball_best.pt"))
+        self._trophy_model: Optional[Any] = None   # lazy-loaded on first ARMED entry
 
         # Define the cache path — alongside the input video, not the CWD.
         video_dir = os.path.dirname(os.path.abspath(self.video_path))
@@ -134,6 +136,12 @@ class AnyaTelemetryProvider:
         )
         """
     
+
+    @property
+    def trophy_model(self):
+        if self._trophy_model is None:
+            self._trophy_model = YOLO(Config.DEFAULT_NEAR_TROPHY_MODEL_PATH)
+        return self._trophy_model
 
     def _get_or_define_active_zone(self) -> np.ndarray:
         """Loads cached polygon or triggers interactive UI to define 8 points."""
@@ -568,11 +576,12 @@ class FarSideTelemetryProvider:
     """
 
     def __init__(self, video_path: str):
+        from serve_stgcn import ServeSTGCNDetector  # lazy — only needed for far-side pass
         self.video_path = video_path
         self._init_video_props()
 
-        self.player_model = YOLO("yolo26n.pt")
-        self.ball_model   = YOLO("/Users/tennis/Documents/Code/Laptop/weights/ball/weights/best.pt")
+        self.player_model = YOLO(str(_MODELS_DIR / "yolo26n.pt"))
+        self.ball_model   = YOLO(str(_MODELS_DIR / "ball_best.pt"))
         self.far_serve_detector = ServeSTGCNDetector()
 
         video_dir = os.path.dirname(os.path.abspath(video_path))
