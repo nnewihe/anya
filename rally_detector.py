@@ -27,12 +27,25 @@ import numpy as np
 
 from anya_base import AnyaTelemetryProvider
 from ball_tracker import BallTrackManager, make_image_row_perspective
-from utilities import create_highlights_ffmpeg
+from utilities import Config, create_highlights_ffmpeg
 
 
 RALLY_GAP_THRESHOLD_SEC = 4.0
 RALLY_PRE_ROLL_SEC      = 1.5
 RALLY_END_PAD_SEC       = 1.0
+
+# ── Ready-position gate ───────────────────────────────────────────────────────
+# A genuinely NEW point only opens when the originating player is in the serve
+# ready position — i.e. close to their own baseline.  This rejects spurious traces
+# that begin mid-court (a ball rolling away, between-point knock-ups, a stray
+# bounce) which are not the start of a real point.  The far tolerance is looser
+# because the homography amplifies a few pixels of far-player foot jitter into
+# several feet of world-coordinate noise.
+#
+# Distance is |world_y - baseline|, where the near baseline is world_y = 0 and the
+# far baseline is world_y = Config.COURT_LENGTH_FT (78 ft).
+NEAR_READY_MAX_FT = 4.0   # near player must be within 4 ft of the near baseline
+FAR_READY_MAX_FT  = 8.0   # far  player must be within 8 ft of the far baseline
 
 # ── Player-carry (velocity-coupling) suppression ──────────────────────────────
 # When the near player walks while holding the ball, the ball's pixel velocity is
@@ -149,6 +162,29 @@ def _origin_side(ball_xy, near_box, far_box) -> str:
     return "far" if d_far < d_near else "near"
 
 
+def _player_ready(origin, near_world, far_world) -> bool:
+    """
+    Decide whether the originating player is in the serve ready position.
+
+    `near_world` / `far_world` are (world_x, world_y) in feet, where world_y is the
+    distance up-court from the near baseline (0 ft) toward the far baseline (78 ft).
+    A near serve requires the near player within NEAR_READY_MAX_FT of y=0; a far
+    serve requires the far player within FAR_READY_MAX_FT of y=COURT_LENGTH_FT.
+
+    Fail-closed: if the originating player's world position is unavailable, the
+    player cannot be confirmed in the ready position, so the gate fails.  At a real
+    serve the originating player is clearly detected at their baseline, so this only
+    rejects opens where we genuinely cannot establish a ready server.
+    """
+    if origin == "near":
+        if near_world is None:
+            return False
+        return abs(near_world[1]) <= NEAR_READY_MAX_FT
+    if far_world is None:
+        return False
+    return abs(far_world[1] - Config.COURT_LENGTH_FT) <= FAR_READY_MAX_FT
+
+
 def _merge_segments(segments, gap_threshold_sec=RALLY_GAP_THRESHOLD_SEC):
     """
     Merge adjacent segments whose gap < gap_threshold_sec.
@@ -236,8 +272,16 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
             if progress_cb is not None and frame_num % 30 == 0:
                 progress_cb(frame_num - start_frame, total_frames - start_frame)
 
-            near_box = telemetry.near_player_box
-            far_box  = telemetry.far_player_box
+            near_box   = telemetry.near_player_box
+            far_box    = telemetry.far_player_box
+            near_world = telemetry.near_player_world
+            # The base provider does not populate far_player_world; derive it from
+            # the far box feet (bottom-centre) through the same homography.
+            far_world = None
+            if far_box is not None:
+                fcx = (far_box[0] + far_box[2]) / 2.0
+                fcy = far_box[3]
+                far_world = telemetry_provider.get_world_pos(fcx, fcy)
             dets = [
                 (c["pixel_center"][0], c["pixel_center"][1], c["conf"])
                 for c in (telemetry.active_ball_candidates or [])
@@ -268,10 +312,24 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
 
             if trace_active:
                 if seg_start is None:
-                    seg_start = video_time_offset + telemetry.timestamp
+                    candidate_start = video_time_offset + telemetry.timestamp
                     # Classify serve origin by the nearest player box at the
                     # moment the segment opens (the serve contact / toss).
-                    seg_origin = _origin_side(status.position, near_box, far_box)
+                    candidate_origin = _origin_side(status.position, near_box, far_box)
+
+                    # Continuation vs. new point: if this open falls within the
+                    # merge gap of the previous raw segment it would be fused into
+                    # the same point anyway (a mid-rally trace re-acquisition with
+                    # the players mid-court), so the ready gate is skipped.  Only a
+                    # genuinely NEW point must show its server at the baseline.
+                    is_continuation = bool(raw_segments) and (
+                        candidate_start - raw_segments[-1][1] < RALLY_GAP_THRESHOLD_SEC
+                    )
+                    if is_continuation or _player_ready(
+                        candidate_origin, near_world, far_world
+                    ):
+                        seg_start  = candidate_start
+                        seg_origin = candidate_origin
             else:
                 if seg_start is not None:
                     raw_end = video_time_offset + (

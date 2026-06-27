@@ -35,7 +35,7 @@ class Config:
                                      # for far-player feet (mirrors NEAR_PLAYER_X_PAD_FT)
     FAR_SERVE_LSTM_PAD   = 0.30     # padding fraction (of box w/h) around the far player's box
                                      # before cropping for the serve_lstm.pt classifier
-    ACTIVE_BALL_CONF = 0.15   # confidence threshold for whole-court ball detection (ACTIVE)
+    ACTIVE_BALL_CONF = 0.10   # confidence threshold for whole-court ball detection (ACTIVE)
     TOSS_BALL_CONF   = 0.10   # confidence threshold for toss ROI ball detection (ARMED)
     TROPHY_IMGSZ = 320
     COURT_WIDTH_FT = 27.0
