@@ -14,13 +14,25 @@ Segment rules
     The gap is measured on the raw (unpadded) segment boundaries — the
     pre-roll added later does NOT count toward the gap.
   • A 1.5 s pre-roll is prepended to each final (post-merge) segment start.
+
+Post-processing filters (applied to merged segments)
+------------------------------------------------------
+  1. Ready-position gate — a NEW segment only opens when the originating
+     player is within 4 ft (near) / 8 ft (far) of their baseline.
+  2. Serving-pattern HMM — tennis serve sides are sticky (same server for
+     an entire game, ~15 points on average).  A Viterbi-decoded HMM over the
+     full segment sequence identifies segments whose observed origin disagrees
+     with the globally inferred serving side.  Disagreeing segments that are
+     also "weak" (no detectable racket contact, short duration) are dropped as
+     spurious false positives.  Disagreeing but "strong" segments are kept and
+     their origin is relabeled to the inferred side.
 """
 
 import argparse
 import math
 import os
 from collections import deque
-from typing import Deque, Optional, Tuple
+from typing import Deque, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -61,6 +73,29 @@ FAR_READY_MAX_FT  = 8.0   # far  player must be within 8 ft of the far baseline
 COUPLING_WINDOW_SEC       = 0.40   # smoothing window for both velocity estimates
 COUPLING_MIN_PLAYER_SPEED = 25.0   # px/s; the player must actually be walking
 COUPLING_RATIO_MAX        = 0.50   # carried if ratio below this (and player moving)
+
+# ── Serving-pattern HMM ───────────────────────────────────────────────────────
+# HMM transition / emission probabilities fitted from 15 labeled matches in
+# /Volumes/Anya/Data (203 stay-transitions, 14 switch-transitions across all GT).
+#
+# P(stay)   = 0.9355  →  average game ~15.5 points (includes deuce games).
+# P(correct)= 0.85    →  probability the per-segment origin label is correct;
+#                         estimated from diagnostic recall (9/9 on folder 63);
+#                         conservative to avoid over-confident relabelling.
+HMM_P_STAY    = 0.9355
+HMM_P_CORRECT = 0.85
+
+# Strength gate thresholds — distinguish a real (strong) point from a spurious
+# (weak) ball-return or stray trace.  A real point always has at least one hard
+# racket strike (the serve), which spikes the IMM's racket_prob (μ₁) for several
+# consecutive frames; a ball-return is gentle and short.
+#
+# A segment is strong if it satisfies EITHER condition (OR gate):
+#   • ≥ MIN_RACKET_FRAMES consecutive-ish frames with μ₁ > RACKET_SPIKE_THRESH
+#   • Raw trace duration ≥ MIN_SEGMENT_SEC
+RACKET_SPIKE_THRESH = 0.25   # μ₁ threshold for a hard racket contact
+MIN_RACKET_FRAMES   = 5      # ~1 contact event at 60fps (noise-robust)
+MIN_SEGMENT_SEC     = 2.5    # minimum raw trace duration for a "strong" segment
 
 
 class _SmoothedVelocity:
@@ -185,27 +220,152 @@ def _player_ready(origin, near_world, far_world) -> bool:
     return abs(far_world[1] - Config.COURT_LENGTH_FT) <= FAR_READY_MAX_FT
 
 
+def _segment_is_strong(strength: dict) -> bool:
+    """
+    A segment is "strong" (likely a real point) if it has detectable racket contact
+    OR sufficient raw trace duration.  Ball-returns are short and gentle (no strike).
+    """
+    return (strength["racket_frames"] >= MIN_RACKET_FRAMES
+            or strength["duration"] >= MIN_SEGMENT_SEC)
+
+
+def _viterbi(obs_sides: List[str],
+             p_stay: float = HMM_P_STAY,
+             p_correct: float = HMM_P_CORRECT) -> List[str]:
+    """
+    Viterbi decoding of the most likely serving-side state sequence.
+
+    States / observations: "near"=0, "far"=1.
+    Transition: symmetric sticky matrix — P(same→same) = p_stay.
+    Emission:   P(obs=state) = p_correct  (label is usually right).
+    Initial:    uniform (equal prior for who serves first).
+
+    Returns the decoded state sequence — same length as obs_sides.
+    """
+    n = len(obs_sides)
+    if n == 0:
+        return []
+    if n == 1:
+        return list(obs_sides)          # single segment: no context, trust as-is
+
+    sides = ["near", "far"]
+    S = 2   # number of states
+
+    def _idx(s): return 0 if s == "near" else 1
+
+    # Log probabilities (avoid underflow)
+    log_trans = np.log(np.array([
+        [p_stay,        1.0 - p_stay],
+        [1.0 - p_stay,  p_stay      ],
+    ]))
+    log_emit = np.log(np.array([
+        [p_correct,        1.0 - p_correct],   # state=near: P(obs=near), P(obs=far)
+        [1.0 - p_correct,  p_correct       ],   # state=far:  P(obs=near), P(obs=far)
+    ]))
+    log_init = np.log(np.array([0.5, 0.5]))
+
+    obs = [_idx(o) for o in obs_sides]
+
+    # Forward pass — delta[s] = log prob of best path ending in state s
+    delta = log_init + log_emit[:, obs[0]]
+    psi   = np.zeros((n, S), dtype=int)
+
+    for t in range(1, n):
+        for s in range(S):
+            scores = delta + log_trans[:, s]
+            best   = int(np.argmax(scores))
+            delta[s]    = scores[best] + log_emit[s, obs[t]]
+            psi[t, s]   = best
+
+    # Backtrack
+    path    = [0] * n
+    path[n-1] = int(np.argmax(delta))
+    for t in range(n - 2, -1, -1):
+        path[t] = psi[t + 1, path[t + 1]]
+
+    return [sides[s] for s in path]
+
+
+def _hmm_filter(segments: list) -> list:
+    """
+    Apply the serving-pattern HMM filter to a list of merged segments.
+
+    Input:  list of (start, end, origin, strength)
+    Output: list of (start, end, origin)  — public format, strength stripped.
+
+    For each segment where the observed origin disagrees with the Viterbi-decoded
+    serving side (a structural anomaly):
+      • Weak segment  → DROP  (spurious false positive: ball-return, stray trace).
+      • Strong segment → KEEP, but relabel origin to the decoded side (misclassified
+                         real point, e.g. a far point whose ball happened to start
+                         near the net and was assigned "near" at open time).
+
+    All agreeing segments are kept unchanged.  This means the filter only touches
+    anomalies — it cannot remove a real game-run even if its run-length is short.
+    """
+    if not segments:
+        return []
+
+    obs_sides = [s[2] for s in segments]
+    decoded   = _viterbi(obs_sides)
+
+    kept = []
+    n_dropped = 0
+    n_relabeled = 0
+
+    for (start, end, origin, strength), decoded_side in zip(segments, decoded):
+        if origin == decoded_side:
+            kept.append((start, end, origin))
+        else:
+            if _segment_is_strong(strength):
+                kept.append((start, end, decoded_side))
+                n_relabeled += 1
+                print(f"[HMM] Relabelled  {start:.2f}s–{end:.2f}s "
+                      f"{origin}→{decoded_side}  "
+                      f"(racket_frames={strength['racket_frames']}, "
+                      f"dur={strength['duration']:.1f}s)")
+            else:
+                n_dropped += 1
+                print(f"[HMM] Dropped     {start:.2f}s–{end:.2f}s "
+                      f"origin={origin} (decoded={decoded_side})  "
+                      f"(racket_frames={strength['racket_frames']}, "
+                      f"dur={strength['duration']:.1f}s) — weak/spurious")
+
+    print(f"[HMM] Filter result: kept {len(kept)}, "
+          f"dropped {n_dropped}, relabelled {n_relabeled}")
+    return kept
+
+
 def _merge_segments(segments, gap_threshold_sec=RALLY_GAP_THRESHOLD_SEC):
     """
     Merge adjacent segments whose gap < gap_threshold_sec.
 
-    Each segment is (start, end, origin); the merged segment keeps the origin of
-    its FIRST sub-segment (the serve that opened the run).
+    Each segment is (start, end, origin, strength).  The merged segment keeps
+    the origin of its FIRST sub-segment (the serve that opened the run) and
+    accumulates strength (summed racket_frames, summed duration).
     """
     if not segments:
         return []
     merged = [list(segments[0])]
-    for start, end, origin in segments[1:]:
+    for start, end, origin, strength in segments[1:]:
         if start - merged[-1][1] < gap_threshold_sec:
             merged[-1][1] = end
+            # Accumulate strength across sub-segments
+            merged[-1][3]["racket_frames"] += strength["racket_frames"]
+            merged[-1][3]["duration"]      += strength["duration"]
         else:
-            merged.append([start, end, origin])
-    return [tuple(s) for s in merged]
+            merged.append([start, end, origin, strength])
+    # Convert back to tuples with immutable strength dicts
+    return [(s[0], s[1], s[2], dict(s[3])) for s in merged]
 
 
 def _apply_preroll(segments, pre_roll_sec=RALLY_PRE_ROLL_SEC):
-    return [(max(0.0, start - pre_roll_sec), end, origin)
-            for start, end, origin in segments]
+    """Apply pre-roll; segments may be 3-tuples (start, end, origin) or 4-tuples."""
+    out = []
+    for seg in segments:
+        start, end, origin = seg[0], seg[1], seg[2]
+        out.append((max(0.0, start - pre_roll_sec), end, origin))
+    return out
 
 
 def collect_rally_segments(video_path, headless=False, start_frame=0, progress_cb=None):
@@ -245,16 +405,19 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         print(f"[RALLY] Seeking to frame {start_frame}")
 
-    # Smoothed velocity windows for the carry-coupling test (Idea C).  The ball
-    # window is fed the IMM-smoothed ball position; the player window is fed the
-    # near-player-box centroid.
+    # Smoothed velocity windows for the carry-coupling test.  The ball window is
+    # fed the IMM-smoothed ball position; the player window is fed the near-player
+    # box centroid.
     ball_vel   = _SmoothedVelocity(COUPLING_WINDOW_SEC)
     player_vel = _SmoothedVelocity(COUPLING_WINDOW_SEC)
 
-    raw_segments = []
-    seg_start:  float = None
-    seg_origin: str   = "near"
-    last_ts:    float = 0.0
+    # raw_segments items: (start, end, origin, strength)
+    # strength = {"racket_frames": int, "duration": float}
+    raw_segments: list = []
+    seg_start:         float = None
+    seg_origin:        str   = "near"
+    seg_racket_frames: int   = 0      # frames with μ₁ > RACKET_SPIKE_THRESH this seg
+    last_ts:           float = 0.0
     interrupted = False
     frame_num   = start_frame
 
@@ -289,7 +452,7 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
             status = ball_tracker.update(dets, telemetry.timestamp)
 
             # Feed the velocity windows every frame so they stay populated across
-            # the carry → strike transition (Idea C).  Ball: IMM-smoothed position;
+            # the carry → strike transition.  Ball: IMM-smoothed position;
             # player: near-player-box centroid.
             if status.position is not None:
                 ball_vel.add(telemetry.timestamp, status.position[0], status.position[1])
@@ -310,6 +473,11 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
                 )
             trace_active = status.has_moving_trace and not carried
 
+            # Accumulate per-segment strength while a segment is open.
+            if seg_start is not None and trace_active:
+                if status.racket_prob > RACKET_SPIKE_THRESH:
+                    seg_racket_frames += 1
+
             if trace_active:
                 if seg_start is None:
                     candidate_start = video_time_offset + telemetry.timestamp
@@ -328,8 +496,9 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
                     if is_continuation or _player_ready(
                         candidate_origin, near_world, far_world
                     ):
-                        seg_start  = candidate_start
-                        seg_origin = candidate_origin
+                        seg_start         = candidate_start
+                        seg_origin        = candidate_origin
+                        seg_racket_frames = 0
             else:
                 if seg_start is not None:
                     raw_end = video_time_offset + (
@@ -338,7 +507,11 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
                         else telemetry.timestamp
                     )
                     padded_end = min(raw_end + RALLY_END_PAD_SEC, video_duration_sec)
-                    raw_segments.append((seg_start, padded_end, seg_origin))
+                    strength = {
+                        "racket_frames": seg_racket_frames,
+                        "duration":      raw_end - seg_start,
+                    }
+                    raw_segments.append((seg_start, padded_end, seg_origin, strength))
                     seg_start = None
 
             if not headless:
@@ -359,7 +532,11 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
                 else last_ts
             )
             padded_end = min(raw_end + RALLY_END_PAD_SEC, video_duration_sec)
-            raw_segments.append((seg_start, padded_end, seg_origin))
+            strength = {
+                "racket_frames": seg_racket_frames,
+                "duration":      raw_end - seg_start,
+            }
+            raw_segments.append((seg_start, padded_end, seg_origin, strength))
 
         cap.release()
         if not headless:
@@ -369,11 +546,17 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
     if interrupted:
         print("[RALLY] (interrupted — covers completed detections only)")
 
-    # ── Post-process: merge, then add pre-roll ────────────────────────────
+    # ── Post-process ──────────────────────────────────────────────────────
+    # 1. Merge close gaps (mid-rally re-acquisitions → one segment).
     merged = _merge_segments(raw_segments, RALLY_GAP_THRESHOLD_SEC)
     print(f"[RALLY] After merging (gap < {RALLY_GAP_THRESHOLD_SEC:.0f}s): {len(merged)} segment(s)")
 
-    final = _apply_preroll(merged, RALLY_PRE_ROLL_SEC)
+    # 2. HMM serving-pattern filter: drop weak anomalies, relabel strong ones.
+    filtered = _hmm_filter(merged)
+    print(f"[RALLY] After HMM filter: {len(filtered)} segment(s)")
+
+    # 3. Prepend pre-roll to each final segment.
+    final = _apply_preroll(filtered, RALLY_PRE_ROLL_SEC)
     n_far  = sum(1 for *_, o in final if o == "far")
     n_near = len(final) - n_far
     print(f"[RALLY] Segment origins: {n_near} near, {n_far} far")
