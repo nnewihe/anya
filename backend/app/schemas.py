@@ -44,11 +44,26 @@ class CreateJobResponse(BaseModel):
     upload_method: str = "PUT"
 
 
+class AddClipRequest(BaseModel):
+    """Add one clip to a multi-clip job. Returns a presigned URL for that clip."""
+    filename: str
+    content_type: str = "video/mp4"
+    clip_index: int  # ordering index so the worker concatenates in the right order
+
+
+class AddClipResponse(BaseModel):
+    clip_key: str
+    upload_url: str
+    upload_method: str = "PUT"
+
+
 class Job(BaseModel):
     job_id: str
     status: JobStatus
     source: str = "upload"
     filename: Optional[str] = None
+    # Storage keys for individual clips (multi-clip flow); empty = single-file flow.
+    clip_keys: list[str] = []
     progress: float = 0.0          # 0.0 – 1.0
     message: Optional[str] = None
     segments: list[Segment] = []

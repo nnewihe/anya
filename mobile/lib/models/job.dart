@@ -40,6 +40,7 @@ class Job {
   final JobStatus status;
   final String source;
   final String? filename;
+  final List<String> clipKeys;
   final double progress; // 0..1
   final String? message;
   final List<Segment> segments;
@@ -51,6 +52,7 @@ class Job {
     required this.status,
     required this.source,
     required this.filename,
+    required this.clipKeys,
     required this.progress,
     required this.message,
     required this.segments,
@@ -63,6 +65,7 @@ class Job {
         status: _statusFromString(j['status'] as String?),
         source: j['source'] as String? ?? 'upload',
         filename: j['filename'] as String?,
+        clipKeys: ((j['clip_keys'] as List?) ?? []).cast<String>(),
         progress: (j['progress'] as num?)?.toDouble() ?? 0.0,
         message: j['message'] as String?,
         segments: ((j['segments'] as List?) ?? [])

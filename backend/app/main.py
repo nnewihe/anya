@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, Response
 from . import jobs, storage
 from .config import get_settings
 from .live import register_live_routes
-from .schemas import CreateJobRequest, CreateJobResponse, Job, JobStatus
+from .schemas import AddClipRequest, AddClipResponse, CreateJobRequest, CreateJobResponse, Job, JobStatus
 from .tasks import process_rally_job
 
 settings = get_settings()
@@ -60,6 +60,33 @@ def create_job(req: CreateJobRequest) -> CreateJobResponse:
     upload_url = store.presigned_put(key, req.content_type)
 
     return CreateJobResponse(job_id=job_id, upload_url=upload_url)
+
+
+@app.post("/jobs/{job_id}/clips", response_model=AddClipResponse)
+def add_clip(job_id: str, req: AddClipRequest) -> AddClipResponse:
+    """Register one clip for a multi-clip job and return its presigned upload URL.
+
+    Call once per GoPro clip, in any order (clip_index controls concatenation
+    order).  After all clips are uploaded, call POST /jobs/{id}/start.
+    """
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+
+    store = storage.get_storage()
+    clip_key = f"inputs/{job_id}_clip{req.clip_index:03d}.mp4"
+    upload_url = store.presigned_put(clip_key, req.content_type)
+
+    # Record the clip key on the job so the worker knows what to concatenate.
+    existing = list(job.clip_keys)
+    # Insert at the right position so the list stays ordered by clip_index.
+    # We store the key directly; the worker sorts by the embedded index.
+    if clip_key not in existing:
+        existing.append(clip_key)
+        existing.sort()  # lexicographic sort preserves the clip_000/001/... order
+    jobs.update(job_id, clip_keys=existing)
+
+    return AddClipResponse(clip_key=clip_key, upload_url=upload_url)
 
 
 @app.post("/jobs/{job_id}/start", response_model=Job)

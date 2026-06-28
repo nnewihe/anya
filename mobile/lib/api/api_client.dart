@@ -98,6 +98,31 @@ class ApiClient {
   /// Absolute URL for the finished rally reel (for video_player / download).
   String resolveResultUrl(String resultUrl) => _resolve(resultUrl);
 
+  // ── Multi-clip upload ──────────────────────────────────────────────────
+  /// Register one clip, returning its presigned upload URL.
+  Future<Map<String, String>> addClip({
+    required String jobId,
+    required String filename,
+    required int clipIndex,
+    String contentType = 'video/mp4',
+  }) async {
+    final res = await http.post(
+      _u('/jobs/$jobId/clips'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'filename': filename,
+        'content_type': contentType,
+        'clip_index': clipIndex,
+      }),
+    );
+    _ensureOk(res);
+    final j = jsonDecode(res.body) as Map<String, dynamic>;
+    return {
+      'clip_key': j['clip_key'] as String,
+      'upload_url': j['upload_url'] as String,
+    };
+  }
+
   // ── Live streaming ─────────────────────────────────────────────────────
   /// Open the live ingest socket. The caller writes binary video chunks and
   /// sends the text "EOS" (or closes) when the match ends.

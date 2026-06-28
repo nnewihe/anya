@@ -31,6 +31,16 @@ def output_key(job_id: str) -> str:
     return f"outputs/{job_id}_rallies.mp4"
 
 
+# Calibration side-car files stored alongside the input video.
+# The pipeline writes these next to whatever file it processes; we mirror them
+# into storage so subsequent runs (of the same job's video) start warm.
+_CACHE_SUFFIXES = ("_court_cache.json", "_exclusion_cache.json", "_active_zone_config.json")
+
+
+def cache_key(job_id: str, suffix: str) -> str:
+    return f"inputs/{job_id}{suffix}"
+
+
 class Storage(ABC):
     @abstractmethod
     def presigned_put(self, key: str, content_type: str) -> str: ...

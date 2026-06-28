@@ -74,6 +74,7 @@ def update(
     progress: float | None = None,
     message: str | None = None,
     segments: list[Segment] | None = None,
+    clip_keys: list[str] | None = None,
     result_url: str | None = None,
     error: str | None = None,
 ) -> Job | None:
@@ -88,6 +89,8 @@ def update(
         job.message = message
     if segments is not None:
         job.segments = segments
+    if clip_keys is not None:
+        job.clip_keys = clip_keys
     if result_url is not None:
         job.result_url = result_url
     if error is not None:
