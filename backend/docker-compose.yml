@@ -1,0 +1,59 @@
+# Local dev stack: API + Celery worker + Redis, sharing a local-storage volume.
+# Run from the repo root:
+#
+#   docker compose -f backend/docker-compose.yml up --build
+#
+# API is then at http://localhost:8000  (docs at /docs).
+#
+# This uses STORAGE_BACKEND=local so you don't need AWS to try it end to end.
+# For S3, set STORAGE_BACKEND=s3 + S3_BUCKET + AWS creds in the environment.
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: dev
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: /data/rally-media
+      CORS_ORIGINS: "*"
+    volumes:
+      - media:/data/rally-media
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=1
+    environment:
+      ENV: dev
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: /data/rally-media
+    volumes:
+      - media:/data/rally-media
+    depends_on:
+      - redis
+    # For GPU locally (NVIDIA + nvidia-container-toolkit), uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  media:
