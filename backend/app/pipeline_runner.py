@@ -17,11 +17,40 @@ Imports are done lazily inside run_rally_job so that importing this module
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Callable, Optional
 
 from .config import get_settings
+
+# Analysis frame size (must match AnyaTelemetryProvider resize in anya_base.py).
+_W, _H = 960, 540
+
+# Full-frame 8-point polygon used as the default active zone when no cache
+# exists next to the input video.  Covers the entire analysis frame so headless
+# server runs never block on the interactive polygon selector.
+_FULL_FRAME_ZONE = [
+    [0,    0   ],
+    [_W//2, 0  ],
+    [_W,   0   ],
+    [_W,   _H//2],
+    [_W,   _H  ],
+    [_W//2, _H ],
+    [0,    _H  ],
+    [0,    _H//2],
+]
+
+
+def _ensure_active_zone_cache(video_path: Path) -> None:
+    """
+    Write a full-frame active_zone_config.json alongside the video if one does
+    not already exist.  This prevents AnyaTelemetryProvider from falling through
+    to the interactive (click-8-points) polygon selector in headless server runs.
+    """
+    cache = video_path.parent / "active_zone_config.json"
+    if not cache.exists():
+        cache.write_text(json.dumps(_FULL_FRAME_ZONE))
 
 
 def _ensure_pipeline_importable() -> None:
@@ -55,6 +84,9 @@ def run_rally_job(
 
     if progress:
         progress(0.0, "Loading models and probing video…")
+
+    # Ensure the active-zone cache exists so the pipeline runs fully headless.
+    _ensure_active_zone_cache(input_path)
 
     def _cb(current_frame: int, total_frames: int) -> None:
         if progress and total_frames > 0:
