@@ -5,7 +5,7 @@ class AppConfig {
   /// or http://localhost:8000 (iOS simulator).
   static const String apiBaseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:8000',
+    defaultValue: 'http://44.203.32.208:8000',
   );
 
   /// WebSocket base derived from the REST base (http→ws, https→wss).
