@@ -29,9 +29,8 @@ WORKDIR /app
 COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Pipeline source + model weights (only what rally_detector imports).
-COPY rally_detector.py anya_base.py ball_tracker.py utilities.py /app/pipeline/
-COPY models/ /app/pipeline/models/
+# Pipeline source + model weights — the entire pipeline/ folder.
+COPY pipeline/ /app/pipeline/
 
 # Backend application.
 COPY backend/app /app/app

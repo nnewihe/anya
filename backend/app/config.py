@@ -40,12 +40,12 @@ class Settings:
     )
 
     # ── Pipeline ───────────────────────────────────────────────────────────
-    # Where rally_detector.py + helpers + models/ live.  Defaults to the repo
-    # root (two levels up from this file) so local dev works without env vars.
+    # Where rally_detector.py + helpers + models/ live.
+    # Defaults to pipeline/ at the repo root (three levels up from this file).
     PIPELINE_DIR: Path = Path(
         os.environ.get(
             "PIPELINE_DIR",
-            str(Path(__file__).resolve().parents[2]),
+            str(Path(__file__).resolve().parents[2] / "pipeline"),
         )
     )
     # Process every Nth frame.  1 = every frame (most accurate, slowest).

@@ -14,7 +14,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
-sys.path.insert(0, str(Path(__file__).parent))
+# pipeline/ is one level up from desktop/
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
 from rally_detector import collect_rally_segments
 from utilities import create_highlights_ffmpeg

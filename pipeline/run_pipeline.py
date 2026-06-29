@@ -82,9 +82,10 @@ def concatenate(clips: list[str], output: str, dry_run: bool = False) -> None:
 
 
 def run_detector(video_path: str, dry_run: bool = False) -> None:
-    """Run the combined_detector module against the concatenated video."""
+    """Run rally_detector against the concatenated video."""
     cmd = [
-        sys.executable, '-m', 'combined_detector',
+        sys.executable,
+        str(Path(__file__).parent / "rally_detector.py"),
         video_path,
         '--headless',
     ]
@@ -98,7 +99,7 @@ def run_detector(video_path: str, dry_run: bool = False) -> None:
     else:
         result = subprocess.run(cmd, check=False)
         if result.returncode != 0:
-            sys.exit(f"combined_detector exited with code {result.returncode}.")
+            sys.exit(f"rally_detector exited with code {result.returncode}.")
 
 
 def main() -> None:
