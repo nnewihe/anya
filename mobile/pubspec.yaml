@@ -1,0 +1,33 @@
+name: rally_predictor
+description: Cross-platform front end for the rally_detector pipeline.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.19.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # Networking
+  http: ^1.2.0                  # REST JSON
+  dio: ^5.4.0                   # chunked upload with progress
+  web_socket_channel: ^2.4.0   # live job progress + live ingest
+
+  # Media
+  file_picker: ^8.0.0          # pick a video from the device
+  image_picker: ^1.0.7         # record/pick from camera roll
+  video_player: ^2.8.2         # play the resulting rally reel
+  camera: ^0.10.5+9            # live capture
+  path_provider: ^2.1.2
+
+dev_dependencies:
+  flutter_lints: ^3.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

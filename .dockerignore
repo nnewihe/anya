@@ -1,0 +1,13 @@
+# Used by the backend image build (context = repo root, -f backend/Dockerfile).
+# Keep only what rally_detector + the service need; exclude videos and the app.
+archive/
+mobile/
+**/__pycache__/
+*.pyc
+.git/
+.claude/
+*.mp4
+*.mov
+*.MP4
+*.MOV
+data/
