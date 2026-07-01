@@ -1,0 +1,21 @@
+{
+  "clip": "/Users/tennis/Documents/Code/Laptop/src/anya/.claude/worktrees/zealous-lichterman-f21da6/spikes/fixtures/clip/clip30.mp4",
+  "segment_count": 3,
+  "segments": [
+    {
+      "start": 0.19,
+      "end": 4.47,
+      "origin": "near"
+    },
+    {
+      "start": 11.86,
+      "end": 22.15,
+      "origin": "near"
+    },
+    {
+      "start": 26.49,
+      "end": 29.66,
+      "origin": "near"
+    }
+  ]
+}

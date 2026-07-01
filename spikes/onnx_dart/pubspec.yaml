@@ -59,6 +59,8 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/models/yolo26n.onnx
+    - assets/models/ball_best.onnx
     - assets/yolo26n.onnx
     - assets/ball_best.onnx
     - assets/input_960.f32

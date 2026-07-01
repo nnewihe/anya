@@ -1,0 +1,21 @@
+# Build + tooling
+**/build/
+**/.dart_tool/
+**/macos/Pods/
+**/macos/Flutter/ephemeral/
+# Regenerable model + tensor artifacts (produced by spikes/*.py)
+*.onnx
+*.f32
+# Large test clips
+fixtures/clip/
+*.mp4
+# Duplicate of mobile/lib/engine (copied in only to run the macOS harness)
+onnx_dart/lib/engine/
+# flutter-create scaffolding for the throwaway harness app
+onnx_dart/macos/
+onnx_dart/.metadata
+onnx_dart/README.md
+onnx_dart/analysis_options.yaml
+onnx_dart/pubspec.lock
+onnx_dart/test/
+onnx_dart/assets/
