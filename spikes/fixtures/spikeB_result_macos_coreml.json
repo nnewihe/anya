@@ -1,0 +1,53 @@
+{
+  "yolo26n": {
+    "execution_provider": "coreml",
+    "inference_ms_avg": 31.857142857142858,
+    "inference_ms_min": 31,
+    "n_detections": 1,
+    "n_expected": 1,
+    "match": {
+      "pass": true,
+      "matched": 1,
+      "worst_iou": 0.9973,
+      "worst_conf_delta": 0.0064
+    },
+    "boxes": [
+      {
+        "cls": 0,
+        "conf": 0.72223,
+        "xyxy": [
+          441.59,
+          179.38,
+          466.38,
+          250.56
+        ]
+      }
+    ]
+  },
+  "ball_best": {
+    "execution_provider": "coreml",
+    "inference_ms_avg": 25.857142857142858,
+    "inference_ms_min": 24,
+    "n_detections": 1,
+    "n_expected": 1,
+    "match": {
+      "pass": true,
+      "matched": 1,
+      "worst_iou": 0.9993,
+      "worst_conf_delta": 0.0001
+    },
+    "boxes": [
+      {
+        "cls": 0,
+        "conf": 0.07935,
+        "xyxy": [
+          422.23,
+          173.13,
+          436.08,
+          187.2
+        ]
+      }
+    ]
+  },
+  "RESULT": "PASS"
+}

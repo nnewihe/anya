@@ -1,0 +1,18 @@
+{
+  "ball_best": {
+    "n_pt": 1,
+    "n_onnx": 1,
+    "matched": 1,
+    "worst_iou": 0.9737,
+    "worst_conf_delta": 0.0074,
+    "pass": false
+  },
+  "yolo26n": {
+    "n_pt": 1,
+    "n_onnx": 1,
+    "matched": 1,
+    "worst_iou": 0.9525,
+    "worst_conf_delta": 0.1409,
+    "pass": false
+  }
+}

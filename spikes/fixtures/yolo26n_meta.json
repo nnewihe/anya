@@ -1,0 +1,38 @@
+{
+  "onnx_out_shape": [
+    1,
+    300,
+    6
+  ],
+  "letterbox": {
+    "r": 1.0,
+    "dw": 0,
+    "dh": 210,
+    "imgsz": 960
+  },
+  "conf_threshold": 0.25,
+  "expected_boxes_manual_ort": [
+    {
+      "cls": 0,
+      "conf": 0.71585,
+      "xyxy": [
+        441.56,
+        179.37,
+        466.4,
+        250.58
+      ]
+    }
+  ],
+  "ultralytics_boxes": [
+    {
+      "cls": 0,
+      "conf": 0.57498,
+      "xyxy": [
+        441.82,
+        180.9,
+        466.08,
+        250.35
+      ]
+    }
+  ]
+}
