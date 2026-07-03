@@ -18,7 +18,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Any
 from sklearn.cluster import DBSCAN
-from utilities import (Config, _is_in_exclusion_zone, init_court,
+from .utilities import (Config, _is_in_exclusion_zone, init_court,
                                create_auto_exclusion_zones,
                                get_exclusion_zones_from_frames, Point3D, Box,
                                load_cached_exclusion_zones, save_cached_exclusion_zones)

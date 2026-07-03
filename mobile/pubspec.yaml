@@ -16,6 +16,7 @@ dependencies:
   file_picker: ^8.0.0          # pick a video from the device
   video_player: ^2.8.2         # play the resulting rally reel
   path_provider: ^2.1.2        # temp dirs for reference frames / reel
+  flutter_svg: ^2.0.10+1       # render the Anya Tennis logo marks
 
   # On-device engine
   onnxruntime: ^1.4.1          # YOLO inference (CoreML/NNAPI/CPU) across platforms
@@ -40,3 +41,4 @@ flutter:
   assets:
     - assets/models/yolo26n.onnx
     - assets/models/ball_best.onnx
+    - assets/images/

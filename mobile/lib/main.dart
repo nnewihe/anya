@@ -1,24 +1,19 @@
 import 'package:flutter/material.dart';
 
 import 'screens/home_screen.dart';
+import 'theme.dart';
 
-void main() => runApp(const RallyPredictorApp());
+void main() => runApp(const AnyaTennisApp());
 
-class RallyPredictorApp extends StatelessWidget {
-  const RallyPredictorApp({super.key});
+class AnyaTennisApp extends StatelessWidget {
+  const AnyaTennisApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Rally Predictor',
+      title: 'Anya Tennis',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1B5E20),
-          brightness: Brightness.dark,
-        ),
-      ),
+      theme: AppTheme.dark,
       home: const HomeScreen(),
     );
   }

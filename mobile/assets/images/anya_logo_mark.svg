@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="800" height="580" viewBox="0 0 800 580"
+     xmlns="http://www.w3.org/2000/svg"
+     role="img">
+  <title>Anya Tennis — Logo</title>
+  <desc>White Anya Tennis logo on a transparent background, for use on dark surfaces. A tennis ball is centered within a computer vision HUD targeting frame.</desc>
+
+  <defs>
+    <mask id="ballMaskApp">
+      <circle cx="400" cy="240" r="130" fill="white"/>
+      <path d="M 356 110 Q 298 240 356 370"
+            fill="none" stroke="black" stroke-width="14" stroke-linecap="round"/>
+      <path d="M 444 110 Q 502 240 444 370"
+            fill="none" stroke="black" stroke-width="14" stroke-linecap="round"/>
+      <circle cx="400" cy="240" r="44" fill="black"/>
+    </mask>
+  </defs>
+
+  <!-- HUD frame rectangle -->
+  <rect x="100" y="50" width="600" height="380" rx="6"
+        fill="none" stroke="#FFFFFF" stroke-width="1.5"/>
+
+  <!-- Corner brackets -->
+  <path d="M 100 122 L 100 50 L 172 50"
+        fill="none" stroke="#FFFFFF" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 628 50 L 700 50 L 700 122"
+        fill="none" stroke="#FFFFFF" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 100 358 L 100 430 L 172 430"
+        fill="none" stroke="#FFFFFF" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 628 430 L 700 430 L 700 358"
+        fill="none" stroke="#FFFFFF" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Outer dashed tracking ring -->
+  <circle cx="400" cy="240" r="156"
+          fill="none" stroke="#FFFFFF" stroke-width="1.5"
+          stroke-dasharray="8,7"/>
+
+  <!-- Tennis ball — white fill with seam + pupil knockouts via mask -->
+  <circle cx="400" cy="240" r="130" fill="#FFFFFF" mask="url(#ballMaskApp)"/>
+
+  <!-- Axis tick marks — center edges -->
+  <line x1="76"  y1="240" x2="100" y2="240" stroke="#FFFFFF" stroke-width="2.5"/>
+  <line x1="700" y1="240" x2="724" y2="240" stroke="#FFFFFF" stroke-width="2.5"/>
+  <line x1="400" y1="26"  x2="400" y2="50"  stroke="#FFFFFF" stroke-width="2.5"/>
+  <line x1="400" y1="430" x2="400" y2="454" stroke="#FFFFFF" stroke-width="2.5"/>
+
+  <!-- Quarter tick marks -->
+  <line x1="76"  y1="145" x2="92"  y2="145" stroke="#FFFFFF" stroke-width="1.5"/>
+  <line x1="76"  y1="335" x2="92"  y2="335" stroke="#FFFFFF" stroke-width="1.5"/>
+  <line x1="708" y1="145" x2="724" y2="145" stroke="#FFFFFF" stroke-width="1.5"/>
+  <line x1="708" y1="335" x2="724" y2="335" stroke="#FFFFFF" stroke-width="1.5"/>
+
+  <!-- Wordmark -->
+  <text x="400" y="510"
+        text-anchor="middle"
+        font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="70" font-weight="500" letter-spacing="18"
+        fill="#FFFFFF">ANYA</text>
+
+  <!-- Tagline -->
+  <text x="400" y="552"
+        text-anchor="middle"
+        font-family="'Courier New', Courier, monospace"
+        font-size="13" letter-spacing="4"
+        fill="#FFFFFF">see the game differently</text>
+
+</svg>

@@ -37,9 +37,9 @@ from typing import Deque, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from anya_base import AnyaTelemetryProvider
-from ball_tracker import BallTrackManager, make_image_row_perspective
-from utilities import create_highlights_ffmpeg
+from .anya_base import AnyaTelemetryProvider
+from .ball_tracker import BallTrackManager, make_image_row_perspective
+from .utilities import create_highlights_ffmpeg
 
 
 RALLY_GAP_THRESHOLD_SEC = 4.0

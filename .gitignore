@@ -1,4 +1,4 @@
 backend/app/__pycache__/
-pipeline/models/*.onnx
-pipeline/__pycache__/
-spikes/**/__pycache__/
+__pycache__/
+.DS_Store
+.claude/
