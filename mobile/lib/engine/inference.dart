@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
@@ -61,10 +62,20 @@ class OnnxDetector {
     final opts = OrtSessionOptions()
       ..setSessionGraphOptimizationLevel(GraphOptimizationLevel.ortEnableAll)
       ..setIntraOpNumThreads(2);
+    // Native-ML execution providers: the Dart code stays cross-platform and
+    // ONNX Runtime delegates inference to the OS's native ML stack —
+    //   • Apple (iOS/macOS): CoreML EP → Apple Neural Engine / GPU
+    //   • Android: NNAPI EP → vendor NPU / GPU / DSP
+    // Anything the native EP can't run (or non-Apple/Android desktops) falls
+    // back to ORT's CPU kernels automatically.
     try {
-      opts.appendCoreMLProvider(CoreMLFlags.useNone);
+      if (Platform.isIOS || Platform.isMacOS) {
+        opts.appendCoreMLProvider(CoreMLFlags.useNone);
+      } else if (Platform.isAndroid) {
+        opts.appendNnapiProvider(NnapiFlags.useNone);
+      }
     } catch (_) {
-      // CoreML unavailable (non-Apple / desktop Linux) — fall back to CPU.
+      // Native EP unavailable — CPU fallback.
     }
     final bytes = (await rootBundle.load(assetPath)).buffer.asUint8List();
     final session = OrtSession.fromBuffer(bytes, opts);

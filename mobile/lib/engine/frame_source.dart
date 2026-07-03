@@ -4,6 +4,41 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'config.dart';
+import 'ffmpeg_mobile.dart';
+import 'platform.dart';
+
+/// Open the right [FrameSource] for the current platform: ffmpeg_kit on mobile,
+/// the system ffmpeg binary on desktop.
+Future<FrameSource> openFrameSource(String videoPath) async {
+  if (isMobilePlatform) return FfmpegKitFrameSource.open(videoPath);
+  return FfmpegFrameSource.open(videoPath);
+}
+
+/// Grab ONE 960×540 rgb24 frame at time [tSec] (random access — used by the
+/// exclusion-zone scan, which samples ~50 frames across the whole video).
+/// Returns null if the seek/decode fails (e.g. past end of stream).
+Future<Uint8List?> grabAnalysisFrame(String videoPath, double tSec) async {
+  if (isMobilePlatform) return grabAnalysisFrameMobile(videoPath, tSec);
+  final r = await Process.run(
+    'ffmpeg',
+    [
+      '-v', 'error',
+      '-ss', tSec.toStringAsFixed(3),
+      '-i', videoPath,
+      '-frames:v', '1',
+      '-vf', 'scale=${EngineConfig.analysisWidth}:${EngineConfig.analysisHeight}',
+      '-sws_flags', 'bilinear',
+      '-pix_fmt', 'rgb24',
+      '-f', 'rawvideo', '-',
+    ],
+    stdoutEncoding: null, // raw bytes
+  );
+  if (r.exitCode != 0) return null;
+  final bytes = r.stdout as List<int>;
+  const want = EngineConfig.analysisWidth * EngineConfig.analysisHeight * 3;
+  if (bytes.length < want) return null;
+  return Uint8List.fromList(bytes.sublist(0, want));
+}
 
 /// Video metadata needed to convert frame indices to source-video time.
 class VideoInfo {

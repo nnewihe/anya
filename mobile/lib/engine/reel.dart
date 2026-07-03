@@ -1,8 +1,12 @@
 import 'dart:io';
 
+import 'ffmpeg_mobile.dart';
+import 'platform.dart';
+
 /// Cut the detected segments from the source video and concatenate them into a
-/// highlight reel. Port of utilities.create_highlights_ffmpeg (desktop backend
-/// via the ffmpeg CLI; mobile uses ffmpeg_kit behind the same signature).
+/// highlight reel. Port of utilities.create_highlights_ffmpeg. Shared merge /
+/// pre-roll logic; the cut+concat step runs via ffmpeg_kit on mobile and the
+/// system ffmpeg binary on desktop.
 Future<bool> createHighlightReel({
   required String videoPath,
   required List<(double, double)> segments,
@@ -28,6 +32,14 @@ Future<bool> createHighlightReel({
     } else {
       valid.add(seg);
     }
+  }
+
+  if (isMobilePlatform) {
+    return reelCutMobile(
+      videoPath: videoPath,
+      valid: [for (final v in valid) (v.start, v.end)],
+      outputPath: outputPath,
+    );
   }
 
   final tmpDir = await Directory.systemTemp.createTemp('anya_highlights_');

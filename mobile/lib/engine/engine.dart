@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'ball_tracker.dart';
 import 'config.dart';
+import 'exclusion_scan.dart';
 import 'frame_source.dart';
 import 'geometry.dart';
 import 'inference.dart';
@@ -48,7 +50,7 @@ class Engine {
     void Function(double fraction, String message)? onProgress,
   }) async {
     onProgress?.call(0.0, 'Opening video…');
-    final source = await FfmpegFrameSource.open(videoPath);
+    final source = await openFrameSource(videoPath);
     final info = source.info;
 
     // Homography: court corners (px) → world rectangle (ft).
@@ -59,26 +61,36 @@ class Engine {
       [0, EngineConfig.courtLengthFt],
     ]);
 
-    // Default active zone = full analysis frame (matches the headless backend).
-    const w = EngineConfig.analysisWidth, h = EngineConfig.analysisHeight;
-    final activeZone = <List<double>>[
-      [0, 0],
-      [w.toDouble(), 0],
-      [w.toDouble(), h.toDouble()],
-      [0, h.toDouble()],
-    ];
+    // Active zone: honor a Python-pipeline-style active_zone_config.json next
+    // to the video when present (8-point polygon in 960×540 space); otherwise
+    // default to the full analysis frame (matches the headless backend).
+    final activeZone = _loadActiveZone(videoPath);
+
+    // Static exclusion zones: one-time DBSCAN scan over ~50 random frames to
+    // find ball-like clutter (baskets, stray balls) and mask those regions
+    // out of per-frame ball detection. Cached next to the video in the same
+    // format as the Python pipeline, so the two share caches.
+    onProgress?.call(0.0, 'Scanning for ball baskets / stray balls…');
+    final exclusionZones = await getOrScanExclusionZones(
+      videoPath: videoPath,
+      info: info,
+      ballDetector: ballDetector,
+      onProgress: (done, total) => onProgress?.call(
+          0.05 * done / total, 'Scanning for static clutter ($done/$total)…'),
+    );
 
     final telemetry = TelemetryProvider(
       playerDetector: playerDetector,
       ballDetector: ballDetector,
       homography: homography,
       activeZone: activeZone,
-      exclusionZones: const [], // static-exclusion pre-scan is a follow-up
+      exclusionZones: exclusionZones,
       fps: info.fps,
     );
     final ballTracker = BallTrackManager(
       info.fps,
-      perspectiveScale: makeImageRowPerspective(h.toDouble()),
+      perspectiveScale:
+          makeImageRowPerspective(EngineConfig.analysisHeight.toDouble()),
     );
 
     final segments = await collectRallySegments(
@@ -89,8 +101,9 @@ class Engine {
       ballTracker: ballTracker,
       progressCb: (cur, total) {
         if (total > 0) {
+          // 0–5% scan, 5–95% analysis, 95–100% reel cut.
           onProgress?.call(
-              0.95 * cur / total, 'Analyzing frame $cur/$total');
+              0.05 + 0.90 * cur / total, 'Analyzing frame $cur/$total');
         }
       },
     );
@@ -110,6 +123,31 @@ class Engine {
 
     onProgress?.call(1.0, 'Done');
     return EngineResult(segments, outPath, info);
+  }
+
+  /// Load `<videoDir>/active_zone_config.json` (same file the Python pipeline
+  /// reads/writes) or fall back to the full analysis frame.
+  static List<List<double>> _loadActiveZone(String videoPath) {
+    try {
+      final f = File(
+          '${File(videoPath).parent.path}${Platform.pathSeparator}active_zone_config.json');
+      if (f.existsSync()) {
+        final data = jsonDecode(f.readAsStringSync()) as List;
+        final poly = [
+          for (final p in data)
+            [((p as List)[0] as num).toDouble(), (p[1] as num).toDouble()]
+        ];
+        if (poly.length >= 3) return poly;
+      }
+    } catch (_) {}
+    const w = EngineConfig.analysisWidth * 1.0;
+    const h = EngineConfig.analysisHeight * 1.0;
+    return [
+      [0.0, 0.0],
+      [w, 0.0],
+      [w, h],
+      [0.0, h],
+    ];
   }
 
   String _defaultReelPath(String videoPath) {

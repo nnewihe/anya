@@ -1,0 +1,41 @@
+name: ffmpeg_kit_flutter_new
+description: >
+  Vendored fork of ffmpeg_kit_flutter_new 4.3.2, trimmed to Android/iOS only.
+  The upstream macOS artifact vendors prebuilt frameworks linked against
+  ~11 Homebrew-only libraries (fontconfig, freetype, harfbuzz, glib, srt, ...)
+  with no macOS system equivalents, so it crashes at launch (dyld: Library
+  not loaded) on any machine that doesn't have that exact Homebrew set
+  installed at the exact paths the CI build used — see mobile/lib/engine's
+  isMobilePlatform gate, which never calls this plugin on desktop anyway.
+  Flutter has no per-consumer platform-exclusion for plugin dependencies, so
+  the "macos" platform entry is dropped here (path override in pubspec.yaml)
+  to keep it out of the macOS Podfile/build entirely. Upstream Dart/iOS/
+  Android/Windows source is otherwise unmodified.
+repository: https://github.com/sk3llo/ffmpeg_kit_flutter
+homepage: https://github.com/sk3llo/ffmpeg_kit_flutter
+version: 4.3.2
+environment:
+  sdk: ">=3.1.0 <4.0.0"
+  flutter: ">=3.0.0"
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.antonkarpenko.ffmpegkit
+        pluginClass: FFmpegKitFlutterPlugin
+      ios:
+        pluginClass: FFmpegKitFlutterPlugin
+      windows:
+        pluginClass: FFmpegKitFlutterPlugin
+
+dependencies:
+  ffmpeg_kit_flutter_platform_interface: ^0.2.1
+
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  plugin_platform_interface: ^2.1.8

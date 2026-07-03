@@ -19,11 +19,21 @@ dependencies:
 
   # On-device engine
   onnxruntime: ^1.4.1          # YOLO inference (CoreML/NNAPI/CPU) across platforms
+  ffmpeg_kit_flutter_new: ^4.3.2  # mobile (android/ios) video decode + reel cut
 
 dev_dependencies:
   flutter_lints: ^3.0.0
   flutter_test:
     sdk: flutter
+
+# ffmpeg_kit_flutter_new declares macOS support, but its macOS artifact isn't
+# shippable (see third_party/ffmpeg_kit_flutter_new/pubspec.yaml). Desktop
+# already uses system ffmpeg via mobile/lib/engine/frame_source.dart's
+# isMobilePlatform gate, so override with a trimmed android/ios-only copy to
+# keep it out of the macOS build entirely.
+dependency_overrides:
+  ffmpeg_kit_flutter_new:
+    path: third_party/ffmpeg_kit_flutter_new
 
 flutter:
   uses-material-design: true

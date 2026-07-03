@@ -35,6 +35,15 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   onnxruntime: ^1.4.1
+  path_provider: ^2.1.2
+  # Engine imports this for its mobile decode path; on macOS the trimmed
+  # vendored package (no macos platform) makes it a pure-Dart dep that is
+  # never invoked (isMobilePlatform == false).
+  ffmpeg_kit_flutter_new: ^4.3.2
+
+dependency_overrides:
+  ffmpeg_kit_flutter_new:
+    path: ../../mobile/third_party/ffmpeg_kit_flutter_new
 
 dev_dependencies:
   flutter_test:
