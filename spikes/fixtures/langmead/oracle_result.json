@@ -1,0 +1,39 @@
+{
+  "clip": "/Users/tennis/Documents/match_play/data/langmead_1min.mov",
+  "corners": [
+    [
+      95,
+      390
+    ],
+    [
+      880,
+      400
+    ],
+    [
+      560,
+      195
+    ],
+    [
+      390,
+      195
+    ]
+  ],
+  "segment_count": 3,
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 4.17,
+      "origin": "near"
+    },
+    {
+      "start": 9.91,
+      "end": 12.98,
+      "origin": "near"
+    },
+    {
+      "start": 21.02,
+      "end": 24.22,
+      "origin": "near"
+    }
+  ]
+}

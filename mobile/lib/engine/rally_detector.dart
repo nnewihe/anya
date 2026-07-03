@@ -242,8 +242,12 @@ Future<List<RallySegment>> collectRallySegments({
       ballVel.add(tel.timestamp, status.position![0], status.position![1]);
     }
     if (nearBox != null) {
-      playerVel.add(tel.timestamp, (nearBox[0] + nearBox[2]) / 2.0,
-          (nearBox[1] + nearBox[3]) / 2.0);
+      // Feet point (bottom-centre), not box centroid: carry-coupling compares
+      // the ball's pixel velocity against the player's WALKING motion, and
+      // feet track that ground motion directly (the centroid also bobs with
+      // torso/racket movement).
+      playerVel.add(
+          tel.timestamp, (nearBox[0] + nearBox[2]) / 2.0, nearBox[3]);
     }
 
     var carried = false;

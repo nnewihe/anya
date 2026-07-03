@@ -17,15 +17,6 @@ import 'package:path_provider/path_provider.dart';
 
 import 'engine/engine.dart';
 
-// Same 4 corners (960x540 analysis space) validated against the Python
-// oracle on this exact clip during the macOS Phase 5 run.
-const _corners = <List<double>>[
-  [120, 510],
-  [840, 510],
-  [600, 140],
-  [360, 140],
-];
-
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const _App());
@@ -69,7 +60,6 @@ class _S extends State<_App> {
       var lastPct = -1;
       final result = await engine.analyze(
         videoPath: clip.path,
-        corners: _corners,
         writeReel: true,
         reelPath: '${docs.path}/clip30_rallies.mp4',
         onProgress: (frac, msg) {

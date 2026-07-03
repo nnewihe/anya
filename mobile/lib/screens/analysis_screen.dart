@@ -7,16 +7,14 @@ import '../engine/engine.dart';
 
 /// Runs the on-device engine on a picked video and shows progress, the detected
 /// rally segments, and the resulting reel. Replaces the old upload → job → poll
-/// flow entirely — no server, no upload.
+/// flow entirely — no server, no upload, no manual court calibration.
 class AnalysisScreen extends StatefulWidget {
   final String videoPath;
-  final List<List<double>> corners;
   final String title;
 
   const AnalysisScreen({
     super.key,
     required this.videoPath,
-    required this.corners,
     required this.title,
   });
 
@@ -43,7 +41,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       final engine = await Engine.shared();
       final result = await engine.analyze(
         videoPath: widget.videoPath,
-        corners: widget.corners,
         onProgress: (frac, msg) {
           if (mounted) {
             setState(() {

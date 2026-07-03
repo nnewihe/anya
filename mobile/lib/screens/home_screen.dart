@@ -1,11 +1,12 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
-import 'calibration_screen.dart';
+import 'analysis_screen.dart';
 
 /// Entry screen for the on-device rally predictor. Pick a match video from the
-/// device; everything (detection, tracking, reel) then runs locally — no upload,
-/// no server.
+/// device; everything (detection, tracking, reel) then runs locally — no
+/// upload, no server, and no manual court calibration: the engine
+/// self-calibrates its zones from where the players stand.
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
@@ -19,7 +20,7 @@ class HomeScreen extends StatelessWidget {
     final name = result!.files.single.name;
     if (!context.mounted) return;
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => CalibrationScreen(videoPath: path, title: name),
+      builder: (_) => AnalysisScreen(videoPath: path, title: name),
     ));
   }
 

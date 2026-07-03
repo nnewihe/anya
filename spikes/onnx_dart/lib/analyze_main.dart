@@ -12,21 +12,11 @@ import 'package:flutter/material.dart';
 import 'engine/engine.dart';
 
 const _clipCandidates = [
-  // Real match clip — its directory holds the Python pipeline's caches
-  // (court corners, exclusion zones, active zone), so this run consumes
-  // byte-identical inputs to the confirmed Python ground truth:
+  // Real match clip. The engine is now fully self-calibrating (no corners,
+  // auto active zone from player feet). Python ground truth on this clip:
   //   4 raw segments: 6.71–11.84, 21.62–26.93, 29.83–41.41, 46.25–61.59
   '/Users/tennis/Documents/match_play/data/langmead_1min.mov',
   '/Users/tennis/Documents/Code/Laptop/src/anya/.claude/worktrees/zealous-lichterman-f21da6/spikes/fixtures/clip/clip30.mp4',
-];
-
-// Court corners in 960×540 analysis space, ordered [BL, BR, TR, TL] — read
-// from langmead_1min_court_cache.json (the user's own interactive selection).
-const _corners = <List<double>>[
-  [94.0, 418.0],
-  [940.0, 392.0],
-  [563.0, 257.0],
-  [413.0, 262.0],
 ];
 
 void main() {
@@ -70,7 +60,6 @@ class _S extends State<_App> {
       var lastPct = -1;
       final result = await engine.analyze(
         videoPath: clip,
-        corners: _corners,
         writeReel: true,
         reelPath: '/tmp/analyze_reel.mp4',
         onProgress: (frac, msg) {
