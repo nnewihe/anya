@@ -7,14 +7,54 @@ the desktop app and the backend server automatically.
 
 | File | Purpose |
 |---|---|
-| `rally_detector.py` | **Main entry point** — segment detection, HMM filter, highlight export |
+| `deadtime_cutter.py` | **Dead-time cutter entry point** — serve-anchored point detection, cuts everything between points |
+| `match_telemetry.py` | Dead-time cutter stage 1: one offline perception pass → cached JSONL telemetry |
+| `point_segmenter.py` | Dead-time cutter stage 2: serve events (near + far) + fused point ends (no video/models needed) |
+| `serve_stgcn.py` | Far-side ST-GCN serve classifier (MediaPipe pose + graph conv) |
+| `rally_detector.py` | Trace-driven rally detector — segment detection, HMM filter, highlight export |
 | `anya_base.py` | YOLO player + ball telemetry provider |
 | `ball_tracker.py` | IMM Kalman single-ball tracker |
 | `utilities.py` | ffmpeg highlight cutter, court homography helpers |
 | `run_pipeline.py` | CLI: concatenate GoPro clips → run detector |
-| `models/` | YOLO model weights (`ball_best.pt`, `yolo26n.pt`) |
+| `models/` | Model weights (`ball_best.pt`, `yolo26n.pt`, `serve_stgcn.pt`, `pose_landmarker_full.task`) |
 
-## Run from the command line
+## Dead-time cutter
+
+Removes everything from the end of each point to the start of the next
+service motion. Point **starts** come from serve detection on both ends of
+the court (near: ball toss + trophy pose; far: ST-GCN over pose kinematics).
+Point **ends** are found inside the bounded window to the next serve by
+fusing the replayed ball trace with player kinematics (direction reversals /
+both-players-moving = rally; steady walking = ball retrieval), so weak
+far-side ball tracking degrades gracefully instead of truncating points.
+
+```bash
+# Full run (first run pays the slow perception pass; it is cached as
+# <match>_match_telemetry.jsonl next to the video)
+python -m pipeline.deadtime_cutter match.mp4
+
+# Re-segment + report only (seconds, uses the cache; tune SegmenterConfig
+# in point_segmenter.py and re-run freely)
+python -m pipeline.deadtime_cutter match.mp4 --dry-run
+
+# Stages individually
+python -m pipeline.match_telemetry match.mp4            # stage 1 only
+python -m pipeline.point_segmenter match_match_telemetry.jsonl   # stage 2 only
+
+# Synthetic self-test (no video or models needed)
+python -m pipeline.point_segmenter --self-test
+```
+
+Outputs: `<match>_no_deadtime.mp4`, plus `<match>_points.csv` /
+`<match>_points.json` with per-point serve time, end time, serve side, and
+which evidence decided the end (`trace`, `trace+activity`, `activity`,
+`fallback`) for review.
+
+First run on a new video prompts once for the 4 court corners and the
+8-point active zone (cached beside the video, shared with the rest of the
+pipeline).
+
+## Run the rally detector from the command line
 
 ```bash
 # Single file

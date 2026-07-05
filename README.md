@@ -50,7 +50,22 @@ Both the desktop app and the backend server import directly from `pipeline/`. Ch
 pip install opencv-python numpy ultralytics filterpy scikit-learn
 ```
 
-### Single video file
+### Dead-time cutter (recommended for full matches)
+
+Cuts everything from the end of each point to the start of the next service
+motion. Serve detection on both court ends anchors the point starts; point
+ends fuse ball traces with player kinematics. See
+[`pipeline/README.md`](pipeline/README.md) for details.
+
+```bash
+python -m pipeline.deadtime_cutter match.mp4            # full run
+python -m pipeline.deadtime_cutter match.mp4 --dry-run  # segments + report only
+```
+
+The slow perception pass is cached next to the video, so re-tuning the
+segmentation re-runs in seconds.
+
+### Single video file (rally detector)
 
 ```bash
 python pipeline/rally_detector.py match.mp4 --headless
