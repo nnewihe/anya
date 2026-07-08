@@ -25,6 +25,14 @@ Per-frame record (compact JSONL keys):
             the segmenter decides what to exclude)
     toss    toss-ball candidates above the near player [[cx, cy, conf], ...]
             (z-box + exclusion + player-box filtered, like the ARMED detector)
+    ftoss   toss-ball candidates above the FAR player, detected on a crop of
+            the NATIVE-resolution frame (the 960x540 analysis frame shrinks a
+            far-side toss ball below the detection floor); coords are mapped
+            back to analysis space.  Gated to the far-baseline band.
+    fballs  ALL ball candidates in the native-res far crop (a taller crop
+            that also covers the first flight of a struck serve below the
+            head line).  Superset of ftoss; feeds the segmenter's ball-trace
+            replay so far serves can be trace-confirmed.  Same gating.
     trophy  near-side trophy-pose probability (0.0 if the model is absent)
     stgcn   far-side ST-GCN serve probability (0.0 when not computed)
 
@@ -53,7 +61,7 @@ from .utilities import (Config, _is_in_exclusion_zone, init_court,
 _MODELS_DIR = Path(__file__).parent / "models"
 
 TELEMETRY_SUFFIX  = "_match_telemetry.jsonl"
-TELEMETRY_VERSION = 1
+TELEMETRY_VERSION = 4   # v2: ftoss; v3: fballs; v4: wide far gate + padded exclusions
 
 
 @dataclass
@@ -72,12 +80,16 @@ class ExtractorConfig:
 
     # Far-side ST-GCN gating: only run pose+GCN while the far player is within
     # this signed-distance band of the far baseline (positive = behind it).
-    # Wider than the segmenter's ready band so the rolling window is already
-    # full when the player settles in to serve.
-    stgcn_gate_min_ft: float = -10.0
-    stgcn_gate_max_ft: float = 15.0
+    # Deliberately loose: the homography amplifies far-court pixel noise into
+    # tens of feet, and per-video calibration offsets of +15..+25 ft are
+    # common (measured across the ground-truth folders) — a tight gate makes
+    # far serves invisible to stage 2, which self-calibrates its own band.
+    stgcn_gate_min_ft: float = -15.0
+    stgcn_gate_max_ft: float = 40.0
     stgcn_stride:      int   = 2     # forward passes every N gated frames
     stgcn_reset_gap_s: float = 1.0   # clear the joint window after this long ungated
+
+    far_ball_imgsz: int = 480        # native far crop is ~340x460 — keep near-native
 
     trophy_stride: int = 2
 
@@ -188,9 +200,11 @@ class MatchTelemetryExtractor:
         else:
             print("[TELEM] Scanning video for static exclusion zones...")
             try:
+                # padding matters: static false balls jitter ±10px around
+                # their zone, and an unpadded (often 1px) zone misses them.
                 self.exclusion_zones = create_auto_exclusion_zones(
                     video_path, self.ball_model,
-                    num_frames=50, conf=0.04, eps=12, padding=0,
+                    num_frames=50, conf=0.04, eps=12, padding=8,
                     ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
                     analysis_size=self.cfg.analysis_size,
                 )
@@ -354,6 +368,79 @@ class MatchTelemetryExtractor:
                     out.append((round(cx, 1), round(cy, 1), round(float(b.conf[0]), 3)))
         return out
 
+    def _detect_far_native_balls(self, orig_frame, frame, far_box, far_world,
+                                 now: float):
+        """Ball candidates around the FAR player from a NATIVE-resolution
+        crop: at ~30 px of player height on the analysis frame a far-side
+        ball is 1-2 px, below any detection floor, while the native crop
+        keeps it at a detectable size.  Gated to the far-baseline band (same
+        band as the ST-GCN scorer) so the extra model call only runs when a
+        far serve is possible.  Returned coords are in analysis space.
+
+        Returns (ftoss, fballs):
+          ftoss  candidates inside the toss zone above the player (mirrors
+                 _detect_toss for the near side),
+          fballs every candidate in the crop outside the player box — the
+                 crop extends below the box so the first flight of a struck
+                 serve is captured for the segmenter's trace replay."""
+        if far_box is None or far_world is None:
+            return [], []
+        dist = far_world[1] - Config.COURT_LENGTH_FT
+        if not (self.cfg.stgcn_gate_min_ft <= dist <= self.cfg.stgcn_gate_max_ft):
+            return [], []
+        fx1, fy1, fx2, fy2 = far_box
+        pw, ph = fx2 - fx1, fy2 - fy1
+        if pw <= 0 or ph <= 0:
+            return [], []
+        ah, aw = frame.shape[:2]
+
+        # Toss zone: bottom bisects the player box; 3x width, 2.5x height —
+        # relatively wider than the near zone because the far box is small
+        # and jittery, and the toss subtends more player-heights up there.
+        pcx, pcy = (fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0
+        zx1, zx2 = pcx - 1.5 * pw, pcx + 1.5 * pw
+        zy2 = pcy
+        zy1 = max(0.0, zy2 - ph * 2.5)
+
+        # Crop: toss zone plus two player-heights below the box, so the
+        # serve's first flight (down-image toward the near court) is seen.
+        rx1 = max(0.0, fx1 - 1.5 * pw)
+        ry1 = max(0.0, fy1 - ph * 2.5)
+        rx2 = min(float(aw), fx2 + 1.5 * pw)
+        ry2 = min(float(ah), fy2 + ph * 2.0)
+        if rx2 <= rx1 or ry2 <= ry1:
+            return [], []
+
+        if orig_frame is not None:
+            oh, ow = orig_frame.shape[:2]
+            sx, sy = ow / float(aw), oh / float(ah)
+        else:                       # native frame unavailable — degrade
+            orig_frame, sx, sy = frame, 1.0, 1.0
+            oh, ow = ah, aw
+        nrx1, nry1 = max(0, int(rx1 * sx)), max(0, int(ry1 * sy))
+        nrx2, nry2 = min(ow, int(rx2 * sx)), min(oh, int(ry2 * sy))
+        roi = orig_frame[nry1:nry2, nrx1:nrx2]
+        if roi.size == 0:
+            return [], []
+
+        res = self.ball_model(roi, verbose=False, conf=self.cfg.toss_conf,
+                              imgsz=self.cfg.far_ball_imgsz)
+        ftoss, fballs = [], []
+        if res and res[0].boxes:
+            for b in res[0].boxes:
+                bx1, by1, bx2, by2 = b.xyxy[0].tolist()
+                cx = (nrx1 + (bx1 + bx2) / 2.0) / sx     # back to analysis coords
+                cy = (nry1 + (by1 + by2) / 2.0) / sy
+                in_pbox = (fx1 - 3 <= cx <= fx2 + 3 and
+                           fy1 - 3 <= cy <= fy2 + 3)
+                if in_pbox or _is_in_exclusion_zone(cx, cy, self.exclusion_zones):
+                    continue
+                cand = (round(cx, 1), round(cy, 1), round(float(b.conf[0]), 3))
+                fballs.append(cand)
+                if zx1 <= cx <= zx2 and zy1 <= cy <= zy2:
+                    ftoss.append(cand)
+        return ftoss, fballs
+
     def _score_trophy(self, frame, near_box, frame_idx: int) -> float:
         if self.trophy_model is None or near_box is None:
             return 0.0
@@ -422,14 +509,20 @@ class MatchTelemetryExtractor:
 
     # ------------------------------------------------------------------
     def extract(self, out_path: Optional[str] = None, stride: int = 1,
-                max_frames: Optional[int] = None, progress_cb=None) -> str:
-        """Run the pass and write the JSONL telemetry file. Returns its path."""
+                max_frames: Optional[int] = None, start_frame: int = 0,
+                progress_cb=None) -> str:
+        """Run the pass and write the JSONL telemetry file. Returns its path.
+        start_frame seeks before processing (windowed diagnostics — pair it
+        with max_frames and a scratch out_path to probe a slice of the match
+        without touching the full-match cache)."""
         out_path = out_path or telemetry_path_for(self.video_path)
         tmp_path = out_path + ".part"
 
         cap = cv2.VideoCapture(self.video_path)
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         n_written = 0
-        frame_idx = -1
+        frame_idx = start_frame - 1
 
         with open(tmp_path, "w") as fh:
             meta = {
@@ -443,6 +536,8 @@ class MatchTelemetryExtractor:
                 "court_width_ft":  Config.COURT_WIDTH_FT,
                 "has_trophy":     self.trophy_model is not None,
                 "has_far_serve":  self.far_serve_detector is not None,
+                "has_far_toss":   True,
+                "has_far_balls":  True,
             }
             fh.write(json.dumps({"meta": meta}) + "\n")
 
@@ -476,6 +571,8 @@ class MatchTelemetryExtractor:
 
                     balls  = self._detect_balls(frame)
                     toss   = self._detect_toss(frame, near_box)
+                    ftoss, fballs = self._detect_far_native_balls(
+                        orig_frame, frame, far_box, far_world, t)
                     trophy = self._score_trophy(frame, near_box, frame_idx)
                     stgcn  = self._score_far_serve(frame, orig_frame, far_box,
                                                    far_world, t)
@@ -492,6 +589,8 @@ class MatchTelemetryExtractor:
                                 if far_world else None),
                         "balls":  [list(b) for b in balls],
                         "toss":   [list(b) for b in toss],
+                        "ftoss":  [list(b) for b in ftoss],
+                        "fballs": [list(b) for b in fballs],
                         "trophy": round(trophy, 3),
                         "stgcn":  round(stgcn, 3),
                     }
@@ -514,16 +613,26 @@ class MatchTelemetryExtractor:
 
 def extract_match_telemetry(video_path: str, force: bool = False, stride: int = 1,
                             max_frames: Optional[int] = None,
+                            start_frame: int = 0,
                             enable_far_serve: bool = True,
                             progress_cb=None) -> str:
     """Extract (or reuse cached) telemetry for video_path. Returns JSONL path."""
     out_path = telemetry_path_for(video_path)
     if not force and os.path.isfile(out_path):
-        print(f"[TELEM] Using cached telemetry: {out_path}  (--force to re-extract)")
-        return out_path
+        try:
+            with open(out_path, "r") as fh:
+                cached_ver = int(json.loads(fh.readline()).get("meta", {})
+                                 .get("version", 0))
+        except Exception:
+            cached_ver = 0
+        if cached_ver == TELEMETRY_VERSION:
+            print(f"[TELEM] Using cached telemetry: {out_path}  (--force to re-extract)")
+            return out_path
+        print(f"[TELEM] Cached telemetry is v{cached_ver}, current is "
+              f"v{TELEMETRY_VERSION} — re-extracting.")
     extractor = MatchTelemetryExtractor(video_path, enable_far_serve=enable_far_serve)
     return extractor.extract(stride=stride, max_frames=max_frames,
-                             progress_cb=progress_cb)
+                             start_frame=start_frame, progress_cb=progress_cb)
 
 
 if __name__ == "__main__":
@@ -536,10 +645,13 @@ if __name__ == "__main__":
                         help="Process every Nth frame (quick tests; default 1)")
     parser.add_argument("--max-frames", type=int, default=None,
                         help="Stop after writing N records (quick tests)")
+    parser.add_argument("--start-frame", type=int, default=0,
+                        help="Seek to this frame before processing (quick tests)")
     parser.add_argument("--no-far-serve", action="store_true",
                         help="Skip the far-side ST-GCN serve detector")
     args = parser.parse_args()
 
     extract_match_telemetry(args.video, force=args.force, stride=args.stride,
                             max_frames=args.max_frames,
+                            start_frame=args.start_frame,
                             enable_far_serve=not args.no_far_serve)

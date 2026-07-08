@@ -58,11 +58,24 @@ def cut_dead_time(video_path: str, output_path: str = None,
 
     # ── Stage 2: segmentation ────────────────────────────────────────────
     match = load_telemetry(telemetry_path)
-    segments = segment_match(match, cfg)
+    far_misses = []
+    segments = segment_match(match, cfg, far_misses_out=far_misses)
 
     base = os.path.join(video_dir, video_stem)
     write_segments_csv(segments,  base + "_points.csv")
     write_segments_json(segments, base + "_points.json")
+
+    # Far-serve near-misses: sub-threshold score peaks and uncorroborated
+    # candidates, for review and for labeling far-serve tuning data.
+    if far_misses:
+        miss_path = base + "_far_misses.csv"
+        import csv as _csv
+        with open(miss_path, "w", newline="") as fh:
+            w = _csv.writer(fh)
+            w.writerow(["t", "score", "reason"])
+            for t, s, reason in sorted(far_misses):
+                w.writerow([f"{t:.2f}", f"{s:.3f}", reason])
+        print(f"[CUT] {len(far_misses)} far-serve near-miss(es) → {miss_path}")
 
     if not segments:
         print("[CUT] No points detected — nothing to cut.")

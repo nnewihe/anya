@@ -22,7 +22,10 @@ the desktop app and the backend server automatically.
 
 Removes everything from the end of each point to the start of the next
 service motion. Point **starts** come from serve detection on both ends of
-the court (near: ball toss + trophy pose; far: ST-GCN over pose kinematics).
+the court (near: ball toss + trophy pose; far: native-resolution ball toss
+blended with ST-GCN pose kinematics, 0.65/0.35). Serve candidates that never
+produce a serve-like ball trace (e.g. an aborted toss the server catches)
+are displaced by the trace-confirmed serve that follows.
 Point **ends** are found inside the bounded window to the next serve by
 fusing the replayed ball trace with player kinematics (direction reversals /
 both-players-moving = rally; steady walking = ball retrieval), so weak
