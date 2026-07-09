@@ -46,11 +46,16 @@ class CutterConfig {
   static const double farBoxHoldS     = 0.7;  // hold last box through gaps
   static const double farWorldSmoothS = 0.3;  // smooth homography-amplified jitter
 
-  // Far native-crop gate: only crop when the far player is within this signed
-  // distance band of the far baseline (positive = behind it).  Deliberately
-  // loose — homography amplifies far-court pixel noise into tens of feet.
-  static const double farGateMinFt = -15.0;
-  static const double farGateMaxFt = 40.0;
+  // Fixed far-region crop for fballs (FixedFarCropSource): the bounding box of
+  // the far HALF of the court (net line → far baseline) in pixel space, from
+  // the calibrated corners via homography, with the TOP edge extended upward
+  // by this fraction of the box height to reach above the far baseline.
+  // Replaces the Python player-anchored crop for the mobile port — no
+  // far-player-box dependency, computed once at calibration.  The far half is
+  // heavily foreshortened (a ~20-45px sliver near the frame top), so this may
+  // need to reach HIGHER (toward the toss/contact) than the far-half height
+  // gives — tune here if a stage-1 re-extract shows far-serve recall dropping.
+  static const double farCropTopExtendFrac = 0.5;
 
   static const int playerClassIndex = 0;
   static const int ballClassIndex   = 0;

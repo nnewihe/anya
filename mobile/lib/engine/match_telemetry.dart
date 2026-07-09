@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'ball_tracker.dart' show Detection;
@@ -166,14 +167,76 @@ class WholeFrameTossSource implements TossSource {
   }
 }
 
+/// Axis-aligned crop rectangle in analysis (960×540) pixel space.
+class CropRect {
+  final double x1, y1, x2, y2;
+  const CropRect(this.x1, this.y1, this.x2, this.y2);
+  double get width => x2 - x1;
+  double get height => y2 - y1;
+}
+
+/// The FIXED far-region crop for fballs (user decision, 2026-07): the bounding
+/// box of the far HALF of the court — net line (world y = L/2) to far baseline
+/// (world y = L) — projected to pixel space via the calibrated homography,
+/// with the top edge extended upward by [CutterConfig.farCropTopExtendFrac] of
+/// the box height to reach above the far baseline.  Computed once at
+/// calibration from [pixelCornersBlBrTrTl] (the clicked corners, in the
+/// calibration order BL, BR, TR, TL); no per-frame far-player-box dependency.
+///
+/// Note: the far half is heavily foreshortened (a ~20-45px sliver near the
+/// frame top on the ground-truth cameras), so the default 0.5 extension only
+/// reaches ~10px above the far baseline.  If a stage-1 re-extract shows
+/// far-serve recall dropping vs the Python player-anchored crop (16/22 on
+/// folder 68), raise farCropTopExtendFrac to reach the toss/contact region.
+CropRect farCourtCropRect(List<List<double>> pixelCornersBlBrTrTl,
+    {double topExtendFrac = CutterConfig.farCropTopExtendFrac}) {
+  const w = CutterConfig.courtWidthFt;
+  const l = CutterConfig.courtLengthFt;
+  // World corners in the SAME order as the clicked pixel corners.
+  final worldCorners = <List<double>>[
+    [0.0, 0.0], // BL
+    [w, 0.0], // BR
+    [w, l], // TR
+    [0.0, l], // TL
+  ];
+  final worldToPixel = Homography.from4(worldCorners, pixelCornersBlBrTrTl);
+  // Far half: net line (y = L/2) to far baseline (y = L).
+  final farWorld = <List<double>>[
+    [0.0, l / 2], [w, l / 2], // net line
+    [w, l], [0.0, l], // far baseline
+  ];
+  var minX = double.infinity, minY = double.infinity;
+  var maxX = -double.infinity, maxY = -double.infinity;
+  for (final p in farWorld) {
+    final px = worldToPixel.transform(p[0], p[1]);
+    minX = math.min(minX, px[0]);
+    maxX = math.max(maxX, px[0]);
+    minY = math.min(minY, px[1]);
+    maxY = math.max(maxY, px[1]);
+  }
+  minY -= topExtendFrac * (maxY - minY); // extend top upward
+  const fw = EngineConfig.analysisWidth, fh = EngineConfig.analysisHeight;
+  return CropRect(
+    minX.clamp(0.0, fw.toDouble()),
+    minY.clamp(0.0, fh.toDouble()),
+    maxX.clamp(0.0, fw.toDouble()),
+    maxY.clamp(0.0, fh.toDouble()),
+  );
+}
+
 /// Far-region native-resolution ball candidates (the far-serve trace signal).
 /// The far-baseline ball is 1–3 px in the 960×540 analysis frame — below the
-/// detection floor — so these MUST come from a native-resolution crop, which
-/// the 960×540 [FrameSource] cannot provide.  The concrete implementation is a
-/// pending design decision (fixed native far-strip vs. player-anchored native
-/// crop); [NoFarBalls] is the stub.  Without it, far-serve recall drops the
-/// way it did in the folder-68 fballs-strip test — the golden-master will show
-/// exactly how much.
+/// detection floor — so these come from a native-resolution crop of the fixed
+/// far-court rectangle ([farCourtCropRect]).
+///
+/// On the ONNX-input question (unresolved on-device): the concrete source does
+/// NOT feed a crop-sized tensor.  It takes the native-res crop and LETTERBOXES
+/// it into the model's existing 960×960 input — which works whether or not the
+/// exported ONNX accepts a variable input size, and is exactly what magnifies
+/// the tiny far ball.  The one remaining dependency is native-res pixel access
+/// for the fixed rectangle (the 960×540 [FrameSource] can't provide it) —
+/// a second ffmpeg `crop` output at native res, streamed in parallel.
+/// [NoFarBalls] is the stub until that frame-source plumbing lands.
 abstract class FarBallSource {
   Future<List<Detection>> farBalls(
     double tSec,
@@ -184,7 +247,7 @@ abstract class FarBallSource {
 }
 
 /// Stub: no far-region native detections.  Far serves that depend on the
-/// native crop will not form a trace until a concrete source is chosen.
+/// native crop will not form a trace until a concrete source is wired up.
 class NoFarBalls implements FarBallSource {
   const NoFarBalls();
 

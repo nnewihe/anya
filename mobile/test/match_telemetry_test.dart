@@ -72,6 +72,26 @@ void main() {
     expect(json['balls'], []);
   });
 
+  test('far-court crop rect matches the cv2 reference (folder 68 corners)', () {
+    // Corners BL, BR, TR, TL in the calibration order; expected rect computed
+    // with cv2.findHomography + perspectiveTransform (the Python reference).
+    final rect = farCourtCropRect([
+      [79.0, 377.0], // BL
+      [816.0, 374.0], // BR
+      [551.0, 275.0], // TR
+      [412.0, 274.0], // TL
+    ]);
+    expect(rect.x1, closeTo(360.5, 1.0));
+    expect(rect.y1, closeTo(265.4, 1.0)); // top extended above far baseline
+    expect(rect.x2, closeTo(594.3, 1.0));
+    expect(rect.y2, closeTo(291.2, 1.0)); // net line
+    // sanity: within frame, top above the far baseline (274), net below it
+    expect(rect.y1, lessThan(274.0));
+    expect(rect.y2, greaterThan(274.0));
+    expect(rect.x1, greaterThanOrEqualTo(0.0));
+    expect(rect.x2, lessThanOrEqualTo(960.0));
+  });
+
   test('meta header matches the Python meta line', () {
     final meta = MatchTelemetryExtractor.metaHeader(59.94, 25193,
         hasFarBalls: false)['meta'] as Map<String, dynamic>;
