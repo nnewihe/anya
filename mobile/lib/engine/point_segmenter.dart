@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'ball_tracker.dart' show Detection;
+import 'kalman.dart';
+import 'linalg.dart';
 
 /// Stage-2 of the dead-time cutter, ported from pipeline/point_segmenter.py.
 ///
@@ -281,4 +284,266 @@ int suppressStaticCandidates(MatchTelemetry match, SegmenterConfig cfg) {
   }
   match.staticSuppressed = true;
   return dropped;
+}
+
+// ===========================================================================
+// Serve events (near side — slice 3b; far side lands in slice 3c)
+// ===========================================================================
+class ServeEvent {
+  final double t;
+  final String side; // "near" | "far"
+  final double score;
+  bool traceConfirmed;
+  bool tossSeen; // a toss peaked above the server's head
+
+  ServeEvent(this.t, this.side, this.score,
+      {this.traceConfirmed = false, this.tossSeen = false});
+
+  /// Independent evidence beyond the score: a serve-like ball trace.  Far
+  /// events are trace-born, so they are always supported.
+  bool get supported => traceConfirmed;
+}
+
+double _hypot(double a, double b) => math.sqrt(a * a + b * b);
+
+/// Kalman-filtered "ball moving up, predominantly vertically, above the head"
+/// detector — the near-serve toss signature.  Port of _TossTracker: seed from
+/// two nearby candidates, associate by nearest-to-prediction (not raw
+/// confidence), coast through short gaps, confirm on consecutive REAL
+/// detections (coasting ticks don't count).  Reuses kalman.dart.
+class _TossTracker {
+  final SegmenterConfig cfg;
+  final double confFloor;
+  KalmanFilter? kf;
+  double lastT = 0.0;
+  double lastUpdateT = -double.infinity;
+  List<double>? pending; // [t, x, y]
+  int risingConsecutive = 0;
+  double? risingSinceT;
+  double? tossMinY;
+
+  _TossTracker(this.cfg, this.confFloor);
+
+  KalmanFilter _seed(double x, double y, double vx, double vy) => KalmanFilter(
+        F: Mat.identity(4),
+        H: Mat(2, 4)
+          ..set(0, 0, 1)
+          ..set(1, 1, 1),
+        R: Mat.identity(2).scaled(cfg.tossKfRPx),
+        Q: Mat.diag([cfg.tossKfQPos, cfg.tossKfQPos, cfg.tossKfQVel, cfg.tossKfQVel]),
+        P: Mat.identity(4).scaled(100.0),
+        x: Mat.colVec([x, y, vx, vy]),
+      );
+
+  void _predict(double dt) {
+    if (dt < 1e-6) dt = 1e-6;
+    kf!.F = Mat.identity(4)
+      ..set(0, 2, dt)
+      ..set(1, 3, dt);
+    kf!.Q = Mat.diag(
+        [cfg.tossKfQPos, cfg.tossKfQPos, cfg.tossKfQVel, cfg.tossKfQVel]).scaled(dt);
+    kf!.predict();
+  }
+
+  double update(List<Detection> candidates, double headY, double now) {
+    final c = [for (final d in candidates) if (d.conf >= confFloor) d];
+
+    if (kf == null) {
+      final chosen = c.isEmpty
+          ? null
+          : c.reduce((a, b) => b.conf > a.conf ? b : a);
+      var justSeeded = false;
+      if (chosen != null) {
+        if (pending != null) {
+          final pt = pending![0], px = pending![1], py = pending![2];
+          final dt = now - pt;
+          if (dt > 0 &&
+              dt <= cfg.tossSeedMaxDtS &&
+              _hypot(chosen.x - px, chosen.y - py) <= cfg.tossSeedGatePx) {
+            kf = _seed(chosen.x, chosen.y, (chosen.x - px) / dt,
+                (chosen.y - py) / dt);
+            lastT = now;
+            lastUpdateT = now;
+            pending = null;
+            justSeeded = true;
+          } else {
+            pending = [now, chosen.x, chosen.y];
+          }
+        } else {
+          pending = [now, chosen.x, chosen.y];
+        }
+      }
+      return _score(headY, now, justSeeded);
+    }
+
+    final dt = now - lastT;
+    if (dt > 0) _predict(dt);
+    lastT = now;
+
+    Detection? assoc;
+    if (c.isNotEmpty) {
+      final px = kf!.x.d[0], py = kf!.x.d[1];
+      final gated = [
+        for (final d in c)
+          if (_hypot(d.x - px, d.y - py) <= cfg.tossAssocGatePx) d
+      ];
+      if (gated.isNotEmpty) {
+        assoc = gated.reduce((a, b) => b.conf > a.conf ? b : a);
+      }
+    }
+
+    if (assoc != null) {
+      kf!.update(Mat.colVec([assoc.x, assoc.y]));
+      lastUpdateT = now;
+    } else if (now - lastUpdateT > cfg.tossCoastMaxS) {
+      kf = null;
+      risingConsecutive = 0;
+      risingSinceT = null;
+    }
+    return _score(headY, now, assoc != null);
+  }
+
+  double _score(double headY, double now, bool hadDetection) {
+    if (kf == null) {
+      risingConsecutive = 0;
+      risingSinceT = null;
+      return 0.0;
+    }
+    final y = kf!.x.d[1], vx = kf!.x.d[2], vy = kf!.x.d[3];
+    final aboveHead = y < headY;
+    final rising =
+        vy <= -cfg.tossMinVyPxS && vx.abs() <= cfg.tossMaxHorizRatio * vy.abs();
+    if (aboveHead && (tossMinY == null || y < tossMinY!)) tossMinY = y;
+    if (aboveHead && rising && hadDetection) {
+      if (risingConsecutive == 0) risingSinceT = now;
+      risingConsecutive += 1;
+    } else {
+      risingConsecutive = 0;
+      risingSinceT = null;
+    }
+    final durationOk = risingSinceT != null &&
+        now - risingSinceT! >= cfg.tossMinRiseDurationS;
+    if (risingConsecutive >= cfg.tossConfirmFrames && durationOk) return 1.0;
+    if (risingConsecutive >= 1) return 0.5;
+    return 0.0;
+  }
+}
+
+/// Toss (Kalman) + trophy-pose weighted near-serve scoring (port of
+/// _NearServeScorer).
+class _NearServeScorer {
+  final SegmenterConfig cfg;
+  late _TossTracker toss;
+  final List<List<double>> _trophyScores = []; // [score, t]
+  final List<List<double>> _tossScores = [];
+
+  _NearServeScorer(this.cfg) {
+    reset();
+  }
+
+  void reset() {
+    toss = _TossTracker(cfg, cfg.tossConfFloor);
+    _trophyScores.clear();
+    _tossScores.clear();
+  }
+
+  double update(FrameRecord rec, double now) {
+    if (rec.nearBox == null) return 0.0;
+    if (rec.trophy > 0) _trophyScores.add([rec.trophy, now]);
+    final ts = toss.update(rec.toss, rec.nearBox![1].toDouble(), now);
+    if (ts > 0) _tossScores.add([ts, now]);
+    for (final buf in [_trophyScores, _tossScores]) {
+      while (buf.isNotEmpty && now - buf.first[1] > cfg.serveEventWindowS) {
+        buf.removeAt(0);
+      }
+    }
+    final maxTrophy =
+        _trophyScores.fold<double>(0.0, (m, e) => e[0] > m ? e[0] : m);
+    final maxToss = _tossScores.fold<double>(0.0, (m, e) => e[0] > m ? e[0] : m);
+    return cfg.trophyWeight * maxTrophy + cfg.tossWeight * maxToss;
+  }
+
+  bool validate(FrameRecord rec) {
+    if (rec.nearBox == null) return false;
+    return toss.tossMinY != null && toss.tossMinY! < rec.nearBox![1];
+  }
+}
+
+/// Near-serve events: ready-band dwell + toss/trophy score, with the
+/// band-flicker grace window.  Port of detect_serve_events (near path).
+/// (Far side lands in slice 3c.)
+List<ServeEvent> detectNearServeEvents(
+    MatchTelemetry match, SegmenterConfig cfg) {
+  final scorer = _NearServeScorer(cfg);
+  final events = <ServeEvent>[];
+  double? readyStart;
+  var armed = false;
+  final bandHist = <List<double>>[]; // [t, inBand?1:0]
+  var cooldownUntil = -double.infinity;
+  double? bandExitT;
+
+  for (final rec in match.records) {
+    final now = rec.t;
+    if (now < cooldownUntil) continue;
+
+    var inBand = false;
+    if (rec.nearWorld != null) {
+      final dist = -rec.nearWorld![1]; // behind the near baseline (y=0)
+      inBand = cfg.nearBandFt[0] <= dist && dist <= cfg.nearBandFt[1];
+    }
+
+    if (!armed) {
+      if (inBand) {
+        readyStart ??= now;
+        if (now - readyStart > cfg.readyDwellS) {
+          armed = true;
+          scorer.reset();
+          bandHist.clear();
+        }
+      } else {
+        readyStart = null;
+      }
+      continue;
+    }
+
+    // armed: band-flicker grace + out-of-band ratio, then score.
+    if (inBand) {
+      bandExitT = null;
+    } else {
+      bandExitT ??= now;
+    }
+    final inGrace = inBand || (now - bandExitT! <= cfg.tossBandGraceS);
+
+    bandHist.add([now, inBand ? 1.0 : 0.0]);
+    while (bandHist.isNotEmpty && now - bandHist.first[0] > cfg.bandWindowS) {
+      bandHist.removeAt(0);
+    }
+    var ratioExceeded = false;
+    if (bandHist.length > 1) {
+      final total = bandHist.last[0] - bandHist.first[0];
+      if (total > 1.0) {
+        var tOut = 0.0;
+        for (var i = 0; i < bandHist.length - 1; i++) {
+          if (bandHist[i][1] == 0.0) tOut += bandHist[i + 1][0] - bandHist[i][0];
+        }
+        ratioExceeded = tOut / total > cfg.bandOutRatio;
+      }
+    }
+
+    if (ratioExceeded && !inGrace) {
+      armed = false;
+      readyStart = null;
+      continue;
+    }
+    if (!inGrace) continue;
+
+    final score = scorer.update(rec, now);
+    if (score >= cfg.serveScoreThreshold && scorer.validate(rec)) {
+      events.add(ServeEvent(now, 'near', score, tossSeen: true));
+      armed = false;
+      readyStart = null;
+      cooldownUntil = now + cfg.serveRearmS;
+    }
+  }
+  return events;
 }
