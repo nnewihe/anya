@@ -1,9 +1,10 @@
 # rally_app.spec
-# PyInstaller spec for the Rally Detector cross-platform app.
+# PyInstaller spec for the Anya match-cutter app (Rally Reel + Remove Dead Time).
 #
 # Before building, copy model weights into the models/ directory:
 #   models/ball_best.pt   ← from weights/ball/weights/best.pt
 #   models/yolo26n.pt     ← your player detection model
+# The dead-time cutter uses these SAME two models — no extra weights needed.
 #
 # Build commands:
 #   macOS  : pyinstaller rally_app.spec
@@ -17,9 +18,13 @@ from pathlib import Path
 
 block_cipher = None
 
+# app.py imports the pipeline as a package (`from pipeline.X import …`), so the
+# repo ROOT (parent of desktop/) must be on the analysis path, not just desktop/.
+_REPO_ROOT = str(Path('.').resolve().parent)
+
 a = Analysis(
     ['app.py'],
-    pathex=[str(Path('.')  .resolve())],
+    pathex=[str(Path('.').resolve()), _REPO_ROOT],
     binaries=[],
     datas=[
         # Bundle model weights — destination is the 'models' subfolder inside the app

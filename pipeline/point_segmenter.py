@@ -26,7 +26,8 @@ Pipeline
        ball activity (mid-rally far-side shots always have recent trace;
        serves follow dead time), and (d) has the far player tracked nearby
        (presence only — far world DISTANCE is too unreliable to band on).
-       Recorded ST-GCN / ftoss scores are ignored.
+       Any recorded ST-GCN score is ignored (the far-toss channel was
+       dropped entirely).
 
 2. SERVE VALIDATION
      Near candidates are checked for a serve-like ball trace (downward +
@@ -103,7 +104,7 @@ class SegmenterConfig:
     # ---- Static-candidate suppression ----
     # A static ball-like object (light, sign, ball on the ground) can win the
     # best-confidence slot for thousands of frames and starve the toss
-    # trackers.  Cells of the analysis frame where toss/ftoss/fballs
+    # trackers.  Cells of the analysis frame where toss/fballs
     # candidates appear in more than static_frac of ALL frames are noise: no
     # real ball hovers in one spot for minutes.
     static_cell_px: int   = 16
@@ -304,7 +305,6 @@ class FrameRecord:
     toss:  List[Tuple[float, float, float]]
     trophy: float
     stgcn:  float
-    ftoss:  List[Tuple[float, float, float]] = field(default_factory=list)
     fballs: List[Tuple[float, float, float]] = field(default_factory=list)
     rballs: List[Tuple[float, float, float]] = field(default_factory=list)
     # rballs: tracker-guided native-res re-detections added offline by
@@ -358,7 +358,6 @@ def load_telemetry(path: str) -> MatchTelemetry:
                 toss=[tuple(b) for b in obj.get("toss", [])],
                 trophy=float(obj.get("trophy", 0.0)),
                 stgcn=float(obj.get("stgcn", 0.0)),
-                ftoss=[tuple(b) for b in obj.get("ftoss", [])],
                 fballs=[tuple(b) for b in obj.get("fballs", [])],
                 rballs=[tuple(b) for b in obj.get("rballs", [])],
             ))
@@ -368,7 +367,7 @@ def load_telemetry(path: str) -> MatchTelemetry:
 def suppress_static_candidates(match: MatchTelemetry,
                                cfg: SegmenterConfig) -> int:
     """
-    Remove toss/ftoss/fballs candidates that sit in 'hot' cells — grid cells
+    Remove toss/fballs/rballs candidates that sit in 'hot' cells — grid cells
     of the analysis frame where a candidate appears in more than static_frac
     of all frames.  Real balls move; a candidate that lives in one 16px cell
     for minutes is a static false positive that starves the toss trackers
@@ -386,7 +385,7 @@ def suppress_static_candidates(match: MatchTelemetry,
     counts: dict = {}
     for rec in match.records:
         seen = set()
-        for cand_list in (rec.toss, rec.ftoss, rec.fballs, rec.rballs):
+        for cand_list in (rec.toss, rec.fballs, rec.rballs):
             for x, y, _ in cand_list:
                 seen.add((int(x) // cell, int(y) // cell))
         for key in seen:                      # count frames, not detections
@@ -397,7 +396,7 @@ def suppress_static_candidates(match: MatchTelemetry,
         return 0
     dropped = 0
     for rec in match.records:
-        for attr in ("toss", "ftoss", "fballs", "rballs"):
+        for attr in ("toss", "fballs", "rballs"):
             cands = getattr(rec, attr)
             kept = [c for c in cands
                     if (int(c[0]) // cell, int(c[1]) // cell) not in hot]
@@ -1362,7 +1361,7 @@ def write_segments_json(segments: List[PointSegment], path: str) -> None:
 #   python -m pipeline.point_segmenter --self-test
 # =====================================================================
 def _mk_rec(f, t, near_wy=None, far_wy=None, near_wx=13.5, far_wx=13.5,
-            balls=(), toss=(), trophy=0.0, stgcn=0.0, ftoss=(), fballs=()):
+            balls=(), toss=(), trophy=0.0, stgcn=0.0, fballs=()):
     near_box = (430, 350, 490, 500) if near_wy is not None else None
     far_box  = (450, 120, 480, 175) if far_wy  is not None else None
     return FrameRecord(
@@ -1372,7 +1371,7 @@ def _mk_rec(f, t, near_wy=None, far_wy=None, near_wx=13.5, far_wx=13.5,
         far_box=far_box, far_held=False,
         far_world=(far_wx, far_wy) if far_wy is not None else None,
         balls=list(balls), toss=list(toss), trophy=trophy, stgcn=stgcn,
-        ftoss=list(ftoss), fballs=list(fballs),
+        fballs=list(fballs),
     )
 
 

@@ -25,14 +25,14 @@ Per-frame record (compact JSONL keys):
             the segmenter decides what to exclude)
     toss    toss-ball candidates above the near player [[cx, cy, conf], ...]
             (z-box + exclusion + player-box filtered, like the ARMED detector)
-    ftoss   toss-ball candidates above the FAR player, detected on a crop of
-            the NATIVE-resolution frame (the 960x540 analysis frame shrinks a
-            far-side toss ball below the detection floor); coords are mapped
-            back to analysis space.  Gated to the far-baseline band.
-    fballs  ALL ball candidates in the native-res far crop (a taller crop
-            that also covers the first flight of a struck serve below the
-            head line).  Superset of ftoss; feeds the segmenter's ball-trace
-            replay so far serves can be trace-confirmed.  Same gating.
+    fballs  ALL ball candidates in the native-res far crop — the 960x540
+            analysis frame shrinks a far-side ball to 1-3 px, below the
+            detection floor, so the crop is taken from the NATIVE-resolution
+            frame (coords mapped back to analysis space) and covers the first
+            flight of a struck serve below the head line.  Feeds the
+            segmenter's ball-trace replay so far serves can be
+            trace-confirmed.  Gated to the far-baseline band, positioned on
+            the far player box.
     trophy  near-side trophy-pose probability (0.0 if the model is absent)
     stgcn   far-side ST-GCN serve probability (0.0 when not computed)
 
@@ -61,7 +61,10 @@ from .utilities import (Config, _is_in_exclusion_zone, init_court,
 _MODELS_DIR = Path(__file__).parent / "models"
 
 TELEMETRY_SUFFIX  = "_match_telemetry.jsonl"
-TELEMETRY_VERSION = 4   # v2: ftoss; v3: fballs; v4: wide far gate + padded exclusions
+TELEMETRY_VERSION = 4   # v3: fballs; v4: wide far gate + padded exclusions.
+                        # (ftoss channel dropped 2026-07 — far-toss scoring
+                        # was removed; old v4 files that still carry ftoss
+                        # load fine, the field is simply ignored.)
 
 
 @dataclass
@@ -373,43 +376,34 @@ class MatchTelemetryExtractor:
         """Ball candidates around the FAR player from a NATIVE-resolution
         crop: at ~30 px of player height on the analysis frame a far-side
         ball is 1-2 px, below any detection floor, while the native crop
-        keeps it at a detectable size.  Gated to the far-baseline band (same
-        band as the ST-GCN scorer) so the extra model call only runs when a
-        far serve is possible.  Returned coords are in analysis space.
+        keeps it at a detectable size.  Gated to the far-baseline band so the
+        extra model call only runs when a far serve is possible, and
+        positioned on the far player box.  Returned coords are in analysis
+        space.
 
-        Returns (ftoss, fballs):
-          ftoss  candidates inside the toss zone above the player (mirrors
-                 _detect_toss for the near side),
-          fballs every candidate in the crop outside the player box — the
-                 crop extends below the box so the first flight of a struck
-                 serve is captured for the segmenter's trace replay."""
+        Returns fballs: every candidate in the crop outside the player box —
+        the crop extends below the box so the first flight of a struck serve
+        is captured for the segmenter's trace replay."""
         if far_box is None or far_world is None:
-            return [], []
+            return []
         dist = far_world[1] - Config.COURT_LENGTH_FT
         if not (self.cfg.stgcn_gate_min_ft <= dist <= self.cfg.stgcn_gate_max_ft):
-            return [], []
+            return []
         fx1, fy1, fx2, fy2 = far_box
         pw, ph = fx2 - fx1, fy2 - fy1
         if pw <= 0 or ph <= 0:
-            return [], []
+            return []
         ah, aw = frame.shape[:2]
 
-        # Toss zone: bottom bisects the player box; 3x width, 2.5x height —
-        # relatively wider than the near zone because the far box is small
-        # and jittery, and the toss subtends more player-heights up there.
-        pcx, pcy = (fx1 + fx2) / 2.0, (fy1 + fy2) / 2.0
-        zx1, zx2 = pcx - 1.5 * pw, pcx + 1.5 * pw
-        zy2 = pcy
-        zy1 = max(0.0, zy2 - ph * 2.5)
-
-        # Crop: toss zone plus two player-heights below the box, so the
-        # serve's first flight (down-image toward the near court) is seen.
+        # Crop: from 2.5 player-heights above the box (serve toss apex) down
+        # to 2 heights below it, so the serve's first flight (down-image
+        # toward the near court) is seen.
         rx1 = max(0.0, fx1 - 1.5 * pw)
         ry1 = max(0.0, fy1 - ph * 2.5)
         rx2 = min(float(aw), fx2 + 1.5 * pw)
         ry2 = min(float(ah), fy2 + ph * 2.0)
         if rx2 <= rx1 or ry2 <= ry1:
-            return [], []
+            return []
 
         if orig_frame is not None:
             oh, ow = orig_frame.shape[:2]
@@ -421,11 +415,11 @@ class MatchTelemetryExtractor:
         nrx2, nry2 = min(ow, int(rx2 * sx)), min(oh, int(ry2 * sy))
         roi = orig_frame[nry1:nry2, nrx1:nrx2]
         if roi.size == 0:
-            return [], []
+            return []
 
         res = self.ball_model(roi, verbose=False, conf=self.cfg.toss_conf,
                               imgsz=self.cfg.far_ball_imgsz)
-        ftoss, fballs = [], []
+        fballs = []
         if res and res[0].boxes:
             for b in res[0].boxes:
                 bx1, by1, bx2, by2 = b.xyxy[0].tolist()
@@ -435,11 +429,9 @@ class MatchTelemetryExtractor:
                            fy1 - 3 <= cy <= fy2 + 3)
                 if in_pbox or _is_in_exclusion_zone(cx, cy, self.exclusion_zones):
                     continue
-                cand = (round(cx, 1), round(cy, 1), round(float(b.conf[0]), 3))
-                fballs.append(cand)
-                if zx1 <= cx <= zx2 and zy1 <= cy <= zy2:
-                    ftoss.append(cand)
-        return ftoss, fballs
+                fballs.append((round(cx, 1), round(cy, 1),
+                              round(float(b.conf[0]), 3)))
+        return fballs
 
     def _score_trophy(self, frame, near_box, frame_idx: int) -> float:
         if self.trophy_model is None or near_box is None:
@@ -536,7 +528,6 @@ class MatchTelemetryExtractor:
                 "court_width_ft":  Config.COURT_WIDTH_FT,
                 "has_trophy":     self.trophy_model is not None,
                 "has_far_serve":  self.far_serve_detector is not None,
-                "has_far_toss":   True,
                 "has_far_balls":  True,
             }
             fh.write(json.dumps({"meta": meta}) + "\n")
@@ -571,7 +562,7 @@ class MatchTelemetryExtractor:
 
                     balls  = self._detect_balls(frame)
                     toss   = self._detect_toss(frame, near_box)
-                    ftoss, fballs = self._detect_far_native_balls(
+                    fballs = self._detect_far_native_balls(
                         orig_frame, frame, far_box, far_world, t)
                     trophy = self._score_trophy(frame, near_box, frame_idx)
                     stgcn  = self._score_far_serve(frame, orig_frame, far_box,
@@ -589,7 +580,6 @@ class MatchTelemetryExtractor:
                                 if far_world else None),
                         "balls":  [list(b) for b in balls],
                         "toss":   [list(b) for b in toss],
-                        "ftoss":  [list(b) for b in ftoss],
                         "fballs": [list(b) for b in fballs],
                         "trophy": round(trophy, 3),
                         "stgcn":  round(stgcn, 3),
