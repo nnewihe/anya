@@ -915,3 +915,232 @@ List<ServeEvent> hmmFilterEvents(List<ServeEvent> events, SegmenterConfig cfg) {
   }
   return kept;
 }
+
+// ===========================================================================
+// Player kinematics + point-end fusion + orchestration (slice 3d)
+// ===========================================================================
+int _bisectRight(List<double> a, double x) {
+  var lo = 0, hi = a.length;
+  while (lo < hi) {
+    final mid = (lo + hi) >> 1;
+    if (x < a[mid]) {
+      hi = mid;
+    } else {
+      lo = mid + 1;
+    }
+  }
+  return lo;
+}
+
+/// Near-player smoothed speed + direction-reversal ("rally cue") timeline.
+/// Port of PlayerKinematics (near player only; far tracking too unreliable).
+class PlayerKinematics {
+  final List<double?> speedNear;
+  final List<double> rallyCues;
+  PlayerKinematics._(this.speedNear, this.rallyCues);
+
+  factory PlayerKinematics(MatchTelemetry match, SegmenterConfig cfg) {
+    final n = match.ts.length;
+    final speedNear = List<double?>.filled(n, null);
+    final reversalTimes = <double>[];
+
+    final valid = <List<double>>[]; // [t, wx, wy, idx]
+    for (var i = 0; i < match.records.length; i++) {
+      final r = match.records[i];
+      if (r.nearWorld != null) {
+        valid.add([r.t, r.nearWorld![0], r.nearWorld![1], i.toDouble()]);
+      }
+    }
+
+    var j = 0;
+    var lastSign = 0;
+    for (var k = 0; k < valid.length; k++) {
+      final t1 = valid[k][0], x1 = valid[k][1], y1 = valid[k][2];
+      final idx = valid[k][3].toInt();
+      while (j < k && t1 - valid[j][0] > cfg.speedWindowS) {
+        j++;
+      }
+      final jj =
+          (j > 0 && t1 - valid[j][0] < cfg.speedMinDtS) ? math.max(0, j - 1) : j;
+      final t0 = valid[jj][0], x0 = valid[jj][1], y0 = valid[jj][2];
+      final dt = t1 - t0;
+      if (dt < cfg.speedMinDtS) continue;
+      final vx = (x1 - x0) / dt, vy = (y1 - y0) / dt;
+      speedNear[idx] = _hypot(vx, vy);
+      if (vx.abs() >= cfg.reversalSpeedFtS) {
+        final sign = vx > 0 ? 1 : -1;
+        if (lastSign != 0 && sign != lastSign) reversalTimes.add(t1);
+        lastSign = sign;
+      }
+    }
+    return PlayerKinematics._(speedNear, reversalTimes);
+  }
+
+  bool rallyLike(double t0, double t1) {
+    final i = _bisectRight(rallyCues, t0);
+    return i < rallyCues.length && rallyCues[i] < t1;
+  }
+
+  double chainActivity(double seedT, double capT, double gapS) {
+    var last = seedT;
+    var i = _bisectRight(rallyCues, seedT);
+    while (i < rallyCues.length && rallyCues[i] <= capT) {
+      if (rallyCues[i] - last <= gapS) {
+        last = rallyCues[i];
+        i++;
+      } else {
+        break;
+      }
+    }
+    return last;
+  }
+}
+
+class PointEnd {
+  final double endT;
+  final String method;
+  const PointEnd(this.endT, this.method);
+}
+
+/// Estimate when the point starting at [serveT] ended, searching only inside
+/// (serveT, tNext).  Port of find_point_end: trace-chain anchored at the serve,
+/// extended/replaced by rally-cue player activity.
+PointEnd findPointEnd(MatchTelemetry match, PlayerKinematics kin, double serveT,
+    double tNext, SegmenterConfig cfg,
+    {List<ReplayFrame>? replay}) {
+  var cap = math.min(math.min(tNext - cfg.nextServeGuardS, serveT + cfg.maxPointS),
+      match.duration);
+  cap = math.max(cap, serveT + cfg.minPointS);
+
+  final rep = replay ?? replayBallTracker(match, serveT - 0.3, cap, cfg);
+  final intervals = aliveIntervals(rep, cfg.aliveMergeGapS);
+
+  // 1. Trace chain anchored at the serve.
+  double? chainEnd;
+  List<double>? startIv;
+  for (final iv in intervals) {
+    if (serveT - 0.5 <= iv[0] && iv[0] <= serveT + cfg.serveChainWindowS) {
+      startIv = iv;
+      break;
+    }
+  }
+  if (startIv != null) {
+    var ce = math.max(startIv[1], serveT);
+    for (final iv in intervals) {
+      if (iv[0] <= ce) {
+        ce = math.max(ce, iv[1]);
+        continue;
+      }
+      final gap = iv[0] - ce;
+      if (gap <= cfg.chainGapS) {
+        ce = iv[1];
+      } else if (gap <= cfg.chainGapActiveS && kin.rallyLike(ce, iv[0])) {
+        ce = iv[1];
+      } else {
+        break;
+      }
+    }
+    chainEnd = ce;
+  }
+
+  // 2. Player-activity chaining.
+  double end;
+  String method;
+  if (chainEnd != null) {
+    var actEnd = kin.chainActivity(chainEnd, cap, cfg.activityGapS);
+    actEnd = math.min(actEnd, chainEnd + cfg.activityExtendMaxS);
+    end = math.max(chainEnd, actEnd);
+    method = actEnd <= chainEnd ? 'trace' : 'trace+activity';
+  } else {
+    final actEnd = kin.chainActivity(serveT, cap, cfg.activityGapS);
+    if (actEnd > serveT) {
+      end = actEnd;
+      method = 'activity';
+    } else {
+      end = serveT + cfg.fallbackPointS;
+      method = 'fallback';
+    }
+  }
+
+  end = math.min(math.max(end, serveT + cfg.minPointS), cap);
+  return PointEnd(end, method);
+}
+
+class PointSegment {
+  final int point;
+  final String side;
+  final double serveT;
+  final double endT;
+  final double start; // serveT - pre_roll (clamped)
+  final double end; // endT + end_pad (clamped)
+  final String endMethod;
+  final bool traceConfirmed;
+  final double score;
+  const PointSegment({
+    required this.point,
+    required this.side,
+    required this.serveT,
+    required this.endT,
+    required this.start,
+    required this.end,
+    required this.endMethod,
+    required this.traceConfirmed,
+    required this.score,
+  });
+}
+
+/// Full stage-2 segmentation: telemetry → point segments.  Port of
+/// segment_match — the top-level entry the cutter/UI calls.
+List<PointSegment> segmentMatch(MatchTelemetry match,
+    {SegmenterConfig? config, List<FarMiss>? farMissesOut}) {
+  final cfg = config ?? SegmenterConfig();
+  if (match.meta.isNotEmpty) {
+    final cl = match.meta['court_length_ft'];
+    if (cl != null) cfg.courtLengthFt = (cl as num).toDouble();
+    final size = match.meta['analysis_size'] as List?;
+    if (size != null) cfg.frameHeightPx = (size[1] as num).toDouble();
+  }
+
+  suppressStaticCandidates(match, cfg);
+  final farMisses = farMissesOut ?? <FarMiss>[];
+  final near = detectServeEvents(match, 'near', cfg);
+  final far = detectServeEvents(match, 'far', cfg, farMisses: farMisses);
+
+  final kin = PlayerKinematics(match, cfg);
+
+  // Near-serve trace confirmation BEFORE dedupe (a confirmed real serve can
+  // displace the unconfirmed aborted-toss candidate).  Far events are
+  // trace-born (confirmed by construction).
+  final candidates = [...near, ...far]..sort((a, b) => a.t.compareTo(b.t));
+  for (final evt in candidates) {
+    if (evt.side == 'near') {
+      final rep = replayBallTracker(
+          match, evt.t - 0.3, evt.t + cfg.confirmWindowS, cfg);
+      evt.traceConfirmed = confirmServeTrace(rep, cfg);
+    }
+  }
+
+  var events = dedupeServeEvents(candidates, cfg);
+  events = hmmFilterEvents(events, cfg);
+  if (events.isEmpty) return [];
+
+  final segments = <PointSegment>[];
+  for (var i = 0; i < events.length; i++) {
+    final evt = events[i];
+    final tNext = i + 1 < events.length ? events[i + 1].t : match.duration;
+    final pe = findPointEnd(match, kin, evt.t, tNext, cfg);
+    final pre = evt.side == 'far' ? cfg.farPreRollS : cfg.preRollS;
+    segments.add(PointSegment(
+      point: i + 1,
+      side: evt.side,
+      serveT: evt.t,
+      endT: pe.endT,
+      start: math.max(0.0, evt.t - pre),
+      end: math.min(match.duration, pe.endT + cfg.endPadS),
+      endMethod: pe.method,
+      traceConfirmed: evt.traceConfirmed,
+      score: evt.score,
+    ));
+  }
+  return segments;
+}
