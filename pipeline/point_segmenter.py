@@ -12,33 +12,36 @@ while tuning.  All knobs live in SegmenterConfig.
 Pipeline
 --------
 1. SERVE EVENTS (point starts)
-     Near side: ready-band dwell behind the near baseline, then the
-       toss+trophy weighted score (port of TransitionEngine's ARMED logic).
-     Far side:  ready-band dwell behind the far baseline, then a weighted
-       blend of the native-res far-toss track and the ST-GCN serve
-       probability; a sustained-high ST-GCN score alone can also raise a
-       candidate (far_stgcn_solo_threshold).  The toss is confirmatory, not
-       mandatory.  v1 telemetry (no ftoss) falls back to the raw ST-GCN
-       score alone.
+     Near side: ready-band dwell behind the near baseline, then a
+       toss+trophy weighted score.  The toss half is a Kalman-filtered
+       tracker (_TossTracker) testing the physical signature directly — a
+       ball moving up, predominantly vertically, above the player's head —
+       rather than counting consecutive raw frame-to-frame rises.
+     Far side:  BALL TRACE ONLY.  The pose/toss scoring path (ST-GCN blend)
+       proved spurious on real footage, so far serves are detected directly
+       from the trace signature no other tennis event reproduces: a fresh
+       ball trace that (a) begins in the far region of the frame, (b) shows
+       serve-like downward + horizontal motion (perspective-scaled) within
+       its first far_trace_head_s, (c) follows far_trace_quiet_s with no
+       ball activity (mid-rally far-side shots always have recent trace;
+       serves follow dead time), and (d) has the far player tracked nearby
+       (presence only — far world DISTANCE is too unreliable to band on).
+       Recorded ST-GCN / ftoss scores are ignored.
 
 2. SERVE VALIDATION
-     Each candidate is checked for a serve-like ball trace (downward +
+     Near candidates are checked for a serve-like ball trace (downward +
      horizontal motion shortly after the event, perspective-scaled) by
      replaying the recorded ball detections — including the native-res far
-     crop (fballs), without which a far serve can never grow a confirmable
-     trace — through the IMM tracker.  Far candidates additionally get
-     receiver-side corroboration: the near player stands quasi-still, then
-     bursts into motion right after a genuine far serve.  A far candidate
-     with no support at all (no trace, no toss, no receiver reaction) is
-     dropped and logged to the far-miss report.
-     Candidates are then deduped: within min_serve_separation_s a supported
-     event beats an unsupported one — this is what recovers the real serve
-     after an aborted toss (server catches the ball: rising toss fires a
-     candidate, but the near-vertical drop of a caught ball never confirms,
-     while the real serve seconds later does).  Ties fall back to
-     near-beats-far, then earlier-wins.
+     crop (fballs) — through the IMM tracker.  Far candidates are born from
+     the trace itself, so they are confirmed by construction.
+     Candidates are then deduped: within min_serve_separation_s a
+     trace-confirmed event beats an unconfirmed one — this is what recovers
+     the real serve after an aborted toss (server catches the ball: rising
+     toss fires a candidate, but the near-vertical drop of a caught ball
+     never confirms, while the real serve seconds later does).  Ties fall
+     back to near-beats-far, then earlier-wins.
      A Viterbi-decoded serving-side HMM (serves are sticky — the same player
-     serves a whole game) then drops unsupported events whose side disagrees
+     serves a whole game) then drops unconfirmed events whose side disagrees
      with the inferred pattern.
 
 3. POINT ENDS
@@ -47,11 +50,11 @@ Pipeline
        • Ball-trace chain — maximal "genuinely moving" trace intervals from
          the tracker replay, chained across gaps; larger gaps are bridged
          only when player kinematics look rally-like.
-       • Player kinematics — direction reversals and simultaneous two-player
-         movement are rally signatures; steady one-player walking (ball
-         retrieval) is not.  They extend a trace chain that died early (weak
-         far-side ball tracking) and are the sole authority when no usable
-         trace exists at all.
+       • Player kinematics — NEAR player only (far-side tracking is too
+         unreliable to contribute cues).  Direction reversals are the rally
+         signature; steady walking (ball retrieval) is not.  They extend a
+         trace chain that died early (weak far-side ball tracking) and are
+         the sole authority when no usable trace exists at all.
        • Carried-ball suppression — a ball whose velocity is coupled to the
          walking near player is being carried, not played.
 
@@ -73,6 +76,7 @@ from dataclasses import dataclass, field
 from typing import Deque, List, Optional, Sequence, Tuple
 
 import numpy as np
+from filterpy.kalman import KalmanFilter
 
 from .ball_tracker import BallTrackManager, make_image_row_perspective
 
@@ -86,39 +90,15 @@ class SegmenterConfig:
     court_length_ft: float = 78.0
     frame_height_px: float = 540.0
 
-    # ---- Ready-band gating (WAITING->ARMED port) ----
+    # ---- Ready-band gating (near side only — the far detector gates on
+    # far-player PRESENCE, not position: homography-projected far distances
+    # proved too unreliable to band on, see far_presence_slack_s) ----
     near_band_ft: Tuple[float, float] = (-0.5, 3.5)
-    far_band_ft:  Tuple[float, float] = (-6.0, 6.0)   # fallback when selfcal lacks data
     ready_dwell_s:    float = 0.2       # lowered from 0.4: a brief in-band window
-                                        # (noisy far-court tracking) still needs to
-                                        # arm before the serve itself, or the whole
-                                        # candidate is lost — validated on folder 23
-                                        # ground truth. Shared with the near-side
-                                        # detector; watch near-side false-positive
-                                        # rate if that ever regresses.
+                                        # still needs to arm before the serve
+                                        # itself, or the whole candidate is lost.
     band_window_s:    float = 2.0
     band_out_ratio:   float = 0.25
-
-    # ---- Far-band self-calibration ----
-    # far_world distances are homography-amplified and carry per-video offsets
-    # of +15..+25 ft (measured on the ground-truth folders), so a fixed far
-    # band misses real serves.  The far player spends most of the match near
-    # their baseline: the local median recorded distance IS the calibration
-    # offset.  WINDOWED, not whole-video: the offset itself can step mid-video
-    # (a tracking dropout followed by a different steady-state — observed
-    # jumping from ~10 ft to ~45 ft after a 40 s gap in one ground-truth
-    # folder), so a single whole-video median band only covers whichever
-    # regime dominates the sample count and blinds the segmenter to the rest.
-    far_band_selfcal: bool = True
-    far_band_halfwidth_ft:  float = 9.0
-    far_selfcal_min_frames: int   = 500     # whole-video fallback threshold
-    far_selfcal_window_s:   float = 60.0    # rolling recalibration window
-    far_selfcal_min_window_frames: int = 300  # per-window fallback threshold:
-                                              # high enough that a sparsely-
-                                              # tracked window (noise) falls
-                                              # back to the whole-video band
-                                              # instead of recalibrating onto
-                                              # a handful of stray samples
 
     # ---- Static-candidate suppression ----
     # A static ball-like object (light, sign, ball on the ground) can win the
@@ -129,39 +109,121 @@ class SegmenterConfig:
     static_cell_px: int   = 16
     static_frac:    float = 0.04
 
-    # ---- Near serve scoring (toss + trophy) ----
-    toss_conf_floor:     float = 0.5
-    toss_gap_tolerance:  int   = 1
-    toss_confirm_frames: int   = 2
+    # ---- Near serve scoring: Kalman-filtered toss (see _TossTracker) ----
+    # The toss test is literally "a ball moving up, predominantly vertically,
+    # above the player's head" — a constant-velocity KF over [x,y,vx,vy]
+    # evaluates that directly on the FILTERED state, instead of the old
+    # frame-to-frame pairwise y-comparison (one pixel of jitter read as
+    # "stopped rising"; picking the frame's highest-confidence candidate let
+    # an unrelated blob elsewhere in the toss ROI hijack the track).
+    toss_conf_floor:      float = 0.5    # raw-candidate confidence floor,
+                                         # applied before seeding/association
+    toss_confirm_frames:  int   = 2      # consecutive REAL-DETECTION frames
+                                         # (not coasting/predict-only ticks —
+                                         # see had_detection in _score) that
+                                         # must satisfy the rise test
+    toss_min_rise_duration_s: float = 0.0  # optional extra wall-clock floor
+                                         # on top of toss_confirm_frames.
+                                         # Left at 0 (off): the had_detection
+                                         # gate already does the real work —
+                                         # a genuine dense toss can clear 2
+                                         # consecutive real frames in ~17ms at
+                                         # 60fps, just as fast as a spurious
+                                         # rally motion can, so wall-clock
+                                         # duration alone doesn't separate
+                                         # them.  Requiring the streak to be
+                                         # built from real detections (not
+                                         # velocity coasted forward through
+                                         # gaps) does: two genuine detections
+                                         # 0.1s apart bridged by coasting
+                                         # frames no longer inflates into a
+                                         # false confirm (folder 21, t=266.7).
+    toss_seed_gate_px:    float = 60.0   # two raw candidates within this and
+    toss_seed_max_dt_s:   float = 0.25   # ... this much time seed a velocity
+                                         # estimate (need 2 points to start)
+    toss_assoc_gate_px:   float = 45.0   # radius around the filter's
+                                         # PREDICTED position that a candidate
+                                         # must fall inside to update it — a
+                                         # confident detection outside the
+                                         # gate can no longer hijack the track
+    toss_coast_max_s:     float = 0.20   # predict-only grace period with no
+                                         # associated detection before the
+                                         # track is declared dead and must
+                                         # reseed.  A constant-velocity
+                                         # predict leaves vx/vy unchanged, so
+                                         # a short gap doesn't erase the
+                                         # rising trend the way the old
+                                         # 1-frame tolerance did.
+    toss_min_vy_px_s:     float = 80.0   # filtered upward speed required to
+                                         # count as "rising" (not just wobble)
+    toss_max_horiz_ratio: float = 1.2    # filtered |vx| may be at most this
+                                         # multiple of |vy| — "predominantly
+                                         # vertical", rejects lateral motion
+    toss_kf_q_pos:        float = 4.0    # KF process noise: position
+    toss_kf_q_vel:        float = 800.0  # KF process noise: velocity (a
+                                         # toss decelerates under gravity; a
+                                         # constant-velocity model needs live
+                                         # slack to track that — same role as
+                                         # ball_tracker.py's q_smooth)
+    toss_kf_r_px:         float = 16.0   # KF measurement noise (detector jitter)
+    toss_band_grace_s:    float = 0.35   # bridge a brief ready-band exit: toss
+                                         # scoring (and the ratio-disarm) stay
+                                         # live for this long past the moment
+                                         # in_band goes False, clocked from
+                                         # WALL TIME since the exit — not from
+                                         # whether a Kalman track happens to
+                                         # exist, which a real mid-rally motion
+                                         # could otherwise exploit to inherit
+                                         # an old track's momentum indefinitely
+                                         # (see detect_serve_events near-loop)
     trophy_weight: float = 0.2
     toss_weight:   float = 0.8
     serve_score_threshold: float = 0.55
     serve_event_window_s:  float = 1.2
 
-    # ---- Far serve scoring (toss-primary blend; see _FarServeScorer) ----
-    # stgcn_threshold and far_stgcn_solo_threshold both lowered from 0.55/0.70:
-    # on real ground truth (folder 23) the native-res far-toss detector rarely
-    # fires, so the 65/35 blend chronically discounted decent ST-GCN-only
-    # scores (e.g. 0.685 blended down to ~0.24, just under the old 0.70 solo
-    # cutoff).  Recovered far_side_recall from 0/15 to 10/15 (precision 0.769)
-    # combined with the windowed self-cal band below.
-    stgcn_threshold: float = 0.30       # threshold on the blended far score
-    far_toss_weight:  float = 0.65
-    far_stgcn_weight: float = 0.35
-    far_toss_conf_floor: float = 0.3    # native-res far balls score lower conf
-    far_stgcn_solo_threshold: float = 0.30  # ST-GCN alone can fire above this
-                                            # (toss confirms, it isn't mandatory)
-    far_miss_floor: float = 0.30        # log far near-misses scoring above this
-
-    # ---- Receiver-side corroboration of far serves ----
-    # A far serve has a loud NEAR-side signature: the receiver stands quasi-
-    # still, then bursts into motion within ~2 s of the serve.  Near-side
-    # tracking is the strongest sensor in the pipeline, so this corroborates
-    # far events that the weak far-side ball trace cannot confirm.
-    receiver_still_window_s: float = 1.3
-    receiver_still_max_ft_s: float = 2.5
-    receiver_react_window_s: float = 2.0
-    receiver_react_min_ft_s: float = 4.5
+    # ---- Far serve detection (ball-trace only) ----
+    # The ST-GCN/far-toss scoring path was spurious on real footage and was
+    # removed: far serves fire only from the serve-signature ball trace
+    # (see far_serve_trace_onsets).  The near-serve trace thresholds
+    # (trace_downward_px_s / trace_horizontal_px_s, perspective-scaled)
+    # define the motion part of the signature.
+    # The far-region cutoff is derived from the OBSERVED far-player feet
+    # (median feet-y + far_origin_pad_px) whenever enough far boxes exist —
+    # a fixed frame fraction is not portable across cameras (folder 23's far
+    # baseline sits at y≈0.5*h, folder 68's at y≈0.42*h, where a 0.6*h cutoff
+    # swallowed near-serve ball flights as "far origin").
+    far_origin_pad_px:    float = 45.0  # cutoff = far feet median + this;
+                                        # folder-23 GT traces start up to
+                                        # ~20 px below the feet median
+    far_feet_min_samples: int   = 300   # below this, fall back to the frame
+                                        # fraction
+    far_trace_origin_frac: float = 0.6  # FALLBACK cutoff fraction of frame
+                                        # height when far tracking is too
+                                        # sparse to calibrate (tuned on
+                                        # folder 23; 14/15 recall)
+    far_trace_head_s:  float = 2.5      # signature must appear this early in
+                                        # the trace (sparse far tracking can
+                                        # take ~2 s to grow the stretch); a
+                                        # near serve's ball needs longer than
+                                        # this to come back down from the far
+                                        # side, so rally returns don't qualify
+    far_trace_quiet_s: float = 4.0      # no genuine trace this long before
+                                        # the onset — mid-rally far shots
+                                        # always have recent ball activity,
+                                        # serves follow dead time
+    far_trace_min_interval_s: float = 0.25  # intervals shorter than this are
+                                        # tracker micro-blips: they don't
+                                        # reset the quiet clock (a 0.07 s
+                                        # flicker 0.7 s before a real
+                                        # folder-23 serve was blocking it)
+    far_presence_slack_s: float = 1.0   # far player must be tracked within
+                                        # this of the onset.  Presence only:
+                                        # the homography-projected far
+                                        # DISTANCE is too unreliable to gate
+                                        # on (folder 23: serve-time distance
+                                        # flip-flopped between regimes ±20 ft
+                                        # faster than any self-cal band could
+                                        # track, rejecting 6 real serves)
 
     # ---- Serve-event bookkeeping ----
     min_serve_separation_s: float = 8.0  # dedupe window: two serves can't be this close
@@ -181,6 +243,15 @@ class SegmenterConfig:
     move_velocity_floor_px_s: float = 20.0   # perspective-scaled
     alive_merge_gap_s: float = 0.6           # micro-gaps folded into one interval
     racket_spike_thresh: float = 0.25
+    inbox_accept_px: float = 35.0   # accept detections inside a player box
+                                    # when within this (perspective-scaled) of
+                                    # the track's last position — keeps the
+                                    # contact-moment samples the blanket
+                                    # in-box exclusion deletes.  Neutral on
+                                    # interval-level metrics (folder 23 A/B:
+                                    # coverage/frags/lag unchanged, stray +1 s);
+                                    # exists for contact anchoring in the
+                                    # trace fitter / speed estimation.
 
     # ---- Carried-ball suppression (port of rally_detector coupling test) ----
     coupling_window_s:        float = 0.40
@@ -189,8 +260,11 @@ class SegmenterConfig:
 
     # ---- Point-end chaining ----
     serve_chain_window_s: float = 5.0   # first trace interval must start this soon after serve
-    chain_gap_s:          float = 2.5   # always bridge trace gaps up to this
-    chain_gap_active_s:   float = 6.0   # bridge up to this when players look rally-like
+    # chain_gap_s / chain_gap_active_s relaxed from 2.5/6.0: points were being
+    # cut short — trace dropouts (especially far-side) opened gaps the old
+    # thresholds refused to bridge.
+    chain_gap_s:          float = 4.0   # always bridge trace gaps up to this
+    chain_gap_active_s:   float = 8.0   # bridge up to this when players look rally-like
     activity_gap_s:       float = 2.5   # gap allowed between rally cues when chaining activity
     activity_extend_max_s: float = 12.0 # cap on extending a trace chain via activity alone
     fallback_point_s:     float = 6.0   # assumed length when no evidence at all (ace/short point)
@@ -198,17 +272,20 @@ class SegmenterConfig:
     min_point_s:          float = 1.5
     next_serve_guard_s:   float = 1.5
 
-    # ---- Player-kinematics rally cues ----
+    # ---- Player-kinematics rally cues (NEAR player only — far tracking is
+    # too unreliable to contribute; the old "both players moving" cue died
+    # with it, since it needed a far speed) ----
     speed_window_s:       float = 0.4
     speed_min_dt_s:       float = 0.15
     reversal_speed_ft_s:  float = 3.0   # |vx| needed to count as a significant direction
-    both_moving_ft_s:     float = 3.0   # both players at/above this = rally cue
-    speed_stale_s:        float = 0.6   # forward-fill limit when sampling speeds
 
     # ---- Output segments ----
     pre_roll_s:     float = 2.0    # before a near serve event (captures the motion start)
-    far_pre_roll_s: float = 3.0    # ST-GCN fires later into the motion — wider pre-roll
-    end_pad_s:      float = 1.0
+    far_pre_roll_s: float = 4.5    # trace onset = ball contact + tracker warmup,
+                                   # up to ~4.2 s after the labeled serve-motion
+                                   # start on folder-23 ground truth
+    end_pad_s:      float = 2.0    # raised from 1.0: ends were landing ~0.5–2 s
+                                   # before the labeled rally end (folder 23)
 
 
 # =====================================================================
@@ -229,6 +306,9 @@ class FrameRecord:
     stgcn:  float
     ftoss:  List[Tuple[float, float, float]] = field(default_factory=list)
     fballs: List[Tuple[float, float, float]] = field(default_factory=list)
+    rballs: List[Tuple[float, float, float]] = field(default_factory=list)
+    # rballs: tracker-guided native-res re-detections added offline by
+    # trace_enrich.py — optional channel, absent from raw stage-1 output.
 
 
 class MatchTelemetry:
@@ -280,6 +360,7 @@ def load_telemetry(path: str) -> MatchTelemetry:
                 stgcn=float(obj.get("stgcn", 0.0)),
                 ftoss=[tuple(b) for b in obj.get("ftoss", [])],
                 fballs=[tuple(b) for b in obj.get("fballs", [])],
+                rballs=[tuple(b) for b in obj.get("rballs", [])],
             ))
     return MatchTelemetry(meta, records)
 
@@ -305,7 +386,7 @@ def suppress_static_candidates(match: MatchTelemetry,
     counts: dict = {}
     for rec in match.records:
         seen = set()
-        for cand_list in (rec.toss, rec.ftoss, rec.fballs):
+        for cand_list in (rec.toss, rec.ftoss, rec.fballs, rec.rballs):
             for x, y, _ in cand_list:
                 seen.add((int(x) // cell, int(y) // cell))
         for key in seen:                      # count frames, not detections
@@ -316,7 +397,7 @@ def suppress_static_candidates(match: MatchTelemetry,
         return 0
     dropped = 0
     for rec in match.records:
-        for attr in ("toss", "ftoss", "fballs"):
+        for attr in ("toss", "ftoss", "fballs", "rballs"):
             cands = getattr(rec, attr)
             kept = [c for c in cands
                     if (int(c[0]) // cell, int(c[1]) // cell) not in hot]
@@ -324,69 +405,6 @@ def suppress_static_candidates(match: MatchTelemetry,
             setattr(rec, attr, kept)
     match._static_suppressed = True
     return dropped
-
-
-def selfcal_far_band(match: MatchTelemetry,
-                     cfg: SegmenterConfig) -> Tuple[float, float]:
-    """Whole-video far ready band (single median offset). Kept for callers
-    that want one static band; detect_serve_events uses the windowed
-    version (selfcal_far_bands) so a mid-video calibration step doesn't
-    blind half the match."""
-    if not cfg.far_band_selfcal:
-        return cfg.far_band_ft
-    L = cfg.court_length_ft
-    dists = sorted(r.far_world[1] - L for r in match.records
-                   if r.far_world is not None)
-    if len(dists) < cfg.far_selfcal_min_frames:
-        return cfg.far_band_ft
-    center = dists[len(dists) // 2]
-    return (center - cfg.far_band_halfwidth_ft,
-            center + cfg.far_band_halfwidth_ft)
-
-
-def selfcal_far_bands(match: MatchTelemetry,
-                      cfg: SegmenterConfig) -> "_FarBandLookup":
-    """
-    Rolling far ready band: the video is chopped into far_selfcal_window_s
-    chunks, each independently re-centered on its own median far-player
-    distance.  A chunk with too few far-tracked frames borrows the
-    whole-video band (selfcal_far_band) as fallback.  Returns a callable
-    lookup: band_fn(t) -> (lo, hi).
-    """
-    fallback = selfcal_far_band(match, cfg)
-    if not cfg.far_band_selfcal or not match.records:
-        return _FarBandLookup([fallback], 0.0, match.duration or 1.0)
-
-    L = cfg.court_length_ft
-    win = max(1.0, cfg.far_selfcal_window_s)
-    duration = match.duration
-    n_chunks = max(1, int(duration // win) + 1)
-    buckets: List[List[float]] = [[] for _ in range(n_chunks)]
-    for r in match.records:
-        if r.far_world is not None:
-            idx = min(n_chunks - 1, int(r.t // win))
-            buckets[idx].append(r.far_world[1] - L)
-
-    bands = []
-    for vals in buckets:
-        if len(vals) >= cfg.far_selfcal_min_window_frames:
-            vals.sort()
-            center = vals[len(vals) // 2]
-            bands.append((center - cfg.far_band_halfwidth_ft,
-                         center + cfg.far_band_halfwidth_ft))
-        else:
-            bands.append(fallback)
-    return _FarBandLookup(bands, 0.0, win)
-
-
-class _FarBandLookup:
-    def __init__(self, bands: List[Tuple[float, float]], t0: float, win: float):
-        self.bands = bands
-        self.win = win
-
-    def __call__(self, t: float) -> Tuple[float, float]:
-        idx = min(len(self.bands) - 1, max(0, int(t // self.win)))
-        return self.bands[idx]
 
 
 # =====================================================================
@@ -399,18 +417,49 @@ class ServeEvent:
     score: float
     trace_confirmed: bool = False
     toss_seen: bool = False      # a toss track peaked above the server's head
-    corroborated: bool = False   # toss_seen or receiver-side reaction
 
     @property
     def supported(self) -> bool:
-        """Any independent evidence beyond the serve score itself."""
-        return self.trace_confirmed or self.corroborated
+        """Independent evidence beyond the serve score: a serve-like ball
+        trace.  Far events are trace-born, so they are always supported."""
+        return self.trace_confirmed
 
 
 class _TossTracker:
-    """Rising-ball-above-the-head evidence (TransitionEngine's ARMED toss
-    logic), shared by both serve scorers — only the candidate list, the
-    head line, and the confidence floor differ between sides."""
+    """
+    Kalman-filtered detector for "a ball moving up, predominantly
+    vertically, above the player's head" — the near-serve toss signature.
+
+    Replaces frame-to-frame pairwise y-comparison (fragile: one pixel of
+    detection jitter reads as "stopped rising", and picking the frame's
+    highest-confidence candidate lets an unrelated blob elsewhere in the
+    toss ROI hijack the track) with state estimation over [x, y, vx, vy]:
+
+      SEED       two raw candidates within toss_seed_gate_px / _max_dt_s of
+                 each other start a constant-velocity filter (a velocity
+                 estimate needs 2 points).
+      ASSOCIATE  each frame, the candidate nearest the filter's PREDICTED
+                 position — not the frame's highest raw confidence — updates
+                 it.  A confident detection outside the gate is ignored, so
+                 it can no longer hijack the track.
+      COAST      a frame with no candidate inside the gate is predict-only.
+                 A constant-velocity predict leaves vx/vy unchanged, so a
+                 short detection gap doesn't erase the rising trend the way
+                 the old 1-frame gap tolerance did.  The track only dies
+                 after toss_coast_max_s with no association.
+      CONFIRM    the physical test runs on the FILTERED velocity directly:
+                 vy <= -toss_min_vy_px_s (rising at a meaningful rate) and
+                 |vx| <= toss_max_horiz_ratio * |vy| (predominantly
+                 vertical), while the filtered position sits above head_y —
+                 sustained for toss_confirm_frames CONSECUTIVE REAL
+                 detections.  Real detections specifically, not coasting
+                 (predict-only) ticks: a coasting frame reuses the last
+                 velocity estimate unchanged, so counting it toward the
+                 streak lets 2 genuine detections a fraction of a second
+                 apart, bridged by several coast frames, "confirm" for free
+                 with no new evidence — that inflated a fast rally
+                 racket-swing into a false near serve (folder 21, t=266.7).
+    """
 
     def __init__(self, cfg: SegmenterConfig, conf_floor: float):
         self.cfg = cfg
@@ -418,55 +467,121 @@ class _TossTracker:
         self.reset()
 
     def reset(self) -> None:
-        self.toss_consecutive = 0
-        self.toss_gap = 0
-        self.toss_above_head = False
+        self.kf: Optional[KalmanFilter] = None
+        self.last_t: float = 0.0
+        self.last_update_t: float = -math.inf
+        self.pending: Optional[Tuple[float, float, float]] = None  # (t, x, y)
+        self.rising_consecutive: int = 0
+        self.rising_since_t: Optional[float] = None
         self.toss_min_y: Optional[float] = None
-        self.last_toss: Optional[dict] = None
+
+    def _seed(self, x: float, y: float, vx: float, vy: float) -> None:
+        kf = KalmanFilter(dim_x=4, dim_z=2)
+        kf.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=float)
+        kf.R = np.eye(2, dtype=float) * self.cfg.toss_kf_r_px
+        kf.P = np.eye(4, dtype=float) * 100.0
+        kf.x = np.array([[x], [y], [vx], [vy]], dtype=float)
+        self.kf = kf
+
+    def _predict(self, dt: float) -> None:
+        dt = max(dt, 1e-6)
+        self.kf.F = np.array([[1, 0, dt, 0],
+                              [0, 1, 0, dt],
+                              [0, 0, 1,  0],
+                              [0, 0, 0,  1]], dtype=float)
+        self.kf.Q = np.diag([self.cfg.toss_kf_q_pos, self.cfg.toss_kf_q_pos,
+                             self.cfg.toss_kf_q_vel, self.cfg.toss_kf_q_vel]) * dt
+        self.kf.predict()
 
     def update(self, candidates: List[Tuple[float, float, float]],
                head_y: float, now: float) -> float:
         candidates = [c for c in candidates if c[2] >= self.conf_floor]
-        if not candidates:
-            self.last_toss = None
-            self.toss_gap += 1
-            if self.toss_gap > self.cfg.toss_gap_tolerance:
-                self.toss_consecutive = 0
-                self.toss_above_head = False
+
+        if self.kf is None:
+            chosen = max(candidates, key=lambda c: c[2]) if candidates else None
+            just_seeded = False
+            if chosen is not None:
+                if self.pending is not None:
+                    pt, px, py = self.pending
+                    dt = now - pt
+                    if (0 < dt <= self.cfg.toss_seed_max_dt_s and
+                            math.hypot(chosen[0] - px, chosen[1] - py)
+                            <= self.cfg.toss_seed_gate_px):
+                        self._seed(chosen[0], chosen[1],
+                                  (chosen[0] - px) / dt, (chosen[1] - py) / dt)
+                        self.last_t = now
+                        self.last_update_t = now
+                        self.pending = None
+                        just_seeded = True
+                    else:
+                        self.pending = (now, chosen[0], chosen[1])
+                else:
+                    self.pending = (now, chosen[0], chosen[1])
+            return self._score(head_y, now, had_detection=just_seeded)
+
+        dt = now - self.last_t
+        if dt > 0:
+            self._predict(dt)
+        self.last_t = now
+
+        assoc = None
+        if candidates:
+            px, py = float(self.kf.x[0, 0]), float(self.kf.x[1, 0])
+            gated = [c for c in candidates
+                    if math.hypot(c[0] - px, c[1] - py)
+                    <= self.cfg.toss_assoc_gate_px]
+            if gated:
+                assoc = max(gated, key=lambda c: c[2])
+
+        if assoc is not None:
+            self.kf.update(np.array([[assoc[0]], [assoc[1]]], dtype=float))
+            self.last_update_t = now
+        elif now - self.last_update_t > self.cfg.toss_coast_max_s:
+            self.kf = None
+            self.rising_consecutive = 0
+            self.rising_since_t = None
+
+        return self._score(head_y, now, had_detection=assoc is not None)
+
+    def _score(self, head_y: float, now: float, had_detection: bool) -> float:
+        if self.kf is None:
+            self.rising_consecutive = 0
+            self.rising_since_t = None
             return 0.0
-
-        best = max(candidates, key=lambda c: c[2])
-        cy = best[1]
-
-        moving_up  = (self.last_toss is not None and
-                      cy < self.last_toss["y"] and now > self.last_toss["time"])
-        above_head = cy < head_y
-
-        if above_head and (self.toss_min_y is None or cy < self.toss_min_y):
-            self.toss_min_y = cy
-        self.last_toss = {"y": cy, "time": now}
-
-        if moving_up and above_head:
-            self.toss_gap = 0
-            self.toss_consecutive += 1
-            self.toss_above_head = True
+        y, vx, vy = (float(self.kf.x[1, 0]), float(self.kf.x[2, 0]),
+                    float(self.kf.x[3, 0]))
+        above_head = y < head_y
+        rising = (vy <= -self.cfg.toss_min_vy_px_s and
+                 abs(vx) <= self.cfg.toss_max_horiz_ratio * abs(vy))
+        if above_head and (self.toss_min_y is None or y < self.toss_min_y):
+            self.toss_min_y = y
+        # had_detection required: a coasting (predict-only) frame reuses the
+        # last real velocity estimate unchanged, so it would otherwise keep
+        # "confirming" a rise for free with no new evidence — that's exactly
+        # how 2 genuine detections 0.1s apart, bridged by coast frames, once
+        # inflated a fast rally racket-swing into a false near serve
+        # (folder 21, t=266.7).  Requiring a fresh association every
+        # qualifying frame means toss_confirm_frames now counts consecutive
+        # REAL observations, not filter ticks.
+        if above_head and rising and had_detection:
+            if self.rising_consecutive == 0:
+                self.rising_since_t = now
+            self.rising_consecutive += 1
         else:
-            self.toss_gap += 1
-            if self.toss_gap > self.cfg.toss_gap_tolerance:
-                self.toss_consecutive = 0
-                self.toss_above_head = False
-
-        if not self.toss_above_head:
-            return 0.0
-        if self.toss_consecutive >= self.cfg.toss_confirm_frames:
+            self.rising_consecutive = 0
+            self.rising_since_t = None
+        duration_ok = (self.rising_since_t is not None and
+                      now - self.rising_since_t >= self.cfg.toss_min_rise_duration_s)
+        if self.rising_consecutive >= self.cfg.toss_confirm_frames and duration_ok:
             return 1.0
-        if self.toss_consecutive >= 1:
+        if self.rising_consecutive >= 1:
             return 0.5
         return 0.0
 
 
 class _NearServeScorer:
-    """Port of TransitionEngine's ARMED toss/trophy scoring, replayed offline."""
+    """Toss (Kalman-filtered, see _TossTracker) + trophy-pose weighted
+    scoring, replayed offline."""
 
     def __init__(self, cfg: SegmenterConfig):
         self.cfg = cfg
@@ -501,51 +616,110 @@ class _NearServeScorer:
                 self.toss.toss_min_y < rec.near_box[1])
 
 
-class _FarServeScorer:
-    """Far serves blend the native-res far-toss track with the recorded
-    ST-GCN probability: far_toss_weight * toss + far_stgcn_weight * stgcn.
-    The toss is confirmatory, not mandatory: a confirmed toss alone clears
-    the threshold, and a sustained-high ST-GCN score alone can also fire
-    (>= far_stgcn_solo_threshold) — the segmenter then demands independent
-    corroboration (toss / receiver reaction / serve trace) before such an
-    event becomes a point.  v1 telemetry has no ftoss channel, so it falls
-    back to the raw ST-GCN score (legacy behavior)."""
+def far_region_cutoff_y(match: MatchTelemetry, cfg: SegmenterConfig) -> float:
+    """Largest image-y a far-serve trace stretch may START at.
 
-    def __init__(self, cfg: SegmenterConfig, has_far_toss: bool = True):
-        self.cfg = cfg
-        self.has_far_toss = has_far_toss
-        self.reset()
+    Calibrated from the observed far-player feet (median feet-y +
+    far_origin_pad_px) when enough far boxes exist; falls back to
+    frame_height * far_trace_origin_frac on sparse far tracking.  A fixed
+    frame fraction is not portable: camera framing moves the far baseline
+    by ~0.1*frame_height between ground-truth folders.
+    """
+    feet = sorted(r.far_box[3] for r in match.records if r.far_box is not None)
+    if len(feet) >= cfg.far_feet_min_samples:
+        return feet[len(feet) // 2] + cfg.far_origin_pad_px
+    return cfg.frame_height_px * cfg.far_trace_origin_frac
 
-    def reset(self) -> None:
-        self.toss = _TossTracker(self.cfg, self.cfg.far_toss_conf_floor)
-        self._toss_scores: Deque[Tuple[float, float]] = deque()
 
-    def update(self, rec: FrameRecord, now: float) -> float:
-        if rec.far_box is None:
-            return 0.0
-        if not self.has_far_toss:
-            return rec.stgcn
-        ts = self.toss.update(rec.ftoss, rec.far_box[1], now)
-        if ts > 0:
-            self._toss_scores.append((ts, now))
-        while (self._toss_scores and
-               now - self._toss_scores[0][1] > self.cfg.serve_event_window_s):
-            self._toss_scores.popleft()
-        max_toss = max((s for s, _ in self._toss_scores), default=0.0)
-        blend = (self.cfg.far_toss_weight * max_toss +
-                 self.cfg.far_stgcn_weight * rec.stgcn)
-        if rec.stgcn >= self.cfg.far_stgcn_solo_threshold:
-            return max(blend, rec.stgcn)     # solo path clears the threshold
-        return blend
+def _far_serve_stretch(pts: List[Tuple[float, float, float]],
+                       cfg: SegmenterConfig, persp,
+                       y_origin_max: float) -> bool:
+    """confirm_serve_trace's motion test with the far-origin constraint:
+    some ~0.3 s stretch of genuine trace points moves downward + horizontally
+    (perspective-scaled) AND starts in the far region of the frame."""
+    for i in range(1, len(pts)):
+        t1, x1, y1 = pts[i]
+        j = i - 1
+        while j > 0 and t1 - pts[j][0] < 0.3:
+            j -= 1
+        t0, x0, y0 = pts[j]
+        dt = t1 - t0
+        if dt < 0.15 or y0 > y_origin_max:
+            continue
+        scale = persp((y0 + y1) / 2.0)
+        if ((y1 - y0) / dt >= cfg.trace_downward_px_s * scale and
+                abs(x1 - x0) / dt >= cfg.trace_horizontal_px_s * scale):
+            return True
+    return False
 
-    def toss_confirmed(self, rec: FrameRecord) -> bool:
-        """The toss track peaked above the far player's head."""
-        return (rec.far_box is not None and
-                self.toss.toss_min_y is not None and
-                self.toss.toss_min_y < rec.far_box[1])
 
-    def validate(self, rec: FrameRecord) -> bool:
-        return rec.far_box is not None
+def far_serve_trace_onsets(match: MatchTelemetry,
+                           cfg: SegmenterConfig) -> List[float]:
+    """
+    Scan a full-match ball-tracker replay for trace onsets bearing the
+    far-serve signature — the one ball-trace shape no other tennis event
+    reproduces:
+
+      ORIGIN  the qualifying stretch starts in the far region of the frame
+              (y <= far_region_cutoff_y — calibrated from observed far-player
+              feet; near serves start at the bottom);
+      MOTION  net downward + horizontal motion over ~0.3 s, perspective-
+              scaled (the ball dropping toward the near court after far
+              contact), within the first far_trace_head_s of the trace —
+              a near serve's ball needs ~2 s+ to come back down from the
+              far side, so rally returns never qualify this early;
+      QUIET   no genuine trace for far_trace_quiet_s before the onset —
+              mid-rally far-side shots always have recent ball activity,
+              serves follow dead time.  Micro-blip intervals (shorter than
+              far_trace_min_interval_s) don't reset the quiet clock: they
+              are tracker flicker, not play.
+
+    Returns onset times (the first genuine trace frame ≈ ball contact).
+    """
+    replay = replay_ball_tracker(match, 0.0, match.duration + 1.0, cfg)
+    intervals = alive_intervals(replay, cfg.alive_merge_gap_s)
+    persp = make_image_row_perspective(cfg.frame_height_px)
+    cutoff_y = far_region_cutoff_y(match, cfg)
+
+    onsets: List[float] = []
+    prev_end = -math.inf
+    for start, end in intervals:
+        quiet_ok = start - prev_end >= cfg.far_trace_quiet_s
+        if end - start >= cfg.far_trace_min_interval_s:
+            prev_end = max(prev_end, end)
+        if not quiet_ok:
+            continue
+        head_end = min(end, start + cfg.far_trace_head_s)
+        pts = [(fr.t, fr.position[0], fr.position[1]) for fr in replay
+               if fr.genuine and fr.position is not None
+               and start <= fr.t <= head_end]
+        if _far_serve_stretch(pts, cfg, persp, cutoff_y):
+            onsets.append(start)
+    return onsets
+
+
+def _detect_far_serve_events(match: MatchTelemetry, cfg: SegmenterConfig,
+                             far_misses: Optional[List[Tuple[float, float, str]]]
+                             ) -> List[ServeEvent]:
+    """Far serves from the ball trace alone (see far_serve_trace_onsets),
+    gated on far-player PRESENCE — a tracked far box within
+    far_presence_slack_s of the onset.  Presence only, not position: the
+    homography-projected far distance flip-flops between ±20 ft regimes on
+    real footage, and a positional band gate rejected 6 of 10 real serve
+    onsets on folder-23 ground truth.  Onsets with no far player go to the
+    far-miss report."""
+    far_ts = [r.t for r in match.records if r.far_box is not None]
+    events: List[ServeEvent] = []
+    for onset in far_serve_trace_onsets(match, cfg):
+        i = bisect.bisect_left(far_ts, onset - cfg.far_presence_slack_s)
+        present = (i < len(far_ts) and
+                   far_ts[i] <= onset + cfg.far_presence_slack_s)
+        if present:
+            events.append(ServeEvent(t=onset, side="far", score=1.0,
+                                     trace_confirmed=True))
+        elif far_misses is not None:
+            far_misses.append((onset, 1.0, "no_far_player"))
+    return events
 
 
 def detect_serve_events(match: MatchTelemetry, side: str,
@@ -553,47 +727,37 @@ def detect_serve_events(match: MatchTelemetry, side: str,
                         far_misses: Optional[List[Tuple[float, float, str]]] = None
                         ) -> List[ServeEvent]:
     """
-    Ready-band dwell + score threshold, replayed over the telemetry.
+    Serve events for one side.
 
-    A serve fires when the player has settled behind their baseline
-    (ready_dwell_s inside the band), the recent out-of-band ratio stays low,
-    and the side's serve score crosses its threshold.
+    Far side: ball-trace onsets with the far-serve signature, gated on
+    far-player presence (_detect_far_serve_events).
 
-    For the far side, sub-threshold score peaks (>= far_miss_floor) are
-    appended to far_misses as (t, score, "below_threshold") — a review log
-    that doubles as a labeling aid for tuning far-serve detection.
+    Near side: ready-band dwell + toss/trophy score, replayed over the
+    telemetry.  A serve fires when the player has settled behind the near
+    baseline (ready_dwell_s inside the band), the recent out-of-band ratio
+    stays low OR a toss is actively forming, and the toss+trophy score
+    crosses its threshold.
     """
-    if side == "near":
-        baseline, direction = 0.0, -1.0
-        band_fn = lambda t: cfg.near_band_ft
-        scorer = _NearServeScorer(cfg)
-        threshold = cfg.serve_score_threshold
-        world_of = lambda r: r.near_world
-    else:
-        baseline, direction = cfg.court_length_ft, 1.0
-        band_fn = selfcal_far_bands(match, cfg)
-        scorer = _FarServeScorer(cfg, has_far_toss=bool(
-            match.meta.get("has_far_toss", False)))
-        threshold = cfg.stgcn_threshold
-        world_of = lambda r: r.far_world
+    if side == "far":
+        return _detect_far_serve_events(match, cfg, far_misses)
 
+    scorer = _NearServeScorer(cfg)
     events: List[ServeEvent] = []
-    raw_misses: List[Tuple[float, float]] = []
     ready_start: Optional[float] = None
     armed = False
     band_hist: Deque[Tuple[float, bool]] = deque()
     cooldown_until = -math.inf
+    band_exit_t: Optional[float] = None   # when in_band most recently went False
 
     for rec in match.records:
         now = rec.t
         if now < cooldown_until:
             continue
 
-        world = world_of(rec)
         in_band = False
-        if world is not None:
-            dist = (world[1] - baseline) * direction
-            band = band_fn(now)
+        if rec.near_world is not None:
+            dist = -rec.near_world[1]           # behind the near baseline (y=0)
+            band = cfg.near_band_ft
             in_band = band[0] <= dist <= band[1]
 
         if not armed:
@@ -609,31 +773,53 @@ def detect_serve_events(match: MatchTelemetry, side: str,
             continue
 
         # ---- armed: watch the out-of-band ratio, then score ----
+        # Diagnosed on folder 68 (t=163.9): the near player's WORLD-POSITION
+        # estimate (homography-projected feet, separate from the toss-ROI
+        # detections that actually drive scoring) flickered out of
+        # near_band_ft during a real toss — the ratio-disarm called
+        # scorer.reset(), wiping an in-progress Kalman toss track.
+        #
+        # A brief flicker is bridged by toss_band_grace_s: scoring (and the
+        # ratio-disarm) stay live for that long past the moment in_band went
+        # False, timed from WALL CLOCK since the exit, not from whether a
+        # Kalman track happens to exist.  That distinction matters: gating
+        # on "track exists" instead let a seeded-but-unconfirmed track keep
+        # itself alive indefinitely by re-associating with ANY trickling
+        # candidate every frame (predict-only calls reset its own coast
+        # timeout each time) — on folder 21 (t=266.7) that let a real
+        # mid-rally racket/arm motion inherit an old, unrelated track's
+        # momentum and fire a false near serve.  A bounded, exit-clocked
+        # grace window can't be gamed that way: past toss_band_grace_s the
+        # gate closes regardless of what the tracker is doing.
+        if in_band:
+            band_exit_t = None
+        elif band_exit_t is None:
+            band_exit_t = now
+        in_grace = in_band or (now - band_exit_t <= cfg.toss_band_grace_s)
+
         band_hist.append((now, in_band))
         while band_hist and now - band_hist[0][0] > cfg.band_window_s:
             band_hist.popleft()
+        ratio_exceeded = False
         if len(band_hist) > 1:
             total = band_hist[-1][0] - band_hist[0][0]
             if total > 1.0:
                 t_out = sum(band_hist[i + 1][0] - band_hist[i][0]
                             for i in range(len(band_hist) - 1)
                             if not band_hist[i][1])
-                if t_out / total > cfg.band_out_ratio:
-                    armed = False
-                    ready_start = None
-                    continue
+                ratio_exceeded = t_out / total > cfg.band_out_ratio
 
-        if not in_band:
+        if ratio_exceeded and not in_grace:
+            armed = False
+            ready_start = None
+            continue
+        if not in_grace:
             continue
 
         score = scorer.update(rec, now)
-        if score >= threshold and scorer.validate(rec):
-            evt = ServeEvent(t=now, side=side, score=score)
-            if side == "near":
-                evt.toss_seen = True            # near validate() demands it
-            else:
-                evt.toss_seen = scorer.toss_confirmed(rec)
-            events.append(evt)
+        if score >= cfg.serve_score_threshold and scorer.validate(rec):
+            events.append(ServeEvent(t=now, side="near", score=score,
+                                     toss_seen=True))   # validate() demands it
             armed = False
             ready_start = None
             # Short re-arm only: an aborted toss (caught ball) fires a false
@@ -641,30 +827,6 @@ def detect_serve_events(match: MatchTelemetry, side: str,
             # it must also be captured.  The confirmation-aware dedupe picks
             # the right one of the resulting close pair.
             cooldown_until = now + cfg.serve_rearm_s
-        elif side == "far" and far_misses is not None and score < threshold:
-            # Review metric: the blend, or the raw ST-GCN when no toss backs
-            # it up (blend alone caps at far_stgcn_weight without a toss, so
-            # interesting pose-only moments would never clear the floor).
-            miss_score = max(score, rec.stgcn)
-            if miss_score >= cfg.far_miss_floor:
-                raw_misses.append((now, miss_score))
-
-    if far_misses is not None and raw_misses:
-        # Coalesce into one peak per min_serve_separation_s, skipping peaks
-        # that belong to a fired event.
-        group_t, group_s = raw_misses[0]
-        groups = []
-        for t, s in raw_misses[1:]:
-            if t - group_t < cfg.min_serve_separation_s:
-                if s > group_s:
-                    group_t, group_s = t, s
-            else:
-                groups.append((group_t, group_s))
-                group_t, group_s = t, s
-        groups.append((group_t, group_s))
-        for t, s in groups:
-            if not any(abs(t - e.t) < cfg.min_serve_separation_s for e in events):
-                far_misses.append((t, s, "below_threshold"))
 
     return events
 
@@ -675,13 +837,12 @@ def dedupe_serve_events(events: List[ServeEvent],
     Collapse events closer than min_serve_separation_s.  Two serves cannot
     happen that close together, so one of a conflicting pair is false.
     Priority within a pair:
-      1. a supported event (serve trace, toss, or receiver corroboration)
-         beats an unsupported one — an aborted toss (ball caught, falls
-         near-vertically, never confirms) loses to the real serve that
-         follows it;
+      1. a trace-confirmed event beats an unconfirmed one — an aborted toss
+         (ball caught, falls near-vertically, never confirms) loses to the
+         real serve that follows it;
       2. near beats far (the toss-anchored near detector is better tuned);
       3. the earlier event wins (it marks the serve-motion onset).
-    Run this AFTER trace confirmation + corroboration so rule 1 has data.
+    Run this AFTER trace confirmation so rule 1 has data.
     """
     events = sorted(events, key=lambda e: e.t)
     kept: List[ServeEvent] = []
@@ -738,8 +899,19 @@ def _viterbi(obs_sides: List[str], p_stay: float, p_correct: float) -> List[str]
 def hmm_filter_events(events: List[ServeEvent],
                       cfg: SegmenterConfig, verbose: bool = True) -> List[ServeEvent]:
     """Drop serve events whose side disagrees with the Viterbi-decoded serving
-    pattern AND that lack independent support (serve trace, toss, or receiver
-    corroboration) — weak anomalies only."""
+    pattern AND that lack a confirming trace — weak side-anomalies only.
+
+    This is a dead-time cutter: a trace-confirmed event marks a real point
+    START wherever it fired, and the side LABEL on it is not part of the
+    product.  So any confirmed event (near or far) is shielded — dropping a
+    confirmed far event because the sticky pattern expected "near" would
+    throw away a genuine point boundary to fix a label nobody consumes.
+    (Earlier this shielded near-only, to suppress folder-21's near-descent
+    "far" events — but those are harmless: they coincide with the near serve
+    and lose to it in dedupe, or they merge back into the same kept segment.)
+    The filter still earns its keep by removing UNCONFIRMED side-anomalies —
+    isolated noise events with no trace behind them.
+    """
     if len(events) < 2:
         return events
     decoded = _viterbi([e.side for e in events], cfg.hmm_p_stay, cfg.hmm_p_correct)
@@ -748,7 +920,7 @@ def hmm_filter_events(events: List[ServeEvent],
         if evt.side != dec and not evt.supported:
             if verbose:
                 print(f"[HMM] Dropped serve @ {evt.t:.2f}s side={evt.side} "
-                      f"(decoded={dec}, unsupported)")
+                      f"(decoded={dec}, unconfirmed)")
             continue
         kept.append(evt)
     return kept
@@ -798,35 +970,45 @@ class ReplayFrame:
     racket_prob: float
     position: Optional[Tuple[float, float]]
     tsd: float = 0.0                   # seconds since the last real detection
+    bounce_prob: float = 0.0           # IMM court-bounce model weight
+    det: Optional[Tuple[float, float]] = None   # raw detection associated
+                                       # this frame (None on coasting frames)
+                                       # — the fitter fits these, not the
+                                       # filtered states
 
 
-def replay_ball_tracker(match: MatchTelemetry, t0: float, t1: float,
-                        cfg: SegmenterConfig) -> List[ReplayFrame]:
-    """
-    Re-run the IMM ball tracker over the recorded detections in [t0, t1).
-
-    Detections inside either player's box are excluded (racket/arm/body false
-    positives); the tracker's coasting bridges the resulting occlusions.
-    The native-res far-crop detections (fballs) are merged in — the whole-
-    court pass barely sees the ball near the far baseline, and without them
-    far serves can never grow a confirmable trace.
-    """
+def _replay_core(match: MatchTelemetry, t0: float, t1: float,
+                 cfg: SegmenterConfig, collect: bool = False):
+    """Shared replay loop; `collect=True` also returns per-record track
+    predictions (x, y, time_since_detection) for the enrichment pass."""
     persp = make_image_row_perspective(cfg.frame_height_px)
     mgr = BallTrackManager(fps=match.fps, perspective_scale=persp)
     ball_vel = _SmoothedVelocity(cfg.coupling_window_s)
     player_vel = _SmoothedVelocity(cfg.coupling_window_s)
 
     out: List[ReplayFrame] = []
+    preds: List[Optional[Tuple[float, float, float]]] = []
     for rec in match.slice(t0, t1):
+        # Track position from the previous frame — gates the exception that
+        # lets a detection INSIDE a player box through (the contact moment;
+        # the blanket rule deletes the ball exactly when it is hit).
+        tp = mgr.track.position if mgr.track is not None else None
+        inbox_accept = 0.0
+        if tp is not None and cfg.inbox_accept_px > 0:
+            inbox_accept = cfg.inbox_accept_px * max(persp(tp[1]), 0.35)
+
         dets = []
-        for bx, by, conf in list(rec.balls) + list(rec.fballs):
+        for bx, by, conf in (list(rec.balls) + list(rec.fballs)
+                             + list(rec.rballs)):
             inside = False
             for box in (rec.near_box, rec.far_box):
                 if box and box[0] <= bx <= box[2] and box[1] <= by <= box[3]:
                     inside = True
                     break
-            if inside:
-                continue
+            if inside and not (
+                    inbox_accept and
+                    math.hypot(bx - tp[0], by - tp[1]) <= inbox_accept):
+                continue        # racket/arm/body false positive
             # A ball both passes see shows up twice a few px apart — keep one.
             if any(abs(bx - dx) <= 6.0 and abs(by - dy) <= 6.0
                    for dx, dy, _ in dets):
@@ -848,9 +1030,36 @@ def replay_ball_tracker(match: MatchTelemetry, t0: float, t1: float,
             if status.speed_px_s >= floor:
                 genuine = not _is_carried(ball_vel.velocity(),
                                           player_vel.velocity(), cfg)
+        assoc = None
+        if (dets and status.position is not None and
+                status.time_since_detection < 0.75 / max(match.fps, 1e-6)):
+            assoc = min(((bx, by) for bx, by, _ in dets),
+                        key=lambda d: (d[0] - status.position[0]) ** 2 +
+                                      (d[1] - status.position[1]) ** 2)
         out.append(ReplayFrame(rec.t, genuine, status.racket_prob, status.position,
+                               status.time_since_detection,
+                               getattr(status, "bounce_prob", 0.0), assoc))
+        if collect:
+            preds.append(None if status.position is None
+                         else (status.position[0], status.position[1],
                                status.time_since_detection))
+    if collect:
+        return out, preds
     return out
+
+
+def replay_ball_tracker(match: MatchTelemetry, t0: float, t1: float,
+                        cfg: SegmenterConfig) -> List[ReplayFrame]:
+    """
+    Re-run the IMM ball tracker over the recorded detections in [t0, t1).
+
+    Detections inside either player's box are excluded (racket/arm/body
+    false positives) UNLESS the tracked ball was already predicted there —
+    that's the contact moment, exactly where speed measurement starts
+    (inbox_accept_px).  The native-res channels are merged in: fballs from
+    the stage-1 far crop, rballs from the offline trace_enrich pass.
+    """
+    return _replay_core(match, t0, t1, cfg, collect=False)
 
 
 def alive_intervals(replay: List[ReplayFrame],
@@ -908,72 +1117,48 @@ def confirm_serve_trace(replay: List[ReplayFrame], cfg: SegmenterConfig) -> bool
 # =====================================================================
 class PlayerKinematics:
     """
-    Precomputes, from the players' world positions:
-      • per-record smoothed speed and x-velocity for each side,
+    Precomputes, from the NEAR player's world positions (far-side tracking
+    is too unreliable to contribute kinematic cues):
+      • per-record smoothed speed,
       • direction-reversal times (a significant vx sign flip — the signature
-        of rally footwork, absent from ball-retrieval walking),
-      • "both players moving" times (server AND receiver active at once).
-    Reversals + both-moving times together form the rally-cue timeline used
-    to bridge trace gaps and to find point ends without a ball trace.
+        of rally footwork, absent from ball-retrieval walking).
+    Reversals form the rally-cue timeline used to bridge trace gaps and to
+    find point ends without a ball trace.
     """
 
     def __init__(self, match: MatchTelemetry, cfg: SegmenterConfig):
         self.cfg = cfg
-        ts = match.ts
-        n = len(ts)
+        n = len(match.ts)
         self.speed_near = [None] * n
-        self.speed_far  = [None] * n
         reversal_times: List[float] = []
 
-        for side, world_of, speed_arr in (
-            ("near", lambda r: r.near_world, self.speed_near),
-            ("far",  lambda r: r.far_world,  self.speed_far),
-        ):
-            valid: List[Tuple[float, float, float, int]] = []   # (t, wx, wy, idx)
-            for i, rec in enumerate(match.records):
-                w = world_of(rec)
-                if w is not None:
-                    valid.append((rec.t, w[0], w[1], i))
+        valid: List[Tuple[float, float, float, int]] = []   # (t, wx, wy, idx)
+        for i, rec in enumerate(match.records):
+            if rec.near_world is not None:
+                valid.append((rec.t, rec.near_world[0], rec.near_world[1], i))
 
-            j = 0
-            last_sign = 0
-            for k in range(len(valid)):
-                t1, x1, y1, idx = valid[k]
-                while j < k and t1 - valid[j][0] > cfg.speed_window_s:
-                    j += 1
-                # earliest sample still inside the window (or just before it)
-                jj = max(0, j - 1) if j > 0 and t1 - valid[j][0] < cfg.speed_min_dt_s else j
-                t0, x0, y0, _ = valid[jj]
-                dt = t1 - t0
-                if dt < cfg.speed_min_dt_s:
-                    continue
-                vx = (x1 - x0) / dt
-                vy = (y1 - y0) / dt
-                speed_arr[idx] = math.hypot(vx, vy)
-                if abs(vx) >= cfg.reversal_speed_ft_s:
-                    sign = 1 if vx > 0 else -1
-                    if last_sign != 0 and sign != last_sign:
-                        reversal_times.append(t1)
-                    last_sign = sign
+        j = 0
+        last_sign = 0
+        for k in range(len(valid)):
+            t1, x1, y1, idx = valid[k]
+            while j < k and t1 - valid[j][0] > cfg.speed_window_s:
+                j += 1
+            # earliest sample still inside the window (or just before it)
+            jj = max(0, j - 1) if j > 0 and t1 - valid[j][0] < cfg.speed_min_dt_s else j
+            t0, x0, y0, _ = valid[jj]
+            dt = t1 - t0
+            if dt < cfg.speed_min_dt_s:
+                continue
+            vx = (x1 - x0) / dt
+            vy = (y1 - y0) / dt
+            self.speed_near[idx] = math.hypot(vx, vy)
+            if abs(vx) >= cfg.reversal_speed_ft_s:
+                sign = 1 if vx > 0 else -1
+                if last_sign != 0 and sign != last_sign:
+                    reversal_times.append(t1)
+                last_sign = sign
 
-        # Forward-fill speeds onto the record grid (bounded staleness) and
-        # collect "both players moving" cue times.
-        both_times: List[float] = []
-        last_near = last_far = None
-        last_near_t = last_far_t = -1e9
-        for i, t in enumerate(ts):
-            if self.speed_near[i] is not None:
-                last_near, last_near_t = self.speed_near[i], t
-            if self.speed_far[i] is not None:
-                last_far, last_far_t = self.speed_far[i], t
-            near_ok = last_near is not None and t - last_near_t <= cfg.speed_stale_s
-            far_ok  = last_far  is not None and t - last_far_t  <= cfg.speed_stale_s
-            if (near_ok and far_ok and
-                    last_near >= cfg.both_moving_ft_s and
-                    last_far  >= cfg.both_moving_ft_s):
-                both_times.append(t)
-
-        self.rally_cues: List[float] = sorted(reversal_times + both_times)
+        self.rally_cues: List[float] = reversal_times   # built in time order
 
     def rally_like(self, t0: float, t1: float) -> bool:
         """Any rally cue inside (t0, t1)?"""
@@ -992,30 +1177,6 @@ class PlayerKinematics:
             else:
                 break
         return last
-
-
-def receiver_reacts(match: MatchTelemetry, kin: PlayerKinematics,
-                    serve_t: float, cfg: SegmenterConfig) -> bool:
-    """
-    Receiver-side corroboration of a FAR serve: the near player (the
-    receiver) stands quasi-still while the far player serves, then bursts
-    into motion within receiver_react_window_s.  Near-side tracking is the
-    pipeline's strongest sensor, so this vouches for far events whose own
-    ball trace is too weak to confirm.
-    """
-    i0, i1 = match.index_range(serve_t - cfg.receiver_still_window_s,
-                               serve_t - 0.1)
-    pre = [kin.speed_near[i] for i in range(i0, i1)
-           if kin.speed_near[i] is not None]
-    i0, i1 = match.index_range(serve_t + 0.1,
-                               serve_t + cfg.receiver_react_window_s)
-    post = [kin.speed_near[i] for i in range(i0, i1)
-            if kin.speed_near[i] is not None]
-    if not pre or not post:
-        return False
-    pre_median = sorted(pre)[len(pre) // 2]
-    return (pre_median <= cfg.receiver_still_max_ft_s and
-            max(post) >= cfg.receiver_react_min_ft_s)
 
 
 # =====================================================================
@@ -1121,33 +1282,18 @@ def segment_match(match: MatchTelemetry,
 
     kin = PlayerKinematics(match, cfg)
 
-    # Serve-trace confirmation + corroboration per candidate — BEFORE dedupe,
-    # so a supported real serve can displace the unsupported aborted-toss
-    # candidate that fired just before it.
+    # Near-serve trace confirmation — BEFORE dedupe, so a confirmed real
+    # serve can displace the unconfirmed aborted-toss candidate that fired
+    # just before it.  Far events are trace-born (confirmed by construction).
     candidates = sorted(near + far, key=lambda e: e.t)
     for evt in candidates:
-        rep = replay_ball_tracker(match, evt.t - 0.3,
-                                  evt.t + cfg.confirm_window_s, cfg)
-        evt.trace_confirmed = confirm_serve_trace(rep, cfg)
-        if evt.side == "far":
-            evt.corroborated = (evt.toss_seen or
-                                receiver_reacts(match, kin, evt.t, cfg))
+        if evt.side == "near":
+            rep = replay_ball_tracker(match, evt.t - 0.3,
+                                      evt.t + cfg.confirm_window_s, cfg)
+            evt.trace_confirmed = confirm_serve_trace(rep, cfg)
 
-    # Far events must have at least one piece of independent evidence
-    # (serve trace, toss, or receiver reaction) — the ST-GCN solo path is
-    # a candidate generator, not a decision maker.
-    accepted: List[ServeEvent] = []
-    for evt in candidates:
-        if evt.side == "far" and not evt.supported:
-            far_misses.append((evt.t, evt.score, "uncorroborated"))
-            if verbose:
-                print(f"[SEG] Far candidate @ {evt.t:.2f}s "
-                      f"(score {evt.score:.3f}) dropped: no corroboration")
-            continue
-        accepted.append(evt)
-
-    events = dedupe_serve_events(accepted, cfg)
-    if verbose and len(events) != len(accepted):
+    events = dedupe_serve_events(candidates, cfg)
+    if verbose and len(events) != len(candidates):
         print(f"[SEG] After dedupe: {len(events)} serve event(s)")
 
     events = hmm_filter_events(events, cfg, verbose=verbose)
@@ -1282,69 +1428,86 @@ def _run_self_test() -> int:
     check("below-head toss never fires",
           len(detect_serve_events(build_match(recs2), "near", cfg)) == 0)
 
-    # ---- Far serve detection, legacy v1 telemetry: dwell + raw ST-GCN ----
-    recs3 = []
-    f = 0
-    t = 0.0
-    for _ in range(45):
-        recs3.append(_mk_rec(f, t, far_wy=80.0)); f += 1; t += dt
-    for _ in range(10):
-        recs3.append(_mk_rec(f, t, far_wy=80.0, stgcn=0.9)); f += 1; t += dt
-    far_events = detect_serve_events(build_match(recs3), "far", cfg)
-    check("far serve detected from ST-GCN score (legacy telemetry)",
-          len(far_events) == 1)
+    # ---- Toss survives a ready-band flicker mid-rise (folder-68 t=163.9) ----
+    # The near player's WORLD-POSITION estimate can misread as out-of-band
+    # for a stretch while the toss (a near_box-ROI signal, independent of
+    # near_world) keeps rising — a real body shift during the service
+    # motion, or plain position-tracking jitter.  The toss must still
+    # confirm: scoring must not gate on instantaneous in_band, and the
+    # ratio-disarm must not fire (and reset the Kalman toss track) while a
+    # toss is actively forming.
+    recs_flicker = []
+    f, t = 0, 0.0
+    for _ in range(45):                              # dwell in-band, arm
+        recs_flicker.append(_mk_rec(f, t, near_wy=-1.5)); f += 1; t += dt
+    toss_y = 345.0
+    for _ in range(8):                                # rising toss, but
+        toss_y -= 9.0                                 # world-position reads
+        recs_flicker.append(_mk_rec(f, t, near_wy=10.0,   # OUT of band
+                                    toss=[(455.0, toss_y, 0.9)])); f += 1; t += dt
+    for _ in range(30):
+        recs_flicker.append(_mk_rec(f, t, near_wy=-1.5)); f += 1; t += dt
+    evs_flicker = detect_serve_events(build_match(recs_flicker), "near", cfg)
+    check("toss confirms despite a concurrent ready-band flicker",
+          len(evs_flicker) == 1)
 
-    # Out-of-band far player never fires even with a high score.
-    recs4 = [_mk_rec(i, i * dt, far_wy=55.0, stgcn=0.95) for i in range(90)]
-    check("far serve requires the ready band",
-          len(detect_serve_events(build_match(recs4), "far", cfg)) == 0)
+    # ---- Far serve detection: ball-trace only ----
+    # A far serve = fresh trace onset in the far region with downward +
+    # horizontal motion, after a quiet spell, with the far player tracked.
+    def far_trace_recs(far_wy=80.0, serve_t=3.0, dur=8.0, y0=140.0,
+                       stgcn=0.0, with_trace=True):
+        recs, ff, tt = [], 0, 0.0
+        while tt < dur:
+            kw = dict(near_wy=-1.5, far_wy=far_wy)
+            if stgcn and serve_t - 0.3 <= tt < serve_t + 0.3:
+                kw["stgcn"] = stgcn
+            if with_trace and serve_t <= tt < serve_t + 0.8:
+                u = tt - serve_t
+                kw["fballs"] = [(480.0 + 90.0 * u, y0 + 120.0 * u, 0.8)]
+            recs.append(_mk_rec(ff, tt, **kw)); ff += 1; tt += dt
+        return build_match(recs)
 
-    # ---- Far serve detection, v2 telemetry: toss-primary blend ----
-    # Rising far toss above the far box top (120) + modest ST-GCN.
-    def far_blend_recs(ftoss_on, stgcn_val):
-        recs, f, t = [], 0, 0.0
-        for _ in range(45):
-            recs.append(_mk_rec(f, t, far_wy=80.0)); f += 1; t += dt
-        fty = 119.0
-        for _ in range(6):
-            fty -= 4.0
-            kw = {"stgcn": stgcn_val}
-            if ftoss_on:
-                kw["ftoss"] = [(465.0, fty, 0.8)]
-            recs.append(_mk_rec(f, t, far_wy=80.0, **kw)); f += 1; t += dt
-        for _ in range(30):
-            recs.append(_mk_rec(f, t, far_wy=80.0)); f += 1; t += dt
-        return recs
+    evs_far = detect_serve_events(far_trace_recs(), "far", cfg)
+    check("far serve fires from a far-origin serve trace", len(evs_far) == 1)
+    check("far event lands at the trace onset",
+          bool(evs_far) and 2.8 <= evs_far[0].t <= 3.6)
+    check("far event is trace-confirmed by construction",
+          bool(evs_far) and evs_far[0].trace_confirmed)
 
-    evs_blend = detect_serve_events(
-        build_match(far_blend_recs(True, 0.4), has_far_toss=True), "far", cfg)
-    check("far toss + ST-GCN blend fires", len(evs_blend) == 1)
-    check("far toss event records toss_seen",
-          evs_blend and evs_blend[0].toss_seen)
-    evs_toss_only = detect_serve_events(
-        build_match(far_blend_recs(True, 0.0), has_far_toss=True), "far", cfg)
-    check("far toss alone clears the threshold", len(evs_toss_only) == 1)
-    evs_weak_stgcn = detect_serve_events(
-        build_match(far_blend_recs(False, 0.15), has_far_toss=True), "far", cfg)
-    check("weak ST-GCN alone cannot raise a candidate",
-          len(evs_weak_stgcn) == 0)
-    evs_solo = detect_serve_events(
-        build_match(far_blend_recs(False, 0.9), has_far_toss=True), "far", cfg)
-    check("strong ST-GCN alone raises a candidate (toss not mandatory)",
-          len(evs_solo) == 1 and not evs_solo[0].toss_seen)
+    check("ST-GCN score alone no longer fires",
+          len(detect_serve_events(far_trace_recs(with_trace=False, stgcn=0.95),
+                                  "far", cfg)) == 0)
 
-    # Sub-threshold far score peaks land in the miss log.  A dedicated,
-    # higher stgcn_threshold carves out a below-threshold-but-above-
-    # far_miss_floor gap to exercise (defaults have both at 0.30, folder-23
-    # tuned, so there's no such gap to observe against the shared cfg).
-    cfg_miss = SegmenterConfig(stgcn_threshold=0.6)
-    misses = []
-    detect_serve_events(build_match(far_blend_recs(False, 0.5),
-                                    has_far_toss=True),
-                        "far", cfg_miss, far_misses=misses)
-    check("sub-threshold far peak logged as below_threshold",
-          len(misses) == 1 and misses[0][2] == "below_threshold" and
-          abs(misses[0][1] - 0.5) < 0.01)
+    misses_pres: list = []
+    check("far serve requires a tracked far player",
+          len(detect_serve_events(far_trace_recs(far_wy=None), "far", cfg,
+                                  far_misses=misses_pres)) == 0)
+    check("presence-rejected trace onset logged for review",
+          len(misses_pres) == 1 and misses_pres[0][2] == "no_far_player")
+
+    # Position must NOT matter — a far player tracked at a wildly offset
+    # world distance (homography drift) still counts as present.
+    check("far serve fires regardless of far world distance",
+          len(detect_serve_events(far_trace_recs(far_wy=123.0), "far", cfg)) == 1)
+
+    check("a near-origin trace never fires a far serve",
+          len(detect_serve_events(far_trace_recs(y0=420.0), "far", cfg)) == 0)
+
+    # Mid-rally suppression: ball activity shortly before the far-origin
+    # trace (a rally in progress) blocks the onset via the quiet gate.
+    recs_rally, ff, tt = [], 0, 0.0
+    while tt < 8.0:
+        kw = dict(near_wy=-1.5, far_wy=80.0)
+        if 1.0 <= tt < 2.0:                       # near-region rally trace
+            u = tt - 1.0
+            kw["balls"] = [(300.0 + 200.0 * u,
+                            420.0 - 60.0 * math.sin(u * 6.0), 0.8)]
+        if 3.5 <= tt < 4.3:                       # far-origin trace 1.5 s later
+            u = tt - 3.5
+            kw["fballs"] = [(480.0 + 90.0 * u, 140.0 + 120.0 * u, 0.8)]
+        recs_rally.append(_mk_rec(ff, tt, **kw)); ff += 1; tt += dt
+    check("recent ball activity (mid-rally) blocks a far-trace onset",
+          len(detect_serve_events(build_match(recs_rally), "far", cfg)) == 0)
 
     # ---- Static-candidate suppression ----
     # A static false ball above the near player's head wins the best-conf
@@ -1368,86 +1531,50 @@ def _run_self_test() -> int:
     check("serve fires once static noise is suppressed",
           len(detect_serve_events(m_static, "near", cfg)) == 1)
 
-    # ---- Self-calibrated far band ----
-    # Folder-24 pattern: homography offset puts the serving far player at a
-    # systematic +20 ft, outside the fixed (-6, 6) band.  With >=500 far
-    # samples the band re-centers on the median distance and the serve fires.
-    recs_cal = []
-    f, t = 0, 0.0
-    for i in range(600):
-        kw = dict(near_wy=-1.5, far_wy=98.0)   # dist = +20 ft all match
-        if 450 <= i < 462:
-            kw["stgcn"] = 0.9
-        recs_cal.append(_mk_rec(f, t, **kw))
-        f += 1; t += dt
-    m_cal = build_match(recs_cal, has_far_toss=True)
-    check("self-calibrated band recovers an offset far serve",
-          len(detect_serve_events(m_cal, "far", cfg)) == 1)
-    cfg_nocal = SegmenterConfig(far_band_selfcal=False)
-    check("fixed band misses the offset far serve (control)",
-          len(detect_serve_events(m_cal, "far", cfg_nocal)) == 0)
-
-    # ---- Windowed self-cal: the offset itself steps mid-video ----
-    # Regime A (dist=+8ft, matches the static far_band_ft) for the first
-    # minute, a tracking gap, then regime B (dist=+45ft, invisible to a
-    # whole-video median dominated by regime A) for the second minute.
+    # ---- Far detection survives mid-video far tracking regime changes ----
+    # Folder-23 pattern: the homography-projected far distance steps between
+    # regimes (+8 ft, then a dropout, then +45 ft).  Presence gating fires
+    # both serves — a positional band gate could not straddle the regimes.
     recs_step = []
     f, t = 0, 0.0
     while t < 60.0:
         kw = dict(near_wy=-1.5, far_wy=86.0)          # dist = +8 ft
-        if 20.0 <= t < 20.4:
-            kw["stgcn"] = 0.9
+        if 20.0 <= t < 20.8:                          # serve trace, regime A
+            u = t - 20.0
+            kw["fballs"] = [(480.0 + 90.0 * u, 140.0 + 120.0 * u, 0.8)]
         recs_step.append(_mk_rec(f, t, **kw)); f += 1; t += dt
     while t < 65.0:                                    # gap: far player lost
         recs_step.append(_mk_rec(f, t, near_wy=-1.5)); f += 1; t += dt
     while t < 130.0:
         kw = dict(near_wy=-1.5, far_wy=123.0)         # dist = +45 ft
-        if 100.0 <= t < 100.4:
-            kw["stgcn"] = 0.9
+        if 100.0 <= t < 100.8:                        # serve trace, regime B
+            u = t - 100.0
+            kw["fballs"] = [(480.0 + 90.0 * u, 140.0 + 120.0 * u, 0.8)]
         recs_step.append(_mk_rec(f, t, **kw)); f += 1; t += dt
-    cfg_step = SegmenterConfig(far_selfcal_window_s=30.0,
-                               far_selfcal_min_window_frames=30)
-    m_step = build_match(recs_step, has_far_toss=True)
-    evs_step = detect_serve_events(m_step, "far", cfg_step)
-    check("windowed self-cal recovers both regime-A and regime-B serves",
+    m_step = build_match(recs_step)
+    evs_step = detect_serve_events(m_step, "far", cfg)
+    check("far serves fire across far-distance regime steps",
           len(evs_step) == 2)
-    whole_band = selfcal_far_band(m_step, cfg_step)
-    check("whole-video median band cannot straddle both regimes",
-          not (whole_band[0] <= 45.0 <= whole_band[1] and
-               whole_band[0] <= 8.0 <= whole_band[1]))
 
-    # ---- Far acceptance: solo ST-GCN candidates need corroboration ----
-    def far_solo_match(receiver_bursts, with_fballs=False):
+    # ---- Far acceptance end-to-end: the trace is the only path ----
+    def far_solo_match(with_fballs):
         recs, ff, t = [], 0, 0.0
         while t < 6.0:
             kw = dict(near_wy=-1.5, far_wy=80.0)
             if 1.5 <= t < 1.85:
                 kw["stgcn"] = 0.9
-            if receiver_bursts and 1.7 <= t < 2.7:
-                kw["near_wx"] = 13.5 + 8.0 * (t - 1.7)   # receiver sprints off
-            elif receiver_bursts and t >= 2.7:
-                kw["near_wx"] = 21.5
             if with_fballs and 1.6 <= t < 2.3:
                 u = t - 1.6                               # serve flight, native crop
                 kw["fballs"] = [(485.0 + 85.0 * u, 130.0 + 85.0 * u, 0.8)]
             recs.append(_mk_rec(ff, t, **kw))
             ff += 1; t += dt
-        return build_match(recs, has_far_toss=True)
+        return build_match(recs)
 
-    misses_a: list = []
-    segs_a = segment_match(far_solo_match(False), cfg, verbose=False,
-                           far_misses_out=misses_a)
-    check("uncorroborated solo far candidate is dropped", len(segs_a) == 0)
-    check("dropped candidate logged as uncorroborated",
-          any(r == "uncorroborated" for _, _, r in misses_a))
+    segs_a = segment_match(far_solo_match(False), cfg, verbose=False)
+    check("ST-GCN-only far candidate yields no segment", len(segs_a) == 0)
 
-    segs_b = segment_match(far_solo_match(True), cfg, verbose=False)
-    check("receiver reaction corroborates the far serve",
-          len(segs_b) == 1 and segs_b[0].side == "far")
-
-    segs_c = segment_match(far_solo_match(False, with_fballs=True), cfg,
-                           verbose=False)
-    check("native-res far trace (fballs) confirms the far serve",
+    segs_c = segment_match(far_solo_match(True), cfg, verbose=False)
+    check("native-res far trace (fballs) fires the far serve",
           len(segs_c) == 1 and segs_c[0].side == "far")
 
     # ---- Dedupe: near event wins a conflict with a far event ----
@@ -1496,18 +1623,27 @@ def _run_self_test() -> int:
     check("detector re-arms after an aborted toss", len(evs_rearm) == 2)
 
     # ---- Viterbi + HMM filter ----
+    # Deadtime framing: any trace-CONFIRMED event marks a real point start
+    # regardless of side, so the HMM only culls UNCONFIRMED side-anomalies.
     dec = _viterbi(["near", "near", "far", "near", "near"], 0.9355, 0.85)
     check("viterbi smooths a lone disagreeing side",
           dec == ["near"] * 5)
     evs = [ServeEvent(10.0 + 20 * i, s, 0.8) for i, s in
            enumerate(["near", "near", "far", "near", "near"])]
     for e in evs:
-        e.trace_confirmed = e.side == "near"
+        e.trace_confirmed = True
     kept = hmm_filter_events(evs, cfg, verbose=False)
-    check("HMM drops the weak disagreeing serve", len(kept) == 4)
-    evs[2].trace_confirmed = True
+    check("HMM keeps a confirmed side-anomalous event (any side)",
+          len(kept) == 5)
+    evs[2].trace_confirmed = False
     kept = hmm_filter_events(evs, cfg, verbose=False)
-    check("HMM keeps a confirmed disagreeing serve", len(kept) == 5)
+    check("HMM drops an unconfirmed side-anomalous event", len(kept) == 4)
+    # side pattern is respected: an unconfirmed event AGREEING with the
+    # decoded pattern is never dropped.
+    evs_ok = [ServeEvent(10.0 + 20 * i, "near", 0.8) for i in range(4)]
+    kept_ok = hmm_filter_events(evs_ok, cfg, verbose=False)
+    check("HMM keeps unconfirmed events that agree with the pattern",
+          len(kept_ok) == 4)
 
     # ---- Point end from a trace chain ----
     # Serve at t=1: ball flies for 3 s, 1 s gap (re-acquired), 2 s more, then
@@ -1571,8 +1707,10 @@ def _run_self_test() -> int:
     f = 0
     t = 0.0
     toss_y = 345.0
-    serve1, serve2 = 2.0, 30.0
-    while t < 55.0:
+    # Two far serves make a far BLOCK — a lone far event between near games
+    # is exactly what the HMM side filter now removes (serves are sticky).
+    serve1, serve2, serve3 = 2.0, 30.0, 55.0
+    while t < 80.0:
         kw = dict(near_wy=-1.5, far_wy=80.0)
         # Point 1: near serve at 2 s (toss), rally balls 2–7 s
         if serve1 - 0.2 <= t < serve1:
@@ -1582,26 +1720,28 @@ def _run_self_test() -> int:
             u = t - serve1
             kw["balls"] = [(max(80.0, min(880.0, 300.0 + 250.0 * math.sin(u * 1.5))),
                             430.0 - 100.0 * abs(math.sin(u * 3.0)) - 40.0 * u, 0.8)]
-        # Point 2: far serve at 30 s (ST-GCN), rally balls 30–36 s
-        if serve2 - 1.0 <= t < serve2 + 0.3:
-            kw["stgcn"] = 0.9
-        if serve2 <= t < serve2 + 6.0:
-            u = t - serve2
-            kw["balls"] = [(max(80.0, min(880.0, 300.0 + 250.0 * math.sin(u * 1.5))),
-                            200.0 + 100.0 * abs(math.sin(u * 2.5)) + 20.0 * u, 0.8)]
+        # Points 2+3: far serves at 30/55 s (far-origin traces)
+        for sv in (serve2, serve3):
+            if sv <= t < sv + 6.0:
+                u = t - sv
+                kw["balls"] = [(max(80.0, min(880.0, 300.0 + 250.0 * math.sin(u * 1.5))),
+                                150.0 + 100.0 * abs(math.sin(u * 2.5)) + 20.0 * u, 0.8)]
         recs8.append(_mk_rec(f, t, **kw))
         f += 1; t += dt
     m8 = build_match(recs8)
     segs = segment_match(m8, SegmenterConfig(), verbose=False)
-    check("mini-match yields 2 segments", len(segs) == 2)
-    if len(segs) == 2:
+    check("mini-match yields 3 segments", len(segs) == 3)
+    if len(segs) == 3:
         check("point 1 is a near serve at ~2 s",
               segs[0].side == "near" and abs(segs[0].serve_t - 2.0) < 0.6)
         check("point 2 is a far serve at ~30 s",
               segs[1].side == "far" and abs(segs[1].serve_t - 30.0) < 1.5)
+        check("point 3 is a far serve at ~55 s",
+              segs[2].side == "far" and abs(segs[2].serve_t - 55.0) < 1.5)
         check("point 1 end covers the rally", 6.0 <= segs[0].end_t <= 10.0)
         check("point 2 end covers the rally", 34.5 <= segs[1].end_t <= 40.0)
-        check("segments do not overlap", segs[0].end < segs[1].start)
+        check("segments do not overlap",
+              segs[0].end < segs[1].start and segs[1].end < segs[2].start)
 
     print()
     if failures:

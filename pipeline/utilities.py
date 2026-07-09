@@ -325,8 +325,21 @@ def _far_player_roi_cache_path(video_path: str) -> str:
     return os.path.join(video_dir, f"{video_name}_far_player_roi.json")
 
 
+# Homography (_compute_homography in anya_base.py / match_telemetry.py) unpacks
+# court_vertices positionally as `BL, BR, TR, TL = court_vertices` — the click
+# order below is not cosmetic, it is the contract those callers rely on.
+COURT_CORNER_ORDER = ["bottom-left", "bottom-right", "top-right", "top-left"]
+COURT_CORNER_TAGS  = ["BL", "BR", "TR", "TL"]
+
+
 def init_court(video_path: str, target_idx: int = 300, analysis_size: tuple = None):
-    """Interactive court corner selection with JSON caching."""
+    """One-time interactive court corner calibration, cached to disk.
+
+    The user clicks the four court corners in a fixed order — bottom-left,
+    bottom-right, top-right, top-left — matching the vertex order the
+    homography (image -> world) computation expects. Once clicked, the
+    points are cached alongside the video and reused on every future run.
+    """
     cache_path = _court_cache_path(video_path)
 
     if os.path.isfile(cache_path):
@@ -344,15 +357,20 @@ def init_court(video_path: str, target_idx: int = 300, analysis_size: tuple = No
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             print(f"[COURT] Cache corrupt ({e}), re-selecting.")
 
-    num_points = 4
-    win = "Click 4 court corners (any order). Press r=reset, q=quit"
+    num_points = len(COURT_CORNER_ORDER)
+    win = "Court calibration — click corners IN ORDER: bottom-left, bottom-right, top-right, top-left  (r=reset, q=quit)"
 
     base = get_reference_frame(video_path, target_idx=target_idx)
     if analysis_size is not None:
         base = cv2.resize(base, analysis_size, interpolation=cv2.INTER_AREA)
     img = base.copy()
 
-    state = {"img": img, "clicked_pts": [], "done": False, "win": win, "num_points": num_points}
+    print("[COURT] One-time court calibration — click these 4 points in order:")
+    for i, label in enumerate(COURT_CORNER_ORDER, start=1):
+        print(f"[COURT]   {i}. {label}")
+
+    state = {"img": img, "clicked_pts": [], "done": False, "win": win,
+             "num_points": num_points, "labels": COURT_CORNER_TAGS}
 
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     cv2.imshow(win, state["img"])
@@ -532,8 +550,14 @@ def select_points(event, x, y, flags, param):
     if event != cv2.EVENT_LBUTTONDOWN:
         return
     state = param
+    idx = len(state["clicked_pts"])
     state["clicked_pts"].append((x, y))
     cv2.circle(state["img"], (x, y), 6, (0, 0, 255), -1, lineType=cv2.LINE_AA)
+    labels = state.get("labels")
+    if labels and idx < len(labels):
+        cv2.putText(state["img"], labels[idx], (x + 10, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2, cv2.LINE_AA)
+        print(f"[COURT] {idx + 1}/{state['num_points']} placed: {labels[idx]}")
     if len(state["clicked_pts"]) == state["num_points"]:
         state["done"] = True
     cv2.imshow(state["win"], state["img"])

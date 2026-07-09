@@ -37,7 +37,7 @@ if __package__ in (None, ""):
 from .match_telemetry import extract_match_telemetry
 from .point_segmenter import (SegmenterConfig, load_telemetry, segment_match,
                               write_segments_csv, write_segments_json)
-from .utilities import create_highlights_ffmpeg
+from .utilities import Config, create_highlights_ffmpeg, init_court
 
 
 def cut_dead_time(video_path: str, output_path: str = None,
@@ -50,6 +50,12 @@ def cut_dead_time(video_path: str, output_path: str = None,
     video_stem = os.path.splitext(os.path.basename(video_path))[0]
     if output_path is None:
         output_path = os.path.join(video_dir, f"{video_stem}_no_deadtime.mp4")
+
+    # ── Stage 0: one-time court calibration (cached to disk after first run) ──
+    # Runs up front, before the YOLO models load, so the corner-click prompt
+    # (bottom-left, bottom-right, top-right, top-left — same order the
+    # run_anya.py pipeline uses) doesn't appear to hang mid-load.
+    init_court(video_path, analysis_size=(Config.ANALYSIS_WIDTH, Config.ANALYSIS_HEIGHT))
 
     # ── Stage 1: perception (cached) ─────────────────────────────────────
     telemetry_path = extract_match_telemetry(
@@ -65,8 +71,8 @@ def cut_dead_time(video_path: str, output_path: str = None,
     write_segments_csv(segments,  base + "_points.csv")
     write_segments_json(segments, base + "_points.json")
 
-    # Far-serve near-misses: sub-threshold score peaks and uncorroborated
-    # candidates, for review and for labeling far-serve tuning data.
+    # Far-serve near-misses: serve-like trace onsets with no tracked far
+    # player nearby, for review and for labeling far-serve tuning data.
     if far_misses:
         miss_path = base + "_far_misses.csv"
         import csv as _csv
@@ -119,7 +125,9 @@ Examples:
     parser.add_argument("--stride", type=int, default=1,
                         help="Perception pass on every Nth frame (default 1)")
     parser.add_argument("--no-far-serve", action="store_true",
-                        help="Disable the far-side ST-GCN serve detector")
+                        help="Skip the far-side ST-GCN model during telemetry "
+                             "extraction (stage 2 detects far serves from the "
+                             "ball trace and no longer reads its scores)")
     args = parser.parse_args()
 
     cut_dead_time(args.video, args.output,
