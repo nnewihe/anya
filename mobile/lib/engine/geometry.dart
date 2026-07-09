@@ -1,6 +1,55 @@
+import 'linalg.dart';
+
+/// 3×3 homography and the two OpenCV operations the dead-time cutter's
+/// stage-1 telemetry uses: `getPerspectiveTransform` (exact 4-point) and
+/// `perspectiveTransform`.  The rally engine is fully pixel-space and does not
+/// use this; the cutter's near/far ready-band needs world coordinates, so the
+/// homography (deleted with the rally rewrite) is resurrected here for
+/// match_telemetry.dart.  Ported 1:1 from the pre-rewrite geometry.dart.
+class Homography {
+  final List<double> h; // 9 elements, row-major, h[8] == 1
+
+  Homography(this.h);
+
+  /// Exact homography mapping the 4 `src` points to the 4 `dst` points.
+  /// Mirrors cv2.findHomography on 4 correspondences (== getPerspectiveTransform),
+  /// which is exactly how the Python cutter builds it from court corners.
+  factory Homography.from4(List<List<double>> src, List<List<double>> dst) {
+    final a = Mat(8, 8);
+    final b = Mat(8, 1);
+    for (var i = 0; i < 4; i++) {
+      final x = src[i][0], y = src[i][1];
+      final u = dst[i][0], v = dst[i][1];
+      final r0 = 2 * i, r1 = 2 * i + 1;
+      // u = h0 x + h1 y + h2 - h6 x u - h7 y u
+      a.set(r0, 0, x);
+      a.set(r0, 1, y);
+      a.set(r0, 2, 1);
+      a.set(r0, 6, -x * u);
+      a.set(r0, 7, -y * u);
+      b.d[r0] = u;
+      // v = h3 x + h4 y + h5 - h6 x v - h7 y v
+      a.set(r1, 3, x);
+      a.set(r1, 4, y);
+      a.set(r1, 5, 1);
+      a.set(r1, 6, -x * v);
+      a.set(r1, 7, -y * v);
+      b.d[r1] = v;
+    }
+    final sol = a.inverse().matmul(b); // 8×1
+    return Homography([...sol.d, 1.0]);
+  }
+
+  /// Map a pixel point to world (court-feet) coordinates.
+  List<double> transform(double px, double py) {
+    final w = h[6] * px + h[7] * py + h[8];
+    final wx = (h[0] * px + h[1] * py + h[2]) / w;
+    final wy = (h[3] * px + h[4] * py + h[5]) / w;
+    return [wx, wy];
+  }
+}
+
 /// Even-odd ray-cast point-in-polygon. Returns true for interior points.
-/// (The court homography that used to live here is gone — the engine is now
-/// fully pixel-space; see active_zone.dart and telemetry.dart.)
 bool pointInPolygon(double x, double y, List<List<double>> poly) {
   var inside = false;
   final n = poly.length;
