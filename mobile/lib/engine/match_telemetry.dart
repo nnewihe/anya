@@ -183,11 +183,10 @@ class CropRect {
 /// calibration from [pixelCornersBlBrTrTl] (the clicked corners, in the
 /// calibration order BL, BR, TR, TL); no per-frame far-player-box dependency.
 ///
-/// Note: the far half is heavily foreshortened (a ~20-45px sliver near the
-/// frame top on the ground-truth cameras), so the default 0.5 extension only
-/// reaches ~10px above the far baseline.  If a stage-1 re-extract shows
-/// far-serve recall dropping vs the Python player-anchored crop (16/22 on
-/// folder 68), raise farCropTopExtendFrac to reach the toss/contact region.
+/// Note: the far half is heavily foreshortened (a ~17px sliver on folder 68),
+/// so the toss/contact sits well above it.  farCropTopExtendFrac was validated
+/// at 3.0 by re-running stage 2 with fballs filtered to this crop: 0.5 kept
+/// only 9/22 far serves, 3.0 recovers the full 16/22 player-anchored baseline.
 CropRect farCourtCropRect(List<List<double>> pixelCornersBlBrTrTl,
     {double topExtendFrac = CutterConfig.farCropTopExtendFrac}) {
   const w = CutterConfig.courtWidthFt;

@@ -51,11 +51,14 @@ class CutterConfig {
   // the calibrated corners via homography, with the TOP edge extended upward
   // by this fraction of the box height to reach above the far baseline.
   // Replaces the Python player-anchored crop for the mobile port — no
-  // far-player-box dependency, computed once at calibration.  The far half is
-  // heavily foreshortened (a ~20-45px sliver near the frame top), so this may
-  // need to reach HIGHER (toward the toss/contact) than the far-half height
-  // gives — tune here if a stage-1 re-extract shows far-serve recall dropping.
-  static const double farCropTopExtendFrac = 0.5;
+  // far-player-box dependency, computed once at calibration.
+  //
+  // The far half is heavily foreshortened (a ~17px sliver on folder 68), so
+  // the toss/contact — where the far serve's ball actually is — sits WELL
+  // above it.  Validated by re-running stage 2 on folder-68 telemetry with
+  // fballs filtered to the candidate crop: 0.5 kept only 9/22 far serves, but
+  // 3.0 (top ~52px above the far baseline) recovers the full 16/22 baseline.
+  static const double farCropTopExtendFrac = 3.0;
 
   static const int playerClassIndex = 0;
   static const int ballClassIndex   = 0;

@@ -82,11 +82,11 @@ void main() {
       [412.0, 274.0], // TL
     ]);
     expect(rect.x1, closeTo(360.5, 1.0));
-    expect(rect.y1, closeTo(265.4, 1.0)); // top extended above far baseline
+    expect(rect.y1, closeTo(222.4, 1.0)); // top extended 3.0x above far baseline
     expect(rect.x2, closeTo(594.3, 1.0));
     expect(rect.y2, closeTo(291.2, 1.0)); // net line
-    // sanity: within frame, top above the far baseline (274), net below it
-    expect(rect.y1, lessThan(274.0));
+    // sanity: reaches well above the far baseline (274) into the contact region
+    expect(rect.y1, lessThan(230.0));
     expect(rect.y2, greaterThan(274.0));
     expect(rect.x1, greaterThanOrEqualTo(0.0));
     expect(rect.x2, lessThanOrEqualTo(960.0));
