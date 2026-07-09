@@ -240,4 +240,54 @@ void main() {
     // Both must be captured (the old 8s cooldown swallowed the second).
     expect(detectNearServeEvents(_match(recs), SegmenterConfig()).length, 2);
   });
+
+  // --- dedupe + serving-side HMM (slice 3c), ported from the Python
+  //     --self-test checks ---
+
+  test('dedupe keeps 2 of 3 conflicting events, prefers the near one', () {
+    final ded = dedupeServeEvents([
+      ServeEvent(10.0, 'far', 0.9),
+      ServeEvent(13.0, 'near', 0.8),
+      ServeEvent(40.0, 'far', 0.9),
+    ], SegmenterConfig());
+    expect(ded.length, 2);
+    expect(ded[0].side, 'near');
+  });
+
+  test('dedupe prefers the trace-confirmed serve of an aborted-toss pair', () {
+    final ded = dedupeServeEvents([
+      ServeEvent(10.0, 'near', 0.8, traceConfirmed: false),
+      ServeEvent(15.0, 'near', 0.8, traceConfirmed: true),
+    ], SegmenterConfig());
+    expect(ded.length, 1);
+    expect(ded[0].t, 15.0);
+  });
+
+  test('dedupe keeps the earlier of two confirmed events', () {
+    final ded = dedupeServeEvents([
+      ServeEvent(10.0, 'near', 0.8, traceConfirmed: true),
+      ServeEvent(13.0, 'near', 0.8, traceConfirmed: true),
+    ], SegmenterConfig());
+    expect(ded.length, 1);
+    expect(ded[0].t, 10.0);
+  });
+
+  test('HMM keeps a confirmed side-anomalous event (any side)', () {
+    const sides = ['near', 'near', 'far', 'near', 'near'];
+    final evs = [
+      for (var i = 0; i < 5; i++)
+        ServeEvent(10.0 + 20 * i, sides[i], 0.8, traceConfirmed: true)
+    ];
+    expect(hmmFilterEvents(evs, SegmenterConfig()).length, 5);
+  });
+
+  test('HMM drops an unconfirmed side-anomalous event', () {
+    const sides = ['near', 'near', 'far', 'near', 'near'];
+    final evs = [
+      for (var i = 0; i < 5; i++)
+        ServeEvent(10.0 + 20 * i, sides[i], 0.8,
+            traceConfirmed: sides[i] == 'near')
+    ];
+    expect(hmmFilterEvents(evs, SegmenterConfig()).length, 4);
+  });
 }

@@ -1,7 +1,8 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
-import 'ball_tracker.dart' show Detection;
+import 'ball_tracker.dart'
+    show Detection, BallTrackManager, makeImageRowPerspective;
 import 'kalman.dart';
 import 'linalg.dart';
 
@@ -546,4 +547,371 @@ List<ServeEvent> detectNearServeEvents(
     }
   }
   return events;
+}
+
+// ===========================================================================
+// Ball-trace replay (slice 3c) — reuses ball_tracker.dart's IMM tracker
+// ===========================================================================
+class _SmoothedVelocity {
+  final double windowSec;
+  final List<List<double>> _pts = []; // [t, x, y]
+  _SmoothedVelocity(this.windowSec);
+
+  void add(double t, double x, double y) {
+    _pts.add([t, x, y]);
+    final cutoff = t - windowSec;
+    while (_pts.isNotEmpty && _pts.first[0] < cutoff) {
+      _pts.removeAt(0);
+    }
+  }
+
+  List<double>? velocity() {
+    if (_pts.length < 2) return null;
+    final f = _pts.first, l = _pts.last;
+    if (l[0] <= f[0]) return null;
+    final dt = l[0] - f[0];
+    return [(l[1] - f[1]) / dt, (l[2] - f[2]) / dt];
+  }
+}
+
+bool _isCarried(
+    List<double>? vBall, List<double>? vPlayer, SegmenterConfig cfg) {
+  if (vBall == null || vPlayer == null) return false;
+  final ballSpeed = _hypot(vBall[0], vBall[1]);
+  final playerSpeed = _hypot(vPlayer[0], vPlayer[1]);
+  if (ballSpeed < 1e-6) return false;
+  final ratio = _hypot(vBall[0] - vPlayer[0], vBall[1] - vPlayer[1]) / ballSpeed;
+  return ratio < cfg.couplingRatioMax &&
+      playerSpeed >= cfg.couplingMinPlayerSpeed;
+}
+
+class ReplayFrame {
+  final double t;
+  final bool genuine; // trace alive, above velocity floor, not carried
+  final double racketProb;
+  final List<double>? position;
+  final double tsd; // seconds since the last real detection
+  final double bounceProb;
+  final List<double>? det; // raw detection associated this frame, or null
+  ReplayFrame(this.t, this.genuine, this.racketProb, this.position, this.tsd,
+      this.bounceProb, this.det);
+}
+
+/// Re-run the IMM ball tracker over the recorded detections in [t0, t1).
+/// Port of replay_ball_tracker/_replay_core (collect=false).  In-box
+/// detections are dropped (racket/arm false positives) unless the tracked ball
+/// was already predicted there (inbox_accept — the contact moment).  Merges
+/// the native-res channels (fballs, rballs).
+List<ReplayFrame> replayBallTracker(
+    MatchTelemetry match, double t0, double t1, SegmenterConfig cfg) {
+  final persp = makeImageRowPerspective(cfg.frameHeightPx);
+  final mgr = BallTrackManager(match.fps, perspectiveScale: persp);
+  final ballVel = _SmoothedVelocity(cfg.couplingWindowS);
+  final playerVel = _SmoothedVelocity(cfg.couplingWindowS);
+
+  final out = <ReplayFrame>[];
+  for (final rec in match.slice(t0, t1)) {
+    final tp = mgr.track?.position; // previous-frame filtered position
+    var inboxAccept = 0.0;
+    if (tp != null && cfg.inboxAcceptPx > 0) {
+      inboxAccept = cfg.inboxAcceptPx * math.max(persp(tp[1]), 0.35);
+    }
+
+    final dets = <Detection>[];
+    for (final d in [...rec.balls, ...rec.fballs, ...rec.rballs]) {
+      final bx = d.x, by = d.y;
+      var inside = false;
+      for (final box in [rec.nearBox, rec.farBox]) {
+        if (box != null &&
+            box[0] <= bx &&
+            bx <= box[2] &&
+            box[1] <= by &&
+            by <= box[3]) {
+          inside = true;
+          break;
+        }
+      }
+      if (inside &&
+          !(inboxAccept > 0 &&
+              tp != null &&
+              _hypot(bx - tp[0], by - tp[1]) <= inboxAccept)) {
+        continue; // racket/arm/body false positive
+      }
+      if (dets.any((e) => (bx - e.x).abs() <= 6.0 && (by - e.y).abs() <= 6.0)) {
+        continue; // both passes saw the same ball
+      }
+      dets.add(Detection(bx, by, d.conf));
+    }
+
+    final status = mgr.update(dets, rec.t);
+
+    if (status.position != null) {
+      ballVel.add(rec.t, status.position![0], status.position![1]);
+    }
+    if (rec.nearBox != null) {
+      playerVel.add(rec.t, (rec.nearBox![0] + rec.nearBox![2]) / 2.0,
+          (rec.nearBox![1] + rec.nearBox![3]) / 2.0);
+    }
+
+    var genuine = false;
+    if (status.hasMovingTrace && status.position != null) {
+      final floor = cfg.moveVelocityFloorPxS * persp(status.position![1]);
+      if (status.speedPxS >= floor) {
+        genuine = !_isCarried(ballVel.velocity(), playerVel.velocity(), cfg);
+      }
+    }
+
+    List<double>? assoc;
+    if (dets.isNotEmpty &&
+        status.position != null &&
+        status.timeSinceDetection < 0.75 / math.max(match.fps, 1e-6)) {
+      Detection? best;
+      var bestD = double.infinity;
+      for (final d in dets) {
+        final ddx = d.x - status.position![0], ddy = d.y - status.position![1];
+        final dd = ddx * ddx + ddy * ddy;
+        if (dd < bestD) {
+          bestD = dd;
+          best = d;
+        }
+      }
+      if (best != null) assoc = [best.x, best.y];
+    }
+    out.add(ReplayFrame(rec.t, genuine, status.racketProb, status.position,
+        status.timeSinceDetection, status.bounceProb, assoc));
+  }
+  return out;
+}
+
+/// Maximal [start, end] intervals of genuine trace motion, folding gaps
+/// <= mergeGapS.  Ends anchored to the last real detection (t - tsd).
+List<List<double>> aliveIntervals(List<ReplayFrame> replay, double mergeGapS) {
+  final raw = <List<double>>[]; // [start, rawEnd, anchoredEnd]
+  for (final fr in replay) {
+    if (!fr.genuine) continue;
+    final anchored = fr.t - math.min(fr.tsd, fr.t);
+    if (raw.isNotEmpty && fr.t - raw.last[1] <= mergeGapS) {
+      raw.last[1] = fr.t;
+      raw.last[2] = math.max(raw.last[2], anchored);
+    } else {
+      raw.add([fr.t, fr.t, math.max(fr.t - fr.tsd, 0.0)]);
+    }
+  }
+  return [for (final r in raw) [r[0], math.max(r[0], r[2])]];
+}
+
+/// A serve-like trace: net downward + horizontal motion over any ~0.3s
+/// stretch of genuine points (perspective-scaled).
+bool confirmServeTrace(List<ReplayFrame> replay, SegmenterConfig cfg) {
+  final persp = makeImageRowPerspective(cfg.frameHeightPx);
+  final pts = [
+    for (final fr in replay)
+      if (fr.genuine && fr.position != null)
+        [fr.t, fr.position![0], fr.position![1]]
+  ];
+  for (var i = 1; i < pts.length; i++) {
+    final t1 = pts[i][0], x1 = pts[i][1], y1 = pts[i][2];
+    var j = i - 1;
+    while (j > 0 && t1 - pts[j][0] < 0.3) {
+      j--;
+    }
+    final t0 = pts[j][0], x0 = pts[j][1], y0 = pts[j][2];
+    final dt = t1 - t0;
+    if (dt < 0.15) continue;
+    final scale = persp((y0 + y1) / 2.0);
+    if ((y1 - y0) / dt >= cfg.traceDownwardPxS * scale &&
+        (x1 - x0).abs() / dt >= cfg.traceHorizontalPxS * scale) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// ===========================================================================
+// Far-serve detection (slice 3c)
+// ===========================================================================
+
+/// Largest image-y a far-serve trace stretch may START at — calibrated from
+/// observed far-player feet (median + pad), else a frame fraction.
+double farRegionCutoffY(MatchTelemetry match, SegmenterConfig cfg) {
+  final feet = [
+    for (final r in match.records)
+      if (r.farBox != null) r.farBox![3].toDouble()
+  ]..sort();
+  if (feet.length >= cfg.farFeetMinSamples) {
+    return feet[feet.length ~/ 2] + cfg.farOriginPadPx;
+  }
+  return cfg.frameHeightPx * cfg.farTraceOriginFrac;
+}
+
+bool _farServeStretch(List<List<double>> pts, SegmenterConfig cfg,
+    double Function(double) persp, double yOriginMax) {
+  for (var i = 1; i < pts.length; i++) {
+    final t1 = pts[i][0], x1 = pts[i][1], y1 = pts[i][2];
+    var j = i - 1;
+    while (j > 0 && t1 - pts[j][0] < 0.3) {
+      j--;
+    }
+    final t0 = pts[j][0], x0 = pts[j][1], y0 = pts[j][2];
+    final dt = t1 - t0;
+    if (dt < 0.15 || y0 > yOriginMax) continue;
+    final scale = persp((y0 + y1) / 2.0);
+    if ((y1 - y0) / dt >= cfg.traceDownwardPxS * scale &&
+        (x1 - x0).abs() / dt >= cfg.traceHorizontalPxS * scale) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Far-serve trace onsets: ORIGIN (far region) + MOTION (down+horizontal,
+/// early) + QUIET (dead time before, micro-blips ignored).
+List<double> farServeTraceOnsets(MatchTelemetry match, SegmenterConfig cfg) {
+  final replay = replayBallTracker(match, 0.0, match.duration + 1.0, cfg);
+  final intervals = aliveIntervals(replay, cfg.aliveMergeGapS);
+  final persp = makeImageRowPerspective(cfg.frameHeightPx);
+  final cutoffY = farRegionCutoffY(match, cfg);
+
+  final onsets = <double>[];
+  var prevEnd = -double.infinity;
+  for (final iv in intervals) {
+    final start = iv[0], end = iv[1];
+    final quietOk = start - prevEnd >= cfg.farTraceQuietS;
+    if (end - start >= cfg.farTraceMinIntervalS) {
+      prevEnd = math.max(prevEnd, end);
+    }
+    if (!quietOk) continue;
+    final headEnd = math.min(end, start + cfg.farTraceHeadS);
+    final pts = [
+      for (final fr in replay)
+        if (fr.genuine &&
+            fr.position != null &&
+            start <= fr.t &&
+            fr.t <= headEnd)
+          [fr.t, fr.position![0], fr.position![1]]
+    ];
+    if (_farServeStretch(pts, cfg, persp, cutoffY)) onsets.add(start);
+  }
+  return onsets;
+}
+
+/// A logged far near-miss (for review); does not affect segmentation.
+class FarMiss {
+  final double t;
+  final double score;
+  final String reason;
+  const FarMiss(this.t, this.score, this.reason);
+}
+
+/// Far serves from the trace alone, gated on far-player PRESENCE (a tracked
+/// far box within farPresenceSlackS of the onset).
+List<ServeEvent> _detectFarServeEvents(
+    MatchTelemetry match, SegmenterConfig cfg, List<FarMiss>? farMisses) {
+  final farTs = [
+    for (final r in match.records)
+      if (r.farBox != null) r.t
+  ];
+  final events = <ServeEvent>[];
+  for (final onset in farServeTraceOnsets(match, cfg)) {
+    final i = _bisectLeft(farTs, onset - cfg.farPresenceSlackS);
+    final present = i < farTs.length && farTs[i] <= onset + cfg.farPresenceSlackS;
+    if (present) {
+      events.add(ServeEvent(onset, 'far', 1.0, traceConfirmed: true));
+    } else {
+      farMisses?.add(FarMiss(onset, 1.0, 'no_far_player'));
+    }
+  }
+  return events;
+}
+
+/// Serve events for one side (dispatcher — mirrors detect_serve_events).
+List<ServeEvent> detectServeEvents(
+    MatchTelemetry match, String side, SegmenterConfig cfg,
+    {List<FarMiss>? farMisses}) {
+  if (side == 'far') return _detectFarServeEvents(match, cfg, farMisses);
+  return detectNearServeEvents(match, cfg);
+}
+
+// ===========================================================================
+// Dedupe + serving-side HMM (slice 3c)
+// ===========================================================================
+List<ServeEvent> dedupeServeEvents(
+    List<ServeEvent> events, SegmenterConfig cfg) {
+  final sorted = [...events]..sort((a, b) => a.t.compareTo(b.t));
+  final kept = <ServeEvent>[];
+  for (final evt in sorted) {
+    if (kept.isNotEmpty &&
+        evt.t - kept.last.t < cfg.minServeSeparationS) {
+      final prev = kept.last;
+      if (evt.supported != prev.supported) {
+        if (evt.supported) kept[kept.length - 1] = evt; // supported wins
+        continue;
+      }
+      if (prev.side != evt.side) {
+        if (evt.side == 'near') kept[kept.length - 1] = evt; // near wins
+        continue;
+      }
+      continue; // earlier wins
+    }
+    kept.add(evt);
+  }
+  return kept;
+}
+
+List<String> _viterbi(List<String> obsSides, double pStay, double pCorrect) {
+  final n = obsSides.length;
+  if (n == 0) return [];
+  if (n == 1) return [...obsSides];
+  final sides = ['near', 'far'];
+  final logTrans = [
+    [math.log(pStay), math.log(1 - pStay)],
+    [math.log(1 - pStay), math.log(pStay)],
+  ];
+  final logEmit = [
+    [math.log(pCorrect), math.log(1 - pCorrect)],
+    [math.log(1 - pCorrect), math.log(pCorrect)],
+  ];
+  final obs = [for (final o in obsSides) o == 'near' ? 0 : 1];
+  var delta = [
+    math.log(0.5) + logEmit[0][obs[0]],
+    math.log(0.5) + logEmit[1][obs[0]],
+  ];
+  final psi = [for (var i = 0; i < n; i++) [0, 0]];
+  for (var t = 1; t < n; t++) {
+    final newDelta = [0.0, 0.0];
+    for (var s = 0; s < 2; s++) {
+      // scores[from] = delta[from] + logTrans[from][s]
+      var best = 0;
+      var bestScore = delta[0] + logTrans[0][s];
+      final s1 = delta[1] + logTrans[1][s];
+      if (s1 > bestScore) {
+        best = 1;
+        bestScore = s1;
+      }
+      psi[t][s] = best;
+      newDelta[s] = bestScore + logEmit[s][obs[t]];
+    }
+    delta = newDelta;
+  }
+  final path = List<int>.filled(n, 0);
+  path[n - 1] = delta[1] > delta[0] ? 1 : 0;
+  for (var t = n - 2; t >= 0; t--) {
+    path[t] = psi[t + 1][path[t + 1]];
+  }
+  return [for (final s in path) sides[s]];
+}
+
+/// Drop side-anomalous events that lack a confirming trace (weak noise).
+/// Any trace-confirmed event is shielded regardless of side.
+List<ServeEvent> hmmFilterEvents(List<ServeEvent> events, SegmenterConfig cfg) {
+  if (events.length < 2) return events;
+  final decoded =
+      _viterbi([for (final e in events) e.side], cfg.hmmPStay, cfg.hmmPCorrect);
+  final kept = <ServeEvent>[];
+  for (var i = 0; i < events.length; i++) {
+    final evt = events[i];
+    if (evt.side != decoded[i] && !evt.supported) continue;
+    kept.add(evt);
+  }
+  return kept;
 }
