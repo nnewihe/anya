@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rally_predictor/engine/ball_tracker.dart' show Detection;
+import 'package:rally_predictor/engine/inference.dart' show LetterboxTransform;
 import 'package:rally_predictor/engine/match_telemetry.dart';
 
 /// The stage-1 telemetry record must serialize to the SAME JSONL schema as
@@ -104,5 +106,43 @@ void main() {
     expect(meta['has_trophy'], false);
     expect(meta['has_far_serve'], false);
     expect(meta['has_far_balls'], false);
+  });
+
+  test('far-crop detection maps back to analysis coords (round-trip)', () {
+    // Native crop = the folder-68 far rect at ~2.8x (native 2704 vs 960).
+    final rect = farCourtCropRect([
+      [79.0, 377.0],
+      [816.0, 374.0],
+      [551.0, 275.0],
+      [412.0, 274.0],
+    ]);
+    const nativeScale = 2704.0 / 960.0;
+    final cropW = (rect.width * nativeScale).round();
+    final cropH = (rect.height * nativeScale).round();
+
+    // The letterbox transform the source would compute for this crop.
+    final s = math.min(960.0 / cropW, 960.0 / cropH);
+    final tf = LetterboxTransform(
+        s, (960 - cropW * s) / 2.0, (960 - cropH * s) / 2.0);
+
+    // Forward: a known analysis point inside the rect -> where it lands in the
+    // 960 letterbox; then mapFarCropToAnalysis must recover it.
+    for (final frac in const [
+      [0.25, 0.25],
+      [0.5, 0.5],
+      [0.8, 0.6],
+    ]) {
+      final ax = rect.x1 + frac[0] * rect.width;
+      final ay = rect.y1 + frac[1] * rect.height;
+      // analysis -> native crop px -> letterbox px
+      final cnx = frac[0] * cropW, cny = frac[1] * cropH;
+      final rawX = cnx * tf.scale + tf.padX, rawY = cny * tf.scale + tf.padY;
+      final back = mapFarCropToAnalysis(rawX, rawY, tf, cropW, cropH, rect);
+      expect(back[0], closeTo(ax, 0.5));
+      expect(back[1], closeTo(ay, 0.5));
+    }
+    // The letterbox must keep the crop inside the 960 square.
+    expect(cropW * s, lessThanOrEqualTo(960.0 + 1e-6));
+    expect(cropH * s, lessThanOrEqualTo(960.0 + 1e-6));
   });
 }

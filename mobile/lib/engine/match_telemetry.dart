@@ -260,6 +260,70 @@ class NoFarBalls implements FarBallSource {
       const [];
 }
 
+/// Native-resolution pixels of the fixed far-crop rectangle at a given time,
+/// in lockstep with the analysis stream.  Concrete impl (a parallel ffmpeg
+/// `crop` output at native res) is Phase 4b; this decouples the detection
+/// logic from the frame-source plumbing.
+class NativeCrop {
+  final Uint8List rgb; // row-major rgb24, width*height*3 bytes
+  final int width;
+  final int height;
+  const NativeCrop(this.rgb, this.width, this.height);
+}
+
+abstract class NativeCropProvider {
+  /// The native-res crop for the fixed rectangle at [tSec], or null if
+  /// unavailable (past EOF / decode gap).
+  Future<NativeCrop?> cropAt(double tSec);
+}
+
+/// Map a detection from raw 960×960 far-crop letterbox coordinates back to
+/// analysis (960×540) coordinates.  Pure + unit-tested: letterbox → native
+/// crop px → the analysis rect the crop covers.
+List<double> mapFarCropToAnalysis(double rawX, double rawY,
+    LetterboxTransform tf, int cropW, int cropH, CropRect rect) {
+  final cnx = (rawX - tf.padX) / tf.scale; // native crop px
+  final cny = (rawY - tf.padY) / tf.scale;
+  return [
+    rect.x1 + (cnx / cropW) * rect.width,
+    rect.y1 + (cny / cropH) * rect.height,
+  ];
+}
+
+/// The concrete far-ball source: letterbox the fixed native far-crop into the
+/// model's 960×960 input (robust to a non-dynamic ONNX), run the ball model,
+/// and map detections back to analysis coordinates.  Ignores farBox/farWorld
+/// — the crop is a fixed geometric rectangle from the court corners.
+class FixedFarCropSource implements FarBallSource {
+  final CropRect rect;
+  final NativeCropProvider provider;
+  final OnnxDetector ballDetector;
+  const FixedFarCropSource(this.rect, this.provider, this.ballDetector);
+
+  @override
+  Future<List<Detection>> farBalls(
+    double tSec,
+    List<int>? farBox,
+    List<double>? farWorld,
+    List<List<int>> exclusionZones,
+  ) async {
+    final crop = await provider.cropAt(tSec);
+    if (crop == null || crop.width <= 0 || crop.height <= 0) return const [];
+    final (tensor, tf) =
+        letterboxCropToTensor(crop.rgb, crop.width, crop.height);
+    final raw = ballDetector.detectRaw(tensor, CutterConfig.ballConf,
+        classIndex: CutterConfig.ballClassIndex);
+    final out = <Detection>[];
+    for (final b in raw) {
+      final a = mapFarCropToAnalysis((b.x1 + b.x2) / 2.0, (b.y1 + b.y2) / 2.0,
+          tf, crop.width, crop.height, rect);
+      if (isInExclusionZone(a[0], a[1], exclusionZones)) continue;
+      out.add(Detection(_r1(a[0]), _r1(a[1]), _r3(b.conf)));
+    }
+    return out;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Extractor
 // ---------------------------------------------------------------------------
