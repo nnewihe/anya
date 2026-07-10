@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <!-- No manifest entry needed for google_sign_in: the Android OAuth client
+         registered in Google Cloud Console is matched by applicationId
+         (com.example.rally_predictor) + SHA-1 keystore fingerprint, not by a
+         client ID embedded in the app. -->
     <application
         android:label="rally_predictor"
         android:name="${applicationName}"

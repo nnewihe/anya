@@ -22,6 +22,11 @@ dependencies:
   onnxruntime: ^1.4.1          # YOLO inference (CoreML/NNAPI/CPU) across platforms
   ffmpeg_kit_flutter_new: ^4.3.2  # mobile (android/ios) video decode + reel cut
 
+  # Export / sharing
+  gal: ^2.3.0                  # save reel video to native Photos/Gallery
+  google_sign_in: ^6.2.1       # OAuth for YouTube upload scope
+  http: ^1.2.0                 # resumable upload POST/PUT to YouTube Data API v3
+
 dev_dependencies:
   flutter_lints: ^3.0.0
   flutter_test:

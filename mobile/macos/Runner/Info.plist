@@ -24,6 +24,24 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Rally Predictor saves your generated rally reel videos to your Photos library.</string>
+	<!-- TODO(you): replace with the macOS OAuth client ID from Google Cloud
+	     Console (Credentials -> Create Credentials -> OAuth client ID -> macOS,
+	     bundle ID com.example.rallyPredictor). Keep the .apps.googleusercontent.com
+	     suffix here; use the reversed form below for the URL scheme.  See
+	     docs/sharing_setup.md. -->
+	<key>GIDClientID</key>
+	<string>YOUR_MACOS_OAUTH_CLIENT_ID.apps.googleusercontent.com</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.YOUR_MACOS_OAUTH_CLIENT_ID</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>

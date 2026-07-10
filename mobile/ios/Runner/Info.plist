@@ -24,6 +24,23 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Rally Predictor saves your generated rally reel videos to your Photos library.</string>
+	<!-- TODO(you): replace with the iOS OAuth client ID from Google Cloud Console
+	     (Credentials -> Create Credentials -> OAuth client ID -> iOS,
+	     bundle ID com.example.rallyPredictor). Keep the .apps.googleusercontent.com
+	     suffix here; use the reversed form below for the URL scheme. -->
+	<key>GIDClientID</key>
+	<string>YOUR_IOS_OAUTH_CLIENT_ID.apps.googleusercontent.com</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.YOUR_IOS_OAUTH_CLIENT_ID</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
