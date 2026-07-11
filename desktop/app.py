@@ -1,5 +1,5 @@
 """
-app.py — US Open themed Rally Detector GUI
+app.py — Anya Tennis desktop GUI (black & yellow)
 
 Two modes, both driven by the proven pipeline/ code:
   • Rally Reel      — rally_detector.collect_rally_segments (highlights)
@@ -15,8 +15,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QProgressBar, QLineEdit, QFrame,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt6.QtGui import QFont
+from PyQt6.QtSvgWidgets import QSvgWidget
 
 # Import the pipeline as a PACKAGE: its modules use intra-package relative
 # imports (`from .ball_tracker import …`), so the repo root — the parent of
@@ -29,13 +30,44 @@ from pipeline.rally_detector import collect_rally_segments
 from pipeline.deadtime_cutter import cut_dead_time
 from pipeline.utilities import create_highlights_ffmpeg, init_court, Config
 
+from background import SleepBlocker, notify
+
 # Mode identifiers.
 MODE_RALLY    = "rally"
 MODE_DEADTIME = "deadtime"
 
-NAVY  = "#001E62"
-GOLD  = "#FECB00"
-WHITE = "#FFFFFF"
+
+def _logo_path():
+    """Locate the white-on-dark Anya Tennis logo (shared with the mobile app).
+
+    Named for its target background: ``anya_logo_black.svg`` is the white /
+    reversed variant, for the dark UI here. Resolves both the packaged
+    (PyInstaller ``_MEIPASS/assets``) and dev-run (``../mobile/assets/images``)
+    locations; returns "" if neither exists so the header degrades gracefully.
+    """
+    name = "anya_logo_black.svg"
+    here = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    candidates = [
+        here / "assets" / name,
+        Path(__file__).resolve().parent.parent / "mobile" / "assets" / "images" / name,
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return ""
+
+# Anya Tennis brand palette (mirrors mobile/lib/theme.dart): black court,
+# yellow ball, sky-blue as the secondary accent.
+BLACK        = "#000000"
+SURFACE      = "#141412"
+SURFACE_ALT  = "#1F1F1B"
+YELLOW       = "#E8FF3D"
+YELLOW_HOVER = "#F1FF6B"
+YELLOW_PRESS = "#C8E020"
+SKY          = "#49C5F1"
+OUTLINE      = "#3A3A36"
+TEXT_DIM     = "#A0A099"
+WHITE        = "#FFFFFF"
 
 
 class _Worker(QThread):
@@ -101,18 +133,19 @@ class _Worker(QThread):
 class RallyDetectorApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Anya — Match Cutter")
+        self.setWindowTitle("Anya Tennis")
         self.setMinimumSize(560, 700)
         self.resize(580, 720)
         self._worker      = None
         self._output_path = ""
         self._mode        = MODE_RALLY
+        self._sleep_blocker = SleepBlocker()
         self._setup_ui()
 
     # ── UI construction ────────────────────────────────────────────────────
 
     def _setup_ui(self):
-        self.setStyleSheet(f"QMainWindow, QWidget {{ background: {NAVY}; }}")
+        self.setStyleSheet(f"QMainWindow, QWidget {{ background: {BLACK}; }}")
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -144,7 +177,7 @@ class RallyDetectorApp(QMainWindow):
         self._progress.setFixedHeight(8)
         self._progress.setStyleSheet(f"""
             QProgressBar {{ background: rgba(255,255,255,0.12); border-radius: 4px; border: none; }}
-            QProgressBar::chunk {{ background: {GOLD}; border-radius: 4px; }}
+            QProgressBar::chunk {{ background: {YELLOW}; border-radius: 4px; }}
         """)
         lay.addWidget(self._progress)
 
@@ -159,26 +192,29 @@ class RallyDetectorApp(QMainWindow):
 
     def _logo_row(self):
         row = QHBoxLayout()
-        ball = QLabel("●")
-        ball.setStyleSheet(f"color: {GOLD}; font-size: 34px; padding-right: 4px;")
-        ball.setFixedWidth(46)
-        col = QVBoxLayout()
-        col.setSpacing(2)
-        title = QLabel("Rally Detector")
-        title.setStyleSheet(f"color: {WHITE}; font-size: 20px; font-weight: 700; letter-spacing: 0.03em;")
-        sub = QLabel("US OPEN EDITION")
-        sub.setStyleSheet(f"color: {GOLD}; font-size: 10px; letter-spacing: 0.16em;")
-        col.addWidget(title)
-        col.addWidget(sub)
-        row.addWidget(ball)
-        row.addLayout(col)
+        logo_path = _logo_path()
+        if logo_path:
+            # The SVG already contains the "ANYA" wordmark + tagline, so it
+            # stands alone as the header lockup. viewBox is 800×580 (~1.38:1).
+            logo = QSvgWidget(logo_path)
+            logo.setFixedSize(QSize(179, 130))
+            row.addWidget(logo)
+        else:
+            # Fallback if the asset can't be found (keeps the app usable).
+            ball = QLabel("●")
+            ball.setStyleSheet(f"color: {YELLOW}; font-size: 34px; padding-right: 4px;")
+            ball.setFixedWidth(46)
+            title = QLabel("ANYA TENNIS")
+            title.setStyleSheet(f"color: {WHITE}; font-size: 20px; font-weight: 700; letter-spacing: 0.16em;")
+            row.addWidget(ball)
+            row.addWidget(title)
         row.addStretch()
         return row
 
     def _divider(self):
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet(f"background: {GOLD}; border: none; max-height: 1px; min-height: 1px;")
+        line.setStyleSheet(f"background: {YELLOW}; border: none; max-height: 1px; min-height: 1px;")
         return line
 
     def _label(self, text):
@@ -199,7 +235,7 @@ class RallyDetectorApp(QMainWindow):
                 padding: 9px 12px;
                 font-size: 13px;
             }}
-            QLineEdit:focus {{ border: 1px solid {GOLD}; }}
+            QLineEdit:focus {{ border: 1px solid {YELLOW}; }}
         """)
         btn = QPushButton("Browse")
         btn.setFixedWidth(88)
@@ -267,7 +303,7 @@ class RallyDetectorApp(QMainWindow):
         self._result_count_lbl = QLabel("")
         self._result_count_lbl.setFixedHeight(24)
         self._result_count_lbl.setStyleSheet(
-            "background: #27ae60; color: white; font-size: 11px; font-weight: 700; "
+            f"background: {YELLOW}; color: {BLACK}; font-size: 11px; font-weight: 700; "
             "padding: 2px 10px; border-radius: 4px;"
         )
         open_btn = QPushButton("Open Folder")
@@ -285,16 +321,16 @@ class RallyDetectorApp(QMainWindow):
         if enabled:
             return f"""
                 QPushButton {{
-                    background: {GOLD}; color: {NAVY};
+                    background: {YELLOW}; color: {BLACK};
                     font-size: 14px; font-weight: 700; letter-spacing: 0.07em;
                     border-radius: 8px; border: none;
                 }}
-                QPushButton:hover  {{ background: #FFD933; }}
-                QPushButton:pressed {{ background: #E6B800; }}
+                QPushButton:hover  {{ background: {YELLOW_HOVER}; }}
+                QPushButton:pressed {{ background: {YELLOW_PRESS}; }}
             """
         return f"""
             QPushButton {{
-                background: rgba(254,203,0,0.22); color: rgba(254,203,0,0.38);
+                background: rgba(232,255,61,0.18); color: rgba(232,255,61,0.40);
                 font-size: 14px; font-weight: 700; letter-spacing: 0.07em;
                 border-radius: 8px; border: none;
             }}
@@ -310,15 +346,15 @@ class RallyDetectorApp(QMainWindow):
                 padding: 6px 12px;
                 font-size: 12px;
             }}
-            QPushButton:hover {{ border-color: {GOLD}; color: {GOLD}; }}
+            QPushButton:hover {{ border-color: {YELLOW}; color: {YELLOW}; }}
         """
 
     def _mode_btn_css(self, active):
         if active:
             return f"""
                 QPushButton {{
-                    background: rgba(254,203,0,0.16); color: {GOLD};
-                    border: 1px solid {GOLD}; border-radius: 6px;
+                    background: rgba(232,255,61,0.14); color: {YELLOW};
+                    border: 1px solid {YELLOW}; border-radius: 6px;
                     font-size: 13px; font-weight: 700;
                 }}
             """
@@ -328,7 +364,7 @@ class RallyDetectorApp(QMainWindow):
                 border: 1px solid rgba(255,255,255,0.18); border-radius: 6px;
                 font-size: 13px;
             }}
-            QPushButton:hover {{ border-color: rgba(254,203,0,0.5); color: {WHITE}; }}
+            QPushButton:hover {{ border-color: rgba(232,255,61,0.5); color: {WHITE}; }}
         """
 
     # ── Slots ──────────────────────────────────────────────────────────────
@@ -392,6 +428,10 @@ class RallyDetectorApp(QMainWindow):
         for btn in self._mode_btns.values():
             btn.setEnabled(False)
 
+        # Keep the machine awake for the duration of the (possibly long) job so
+        # a backgrounded window keeps processing instead of sleeping mid-run.
+        self._sleep_blocker.start()
+
         self._worker = _Worker(video, output, start_frame=0, mode=self._mode)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_finished)
@@ -407,6 +447,7 @@ class RallyDetectorApp(QMainWindow):
 
     def _on_finished(self, output_path, n_segments):
         self._worker = None
+        self._sleep_blocker.stop()
         self._progress.setValue(100)
         if self._mode == MODE_RALLY:
             noun = "rally" if n_segments == 1 else "rallies"
@@ -415,6 +456,8 @@ class RallyDetectorApp(QMainWindow):
             noun = "point" if n_segments == 1 else "points"
             badge = f"{n_segments} POINT{'' if n_segments == 1 else 'S'}"
         self._set_status(f"Done — {n_segments} {noun}")
+        notify("Anya — analysis complete",
+               f"{n_segments} {noun} · {os.path.basename(output_path)}")
         self._detect_btn.setText(self._action_text())
         for btn in self._mode_btns.values():
             btn.setEnabled(True)
@@ -426,6 +469,7 @@ class RallyDetectorApp(QMainWindow):
 
     def _on_error(self, msg):
         self._worker = None
+        self._sleep_blocker.stop()
         self._progress.setValue(0)
         self._set_status(f"Error: {msg}", error=True)
         self._detect_btn.setText(self._action_text())

@@ -11,18 +11,36 @@ class YouTubeUploadResult {
   const YouTubeUploadResult({required this.success, this.videoId, this.error});
 }
 
-/// Uploads the generated rally reel to YouTube as a private video via the
-/// resumable-upload flow (POST to open a session, PUT the file bytes).
-/// Single-attempt: a failed PUT is not resumed, the caller just retries from
-/// scratch — acceptable for the short clips this app produces.
+/// YouTube video visibility. The wire values match the YouTube Data API v3
+/// `status.privacyStatus` field exactly.
+enum YouTubePrivacy {
+  private,
+  unlisted,
+  public;
+
+  String get wireValue => name; // 'private' | 'unlisted' | 'public'
+
+  String get label => switch (this) {
+        YouTubePrivacy.private => 'Private',
+        YouTubePrivacy.unlisted => 'Unlisted',
+        YouTubePrivacy.public => 'Public',
+      };
+}
+
+/// Uploads the generated rally reel to YouTube via the resumable-upload flow
+/// (POST to open a session, PUT the file bytes). The caller chooses the
+/// visibility ([privacy]). Single-attempt: a failed PUT is not resumed, the
+/// caller just retries from scratch — acceptable for the short clips this app
+/// produces.
 class YouTubeUploadService {
   static const _scopes = ['https://www.googleapis.com/auth/youtube.upload'];
   static const _initUrl =
       'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status';
 
-  static Future<YouTubeUploadResult> uploadPrivateVideo({
+  static Future<YouTubeUploadResult> uploadVideo({
     required String filePath,
     required String title,
+    YouTubePrivacy privacy = YouTubePrivacy.private,
     String description = '',
     void Function(double fraction)? onProgress,
   }) async {
@@ -57,7 +75,7 @@ class YouTubeUploadService {
         },
         body: jsonEncode({
           'snippet': {'title': title, 'description': description},
-          'status': {'privacyStatus': 'private'},
+          'status': {'privacyStatus': privacy.wireValue},
         }),
       );
       if (initResp.statusCode < 200 || initResp.statusCode >= 300) {

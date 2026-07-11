@@ -10,8 +10,8 @@
 #   macOS  : pyinstaller rally_app.spec
 #   Windows: pyinstaller rally_app.spec
 #
-# Output: dist/RallyDetector.app  (macOS)
-#         dist/RallyDetector/      (Windows one-folder)
+# Output: dist/Anya Tennis.app   (macOS)
+#         dist/AnyaTennis/        (Windows one-folder)
 
 import sys
 from pathlib import Path
@@ -30,6 +30,8 @@ a = Analysis(
         # Bundle model weights — destination is the 'models' subfolder inside the app
         ('models/ball_best.pt',  'models'),
         ('models/yolo26n.pt',    'models'),
+        # Brand logo (shared with the mobile app) — resolved by app._logo_path()
+        ('../mobile/assets/images/anya_logo_black.svg', 'assets'),
     ],
     hiddenimports=[
         # ultralytics dynamic imports
@@ -48,6 +50,9 @@ a = Analysis(
         'PyQt6.QtCore',
         'PyQt6.QtGui',
         'PyQt6.QtWidgets',
+        # SVG logo rendering in the header
+        'PyQt6.QtSvg',
+        'PyQt6.QtSvgWidgets',
     ],
     hookspath=[],
     hooksconfig={},
@@ -76,7 +81,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='RallyDetector',
+    name='AnyaTennis',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -98,19 +103,19 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='RallyDetector',
+    name='AnyaTennis',
 )
 
 # macOS .app bundle
 if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
-        name='RallyDetector.app',
+        name='Anya Tennis.app',
         icon=None,           # set to 'icon.icns' if you have one
-        bundle_identifier='com.rallydetector.app',
+        bundle_identifier='com.anyatennis.app',
         info_plist={
             'NSHighResolutionCapable': True,
             'CFBundleShortVersionString': '1.0.0',
-            'CFBundleName': 'Rally Detector',
+            'CFBundleName': 'Anya Tennis',
         },
     )

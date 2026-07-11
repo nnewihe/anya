@@ -26,6 +26,7 @@ dependencies:
   gal: ^2.3.0                  # save reel video to native Photos/Gallery
   google_sign_in: ^6.2.1       # OAuth for YouTube upload scope
   http: ^1.2.0                 # resumable upload POST/PUT to YouTube Data API v3
+  flutter_foreground_task: ^9.2.2
 
 dev_dependencies:
   flutter_lints: ^3.0.0
