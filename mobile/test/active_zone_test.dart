@@ -1,8 +1,8 @@
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rally_predictor/engine/active_zone.dart';
-import 'package:rally_predictor/engine/geometry.dart';
+import 'package:anya_tennis/engine/active_zone.dart';
+import 'package:anya_tennis/engine/geometry.dart';
 
 // Synthetic court occupancy resembling the langmead camera geometry:
 // near player roams the near baseline (y≈400-430, x 150..850, box h≈120),

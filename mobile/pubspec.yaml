@@ -1,4 +1,4 @@
-name: rally_predictor
+name: anya_tennis
 description: Cross-platform front end for the rally_detector pipeline.
 publish_to: "none"
 version: 0.1.0+1

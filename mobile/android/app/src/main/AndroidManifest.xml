@@ -14,7 +14,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- No manifest entry needed for google_sign_in: the Android OAuth client
          registered in Google Cloud Console is matched by applicationId
-         (com.example.rally_predictor) + SHA-1 keystore fingerprint, not by a
+         (com.build2launch.anya_tennis) + SHA-1 keystore fingerprint, not by a
          client ID embedded in the app. -->
     <application
         android:label="Anya Tennis"

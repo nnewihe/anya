@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rally_predictor/engine/ball_tracker.dart';
+import 'package:anya_tennis/engine/ball_tracker.dart';
 
 // Port of pipeline/ball_tracker.py's _run_self_test — the parity oracle for the
 // IMM Kalman ball tracker. Same 10 scenarios and the same expected outcomes.

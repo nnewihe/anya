@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rally_predictor/engine/ball_tracker.dart' show Detection;
-import 'package:rally_predictor/engine/point_segmenter.dart';
+import 'package:anya_tennis/engine/ball_tracker.dart' show Detection;
+import 'package:anya_tennis/engine/point_segmenter.dart';
 
 /// Stage-2 foundation (slice 3a): JSONL loading + static-candidate suppression.
 

@@ -1,4 +1,4 @@
-package com.example.rally_predictor
+package com.build2launch.anya_tennis
 
 import io.flutter.embedding.android.FlutterActivity
 
