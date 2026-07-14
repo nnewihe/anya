@@ -1,0 +1,8 @@
+{
+  "n_pt": 1,
+  "n_onnx": 1,
+  "matched": 1,
+  "worst_iou": 0.9757,
+  "worst_conf_delta": 0.001,
+  "pass": true
+}
