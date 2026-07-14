@@ -111,7 +111,14 @@ class ServeSTGCNDetector:
                  device: Optional[str] = None):
         ckpt = torch.load(model_path, map_location="cpu", weights_only=False)
         self.seq_len = ckpt["seq_len"]
-        self.device  = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        if device is None:
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
+        self.device  = torch.device(device)
 
         edge_index = torch.tensor(_EDGES_FULL, dtype=torch.long).t().contiguous()
         self.model = ServeSTGCN(edge_index, ckpt["channels"], ckpt["num_nodes"],

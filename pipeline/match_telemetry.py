@@ -56,7 +56,7 @@ from ultralytics import YOLO
 
 from .utilities import (Config, _is_in_exclusion_zone, init_court,
                         create_auto_exclusion_zones, load_cached_exclusion_zones,
-                        save_cached_exclusion_zones, probe_video)
+                        save_cached_exclusion_zones, probe_video, select_device)
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -159,6 +159,13 @@ class MatchTelemetryExtractor:
         self.video_path = video_path
         self.cfg = cfg or ExtractorConfig()
 
+        # Inference device — ultralytics predict falls back to CPU unless a
+        # device is passed explicitly, so we select the best one once here and
+        # thread it through every predict call (the perception pass is the
+        # whole cost of stage 1; CPU is ~5x slower than MPS on this pipeline).
+        self.device = select_device()
+        print(f"[TELEM] Inference device: {self.device}")
+
         info = probe_video(video_path)
         self.fps          = info["fps"]
         self.total_frames = info["frame_count"]
@@ -210,6 +217,7 @@ class MatchTelemetryExtractor:
                     num_frames=50, conf=0.04, eps=12, padding=8,
                     ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
                     analysis_size=self.cfg.analysis_size,
+                    device=self.device,
                 )
                 save_cached_exclusion_zones(video_path, self.exclusion_zones)
             except Exception as e:
@@ -261,7 +269,8 @@ class MatchTelemetryExtractor:
         """
         results = self.player_model(frame, verbose=False,
                                     conf=self.cfg.player_conf,
-                                    imgsz=Config.PLAYER_IMGSZ)
+                                    imgsz=Config.PLAYER_IMGSZ,
+                                    device=self.device)
         if not (results and results[0].boxes):
             return None, None, None, None
 
@@ -319,7 +328,7 @@ class MatchTelemetryExtractor:
     # ------------------------------------------------------------------
     def _detect_balls(self, frame) -> List[Tuple[float, float, float]]:
         res = self.ball_model(frame, verbose=False, conf=self.cfg.ball_conf,
-                              imgsz=Config.ACTIVE_BALL_IMGSZ)
+                              imgsz=Config.ACTIVE_BALL_IMGSZ, device=self.device)
         out = []
         if res and res[0].boxes:
             for b in res[0].boxes:
@@ -356,7 +365,7 @@ class MatchTelemetryExtractor:
             return []
 
         res = self.ball_model(roi, verbose=False, conf=self.cfg.toss_conf,
-                              imgsz=Config.TOSS_BALL_IMGSZ)
+                              imgsz=Config.TOSS_BALL_IMGSZ, device=self.device)
         out = []
         if res and res[0].boxes:
             for b in res[0].boxes:
@@ -418,7 +427,7 @@ class MatchTelemetryExtractor:
             return []
 
         res = self.ball_model(roi, verbose=False, conf=self.cfg.toss_conf,
-                              imgsz=self.cfg.far_ball_imgsz)
+                              imgsz=self.cfg.far_ball_imgsz, device=self.device)
         fballs = []
         if res and res[0].boxes:
             for b in res[0].boxes:
@@ -447,7 +456,8 @@ class MatchTelemetryExtractor:
         crop = frame[ty1:ty2, tx1:tx2]
         if crop.size == 0:
             return self._last_trophy
-        tr = self.trophy_model(crop, verbose=False, imgsz=Config.TROPHY_IMGSZ)
+        tr = self.trophy_model(crop, verbose=False, imgsz=Config.TROPHY_IMGSZ,
+                               device=self.device)
         if tr and hasattr(tr[0], "probs") and tr[0].probs is not None:
             idx = Config.DEFAULT_NEAR_TROPHY_CLASS_INDEX
             if idx < len(tr[0].probs.data):

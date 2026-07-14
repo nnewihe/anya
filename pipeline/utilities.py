@@ -20,7 +20,27 @@ import shutil
 from pathlib import Path
 
 
-    
+def select_device():
+    """Best available inference device for ultralytics/torch, as a value the
+    ultralytics predict API accepts: 0 (CUDA), "mps" (Apple Silicon), or "cpu".
+
+    Ultralytics predict does NOT auto-select MPS — omitting `device=` falls
+    back to CPU, which is ~5x slower on this pipeline's per-frame YOLO calls
+    (measured ~5 fps CPU vs ~27 fps MPS on an M-series Mac).  Passing the
+    result of this helper as `device=` to every predict call is what puts the
+    perception pass on the GPU.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return 0
+        if torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
 # =============================================================
 # Config
 # =============================================================
@@ -155,6 +175,7 @@ def create_auto_exclusion_zones(
     padding: int = 5,
     ball_class_index: int = 0,
     analysis_size: tuple = None,
+    device=None,
 ) -> List[Tuple[int, int, int, int]]:
     """
     Scan random frames across the full video to find static clusters of objects
@@ -164,6 +185,9 @@ def create_auto_exclusion_zones(
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return []
+
+    if device is None:
+        device = select_device()
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if total_frames < num_frames:
@@ -182,7 +206,8 @@ def create_auto_exclusion_zones(
         if analysis_size is not None:
             frame = cv2.resize(frame, analysis_size, interpolation=cv2.INTER_AREA)
 
-        res = ball_model(frame, verbose=False, conf=conf, imgsz=Config.BALL_IMGSZ)
+        res = ball_model(frame, verbose=False, conf=conf, imgsz=Config.BALL_IMGSZ,
+                         device=device)
         if res and res[0].boxes:
             for b in res[0].boxes:
                 if int(b.cls[0]) != ball_class_index:
@@ -226,6 +251,7 @@ def get_exclusion_zones_from_frames(
     min_samples: int = 15,
     padding: int = 5,
     ball_class_index: int = 0,
+    device=None,
 ) -> List[Tuple[int, int, int, int]]:
     """
     Given a list of frames, detect balls and return exclusion zones using the
@@ -236,12 +262,16 @@ def get_exclusion_zones_from_frames(
     if not frames:
         return []
 
+    if device is None:
+        device = select_device()
+
     sample = random.sample(frames, min(len(frames), sample_size))
 
     # Collect detection centers (same logic as static exclusion zones)
     all_detections = []
     for frm in sample:
-        res = ball_model(frm, verbose=False, conf=conf, imgsz=Config.BALL_IMGSZ)
+        res = ball_model(frm, verbose=False, conf=conf, imgsz=Config.BALL_IMGSZ,
+                         device=device)
         if res and res[0].boxes:
             for b in res[0].boxes:
                 if int(b.cls[0]) != ball_class_index:
