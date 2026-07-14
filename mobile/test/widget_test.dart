@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:rally_predictor/main.dart';
+import 'package:anya_tennis/main.dart';
 
 void main() {
   testWidgets('App renders home screen', (WidgetTester tester) async {

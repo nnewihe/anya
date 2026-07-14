@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rally_predictor/engine/point_segmenter.dart';
+import 'package:anya_tennis/engine/point_segmenter.dart';
 
 /// Dev golden-master: the Dart stage-2 port must reproduce the Python
 /// segment_match outputs frame-for-frame on real telemetry.  Reads telemetry

@@ -2,9 +2,9 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rally_predictor/engine/ball_tracker.dart' show Detection;
-import 'package:rally_predictor/engine/inference.dart' show LetterboxTransform;
-import 'package:rally_predictor/engine/match_telemetry.dart';
+import 'package:anya_tennis/engine/ball_tracker.dart' show Detection;
+import 'package:anya_tennis/engine/inference.dart' show LetterboxTransform;
+import 'package:anya_tennis/engine/match_telemetry.dart';
 
 /// The stage-1 telemetry record must serialize to the SAME JSONL schema as
 /// pipeline/match_telemetry.py, or the golden-master cross-check (run Python
