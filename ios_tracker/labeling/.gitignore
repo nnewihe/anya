@@ -1,0 +1,5 @@
+# Derived: clips are regenerable from the source videos via build_library.py,
+# and candidate caches are just detector output. Labels and the manifest are the
+# irreplaceable part — those stay in git.
+library/clips/
+*.cands.json

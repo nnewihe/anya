@@ -381,7 +381,17 @@ final class BallTrackManager {
     }
 
     private func tryPromote(_ now: Double) {
-        if let t = track, now - t.lastDetectionT <= hijackAfterS { return }
+        // The hijack guard protects a *healthy* track from being stolen by a
+        // seed. A track sitting on a stationary object (a ball basket, a ball
+        // on the ground) is fed a detection every frame, so its lastDetectionT
+        // never goes stale and the guard would block promotion forever — the
+        // real ball could never take over. Upstream (pipeline/anya_base.py)
+        // never hits this because exclusion zones drop stationary ball-like
+        // objects before they reach the tracker; this port has no such filter,
+        // so only a moving track gets the protection. Promotable seeds must
+        // already be coherent moving trajectories, so clutter still can't win.
+        if let t = track, now - t.lastDetectionT <= hijackAfterS,
+           t.recentSpanPx() > moveThreshPx * persp(t.yPos) { return }
         let promotable = tentatives.filter {
             $0.points.count >= confirmHits &&
             $0.spanPx() > moveThreshPx * persp($0.lastXy.1)

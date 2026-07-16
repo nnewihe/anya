@@ -130,9 +130,23 @@ struct AnalysisPlayerView: View {
     let analysis: VideoAnalysis
     @State private var player: AVPlayer
 
+    private enum Export: Equatable {
+        case idle, running
+        case done(URL)
+        case failed(String)
+    }
+    @State private var export: Export = .idle
+    @State private var shareItem: ShareItem?
+
     init(analysis: VideoAnalysis) {
         self.analysis = analysis
         _player = State(initialValue: AVPlayer(url: analysis.url))
+    }
+
+    /// Precompute the keep-segments so the button can show the reel length and
+    /// disable itself when there's nothing worth exporting.
+    private var segments: [HighlightSegment] {
+        HighlightsExporter.segments(for: analysis)
     }
 
     var body: some View {
@@ -146,7 +160,9 @@ struct AnalysisPlayerView: View {
                 }
             }
             .onDisappear { player.pause() }
+            exportBar
         }
+        .sheet(item: $shareItem) { item in ShareSheet(items: [item.url]) }
     }
 
     private var statsBar: some View {
@@ -161,6 +177,75 @@ struct AnalysisPlayerView: View {
         .font(.caption.monospacedDigit())
         .padding(.vertical, 6)
     }
+
+    @ViewBuilder
+    private var exportBar: some View {
+        let segs = segments
+        let reelSec = segs.reduce(0) { $0 + $1.duration }
+        switch export {
+        case .running:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Exporting highlights…")
+            }
+            .font(.footnote)
+            .padding(.bottom, 8)
+        case .failed(let message):
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+        default:
+            Button {
+                runExport()
+            } label: {
+                Label(segs.isEmpty
+                        ? "No rallies to export"
+                        : String(format: "Export Highlights · %d clips · %.0fs",
+                                 segs.count, reelSec),
+                      systemImage: "film.stack")
+                    .font(.callout.weight(.medium))
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(segs.isEmpty ? Color.gray.opacity(0.3) : BallOverlay.ballYellow,
+                                in: Capsule())
+                    .foregroundStyle(segs.isEmpty ? Color.secondary : Color.black)
+            }
+            .disabled(segs.isEmpty)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func runExport() {
+        export = .running
+        Task {
+            do {
+                let url = try await HighlightsExporter.export(analysis: analysis)
+                export = .done(url)
+                shareItem = ShareItem(url: url)
+            } catch {
+                export = .failed(error.localizedDescription)
+            }
+        }
+    }
+}
+
+/// Wrapper so the reel URL can drive a `.sheet(item:)` without retroactively
+/// conforming URL to Identifiable (which can clash with SDK conformances).
+private struct ShareItem: Identifiable {
+    let url: URL
+    var id: String { url.absoluteString }
+}
+
+/// UIKit share sheet, so the reel can be saved to Photos or shared.
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 
 struct PlaybackOverlay: View {

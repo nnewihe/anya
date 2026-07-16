@@ -55,13 +55,17 @@ enum VideoProcessorError: Error {
 /// detector + tracker core as the live camera path.
 final class VideoProcessor {
     private let modelURL: URL?
+    private let viterbiConfig: ViterbiConfig
 
-    /// `modelURL` overrides the app-bundle model (used by the test harness).
-    init(modelURL: URL? = nil) {
+    /// `modelURL` overrides the app-bundle model (used by the test harness);
+    /// `viterbiConfig` lets the tuning sweep vary the solver's weights.
+    init(modelURL: URL? = nil, viterbiConfig: ViterbiConfig = ViterbiConfig()) {
         self.modelURL = modelURL
+        self.viterbiConfig = viterbiConfig
     }
 
     func process(url: URL,
+                 conf: Float = BallDetector.solverConf,
                  progress: @escaping @Sendable (Double) -> Void) async throws -> VideoAnalysis {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
@@ -85,9 +89,18 @@ final class VideoProcessor {
         reader.add(output)
         guard reader.startReading() else { throw VideoProcessorError.readFailed }
 
-        let engine = try TrackerEngine(fps: fps > 0 ? fps : 30, modelURL: modelURL)
+        let engine = try TrackerEngine(fps: fps > 0 ? fps : 30, conf: conf, modelURL: modelURL)
 
-        var samples: [VideoAnalysis.Sample] = []
+        // Fence off stationary ball-like clutter first (ball baskets, balls at
+        // rest). Without this a basket — detected on every frame — holds the
+        // confirmed track forever and the real ball never gets promoted.
+        try await engine.prepareExclusionZones(asset: asset, frameSize: size)
+
+        // Pass 1 — detect every frame. Unlike the live path this commits to no
+        // associations: the whole clip's candidates are gathered first so the
+        // solver can weigh a link against what happens after it.
+        var perFrame: [[ViterbiDetection]] = []
+        var times: [Double] = []
         var inferenceTotal = 0.0
         var lastProgressT = -1.0
 
@@ -96,24 +109,33 @@ final class VideoProcessor {
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { continue }
             let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
 
-            let result = try engine.process(pixelBuffer, at: t)
-            inferenceTotal += result.inferenceMs
-
-            let live = result.status.state == .moving || result.status.state == .coasting
-            samples.append(VideoAnalysis.Sample(
-                t: t,
-                pos: live ? result.ballPosition : nil,
-                state: result.status.state,
-                speedPxS: result.speedPxS))
+            let (dets, ms, _) = try engine.analysisDetections(pixelBuffer)
+            inferenceTotal += ms
+            perFrame.append(dets)
+            times.append(t)
 
             if duration > 0, t - lastProgressT > 0.25 {
                 lastProgressT = t
-                progress(min(t / duration, 1.0))
+                progress(min(t / duration, 1.0) * 0.95)   // leave headroom for the solve
             }
         }
 
         if reader.status == .failed {
             throw reader.error ?? VideoProcessorError.readFailed
+        }
+
+        // Pass 2 — solve the trajectory over the whole clip.
+        try Task.checkCancellation()
+        let solved = ViterbiBallTracker(config: viterbiConfig).solve(frames: perFrame, times: times)
+
+        // Analysis space -> source px for display.
+        let toSource = engine.analysisScale > 0 ? 1 / engine.analysisScale : 1
+        let samples = solved.map { s in
+            VideoAnalysis.Sample(
+                t: s.t,
+                pos: s.pos.map { CGPoint(x: $0.x * toSource, y: $0.y * toSource) },
+                state: s.state,
+                speedPxS: s.speedPxS * Double(toSource))
         }
         progress(1.0)
 
@@ -123,6 +145,6 @@ final class VideoProcessor {
             fps: fps,
             duration: duration,
             samples: samples,
-            avgInferenceMs: samples.isEmpty ? 0 : inferenceTotal / Double(samples.count))
+            avgInferenceMs: times.isEmpty ? 0 : inferenceTotal / Double(times.count))
     }
 }
