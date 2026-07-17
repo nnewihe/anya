@@ -145,12 +145,24 @@ final class BallDetector {
         let n = arr.shape[2].intValue
         // The backing buffer can be padded (e.g. channel stride 10720 for
         // n=10710), so index via the declared strides, never densely.
-        let chStride = arr.strides[1].intValue
-        let anchorStride = arr.strides[2].intValue
+        let declaredChStride = arr.strides[1].intValue
+        let declaredAnchorStride = arr.strides[2].intValue
 
         var candidates: [(box: CGRect, conf: Float)] = []
         var maxConf: Float = 0
         arr.withUnsafeBufferPointer(ofType: Float.self) { p in
+            // On device (and macOS, .all/.cpuOnly) the backing buffer is
+            // allocated at the *padded* size, so the declared strides read in
+            // bounds. The iOS Simulator's CPU/MPS backend reports the same
+            // padded strides but hands back a buffer only the *dense* size —
+            // stride math then runs past the allocation and crashes with
+            // EXC_BAD_ACCESS on decode. Only trust the declared strides while
+            // the highest index they produce stays in bounds; otherwise fall
+            // back to dense channel-major strides ([5n, n, 1]).
+            let maxDeclaredIdx = (n - 1) * declaredAnchorStride + 4 * declaredChStride
+            let stridesInBounds = maxDeclaredIdx < p.count
+            let chStride = stridesInBounds ? declaredChStride : n
+            let anchorStride = stridesInBounds ? declaredAnchorStride : 1
             for i in 0..<n {
                 let base = i * anchorStride
                 let c = p[base + 4 * chStride]
