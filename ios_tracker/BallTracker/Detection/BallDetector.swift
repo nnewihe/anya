@@ -26,24 +26,27 @@ enum BallDetectorError: Error {
 /// keeps the ultra-low conf thresholds the tennis pipeline relies on tunable
 /// per call-site.
 final class BallDetector {
-    static let inputWidth = 960
-    static let inputHeight = 544
+    /// The input size the *shipped* model is exported at. Only a fallback for
+    /// the resolution sweep's bookkeeping — the real size is read from the
+    /// model itself (`inputWidth`/`inputHeight`), never assumed, because a
+    /// letterbox that disagrees with the model's actual input is a silent
+    /// failure: Core ML would rescale for us and every box would come back
+    /// mis-mapped with no error raised.
+    static let referenceWidth = 960
+    static let referenceHeight = 544
+
+    /// Actual model input size, read from the Core ML input description.
+    let inputWidth: Int
+    let inputHeight: Int
 
     /// ACTIVE_BALL_CONF from the pipeline — the operating threshold for the
-    /// online tracker, which must commit to an association every frame and so
-    /// needs precision over recall.
+    /// streaming tracker (live and offline replay alike), which must commit to
+    /// an association every frame and so needs precision over recall.
     static let defaultConf: Float = 0.10
-
-    /// Threshold for the offline Viterbi solver, which wants the opposite
-    /// trade: it discriminates by trajectory dynamics, so it would rather sift
-    /// a pile of weak candidates than never see the ball. Measured on real
-    /// footage, at 0.10 the ball is missed in 48% of frames; at 0.03, 4%.
-    /// Only safe because exclusion zones already fence off stationary clutter.
-    static let solverConf: Float = 0.10
     /// Ultralytics' default NMS IoU, matching the parity fixtures.
     static let defaultIoU: Float = 0.7
 
-    /// Upper bound on a ball box, in model-input px (960-wide space).
+    /// Upper bound on a ball box, in model-input px at the 960-wide reference.
     ///
     /// Deliberately loose. It is tempting to derive this from geometry — a
     /// 6.7 cm ball at 18–93 ft through this lens is only ~1–6 px — but the
@@ -54,6 +57,16 @@ final class BallDetector {
     /// A physical bound would reject every real ball. This only fences off
     /// grossly non-ball blobs (players, bags, chairs).
     static let defaultMaxBoxPx: Float = 45
+
+    /// `defaultMaxBoxPx` rescaled to this model's actual input width. The bound
+    /// is in model-input pixels and the model boxes the ball's *motion streak*,
+    /// so a streak that measures 38 px at a 960-wide input measures 76 px at
+    /// 1920. Leaving the bound at a literal 45 while raising the input
+    /// resolution would silently filter out the fastest — i.e. most of the
+    /// near-court — real balls.
+    var maxBoxPx: Float {
+        Self.defaultMaxBoxPx * Float(inputWidth) / Float(Self.referenceWidth)
+    }
 
     /// The Simulator has no ANE and its MPSGraph backend doesn't reliably
     /// support this model's ops, so `.all` there throws an internal Espresso
@@ -70,8 +83,10 @@ final class BallDetector {
 
     private let model: MLModel
     private let letterbox: Letterbox
-    private let inputName = "image"
-    private let outputName = "detections"
+    // Static so `init` can read the model's input description before `self` is
+    // fully initialized.
+    private static let inputName = "image"
+    private static let outputName = "detections"
 
     /// When BALL_DEBUG_DUMP is set in the environment, print the top raw
     /// confidence per frame (pre-threshold) and save the first few letterboxed
@@ -90,29 +105,42 @@ final class BallDetector {
     }
 
     init(modelURL: URL, computeUnits: MLComputeUnits = BallDetector.defaultComputeUnits) throws {
-        guard let letterbox = Letterbox(width: Self.inputWidth, height: Self.inputHeight) else {
-            throw BallDetectorError.letterboxFailed
-        }
         let cfg = MLModelConfiguration()
         cfg.computeUnits = computeUnits
-        self.model = try MLModel(contentsOf: modelURL, configuration: cfg)
+        let model = try MLModel(contentsOf: modelURL, configuration: cfg)
+        // Size the letterbox from the model rather than a constant, so the two
+        // can never silently disagree.
+        guard let constraint = model.modelDescription
+            .inputDescriptionsByName[Self.inputName]?.imageConstraint else {
+            throw BallDetectorError.badOutput
+        }
+        let w = constraint.pixelsWide, h = constraint.pixelsHigh
+        guard let letterbox = Letterbox(width: w, height: h) else {
+            throw BallDetectorError.letterboxFailed
+        }
+        self.model = model
+        self.inputWidth = w
+        self.inputHeight = h
         self.letterbox = letterbox
     }
 
     /// Detect balls in a frame of any size; boxes come back in that frame's
     /// pixel space.
+    /// `maxBoxPx` defaults to this model's resolution-scaled bound; pass a value
+    /// only to override it.
     func detect(in pixelBuffer: CVPixelBuffer,
                 conf: Float = BallDetector.defaultConf,
                 iouThreshold: Float = BallDetector.defaultIoU,
-                maxBoxPx: Float = BallDetector.defaultMaxBoxPx) throws -> [BallDetection] {
+                maxBoxPx: Float? = nil) throws -> [BallDetection] {
+        let maxBoxPx = maxBoxPx ?? self.maxBoxPx
         guard let (input, transform) = letterbox.apply(to: pixelBuffer) else {
             throw BallDetectorError.letterboxFailed
         }
         if debugDump { dumpLetterboxedInput(input) }
         let provider = try MLDictionaryFeatureProvider(
-            dictionary: [inputName: MLFeatureValue(pixelBuffer: input)])
+            dictionary: [Self.inputName: MLFeatureValue(pixelBuffer: input)])
         let output = try model.prediction(from: provider)
-        guard let arr = output.featureValue(for: outputName)?.multiArrayValue else {
+        guard let arr = output.featureValue(for: Self.outputName)?.multiArrayValue else {
             throw BallDetectorError.badOutput
         }
         return decode(arr, conf: conf, iouThreshold: iouThreshold,
@@ -143,6 +171,7 @@ final class BallDetector {
                         maxBoxPx: Float, transform: LetterboxTransform) -> [BallDetection] {
         guard arr.shape.count == 3, arr.shape[1].intValue == 5 else { return [] }
         let n = arr.shape[2].intValue
+        guard n > 0 else { return [] }
         // The backing buffer can be padded (e.g. channel stride 10720 for
         // n=10710), so index via the declared strides, never densely.
         let chStride = arr.strides[1].intValue
@@ -151,15 +180,33 @@ final class BallDetector {
         var candidates: [(box: CGRect, conf: Float)] = []
         var maxConf: Float = 0
         arr.withUnsafeBufferPointer(ofType: Float.self) { p in
+            // Index via the reported strides — but only while they actually fit
+            // the buffer we were handed. On device the buffer exposes the padded
+            // storage (buffer.count 53600 vs logical 53550 for n=10710), so the
+            // padded strides read in bounds. The Simulator's CPU/MPS backend can
+            // hand back a *torn* prediction: the array still reports the padded
+            // strides while the backing buffer is only the dense size, so the
+            // stride math runs past the allocation — that over-read is the
+            // EXC_BAD_ACCESS. When the reported strides overrun, fall back to
+            // dense channel-major strides ([5n, n, 1]), which fit [1,5,n].
+            var chS = chStride
+            var anS = anchorStride
+            if anS < 1 || chS < 1 || (n - 1) * anS + 4 * chS >= p.count {
+                chS = n
+                anS = 1
+            }
+            // If even the dense layout doesn't fit, the output is malformed;
+            // decode nothing rather than read past the buffer.
+            guard (n - 1) * anS + 4 * chS < p.count else { return }
             for i in 0..<n {
-                let base = i * anchorStride
-                let c = p[base + 4 * chStride]
+                let base = i * anS
+                let c = p[base + 4 * chS]
                 if c > maxConf { maxConf = c }
                 if c < conf { continue }
                 let cx = CGFloat(p[base])
-                let cy = CGFloat(p[base + chStride])
-                let w = CGFloat(p[base + 2 * chStride])
-                let h = CGFloat(p[base + 3 * chStride])
+                let cy = CGFloat(p[base + chS])
+                let w = CGFloat(p[base + 2 * chS])
+                let h = CGFloat(p[base + 3 * chS])
                 if Float(w) > maxBoxPx || Float(h) > maxBoxPx { continue }
                 candidates.append((CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h), c))
             }

@@ -103,19 +103,41 @@ final class IMMEstimator {
     }
 
     func update(_ z: Mat) {
-        var likelihood = [Double](repeating: 0.0, count: n)
+        // Mode probabilities are updated in log-space (deviating from
+        // filterpy, which multiplies raw likelihoods). After a long coast the
+        // innovation can be large enough that every filter's likelihood
+        // underflows to 0, and the raw product degenerates to mu = cbar — the
+        // measurement is thrown away exactly when it carries the most
+        // information (e.g. the ball reappearing with reversed velocity after
+        // an unseen racket hit). Shifting by the max log-likelihood keeps the
+        // ratios, which is all the normalisation needs.
+        var logL = [Double](repeating: 0.0, count: n)
         for i in 0..<n {
             filters[i].update(z)
-            likelihood[i] = filters[i].likelihood
+            logL[i] = filters[i].logLikelihood
         }
+        let maxLog = logL.max() ?? 0.0
         var sum = 0.0
         var newMu = [Double](repeating: 0.0, count: n)
         for i in 0..<n {
-            newMu[i] = cbar[i] * likelihood[i]
+            newMu[i] = cbar[i] * (maxLog.isFinite ? exp(logL[i] - maxLog) : 1.0)
             sum += newMu[i]
         }
         for i in 0..<n { newMu[i] /= sum }
         mu = newMu
+        computeMixingProbabilities()
+        computeStateEstimate()
+    }
+
+    /// Mode-probability time update for a frame with no measurement.
+    /// `update()` is the only place `mu` moves, and it folds in exactly one
+    /// step of the Markov chain — so during an occlusion the mode prior stays
+    /// frozen and a k-frame gap gets priced as a single transition step.
+    /// Advancing `mu ← mu·M` (= `cbar`) once per missed frame makes the prior
+    /// for a hidden racket hit or bounce reflect elapsed unobserved time,
+    /// relaxing toward the chain's stationary distribution.
+    func updateWithoutMeasurement() {
+        mu = cbar
         computeMixingProbabilities()
         computeStateEstimate()
     }

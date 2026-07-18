@@ -1,8 +1,8 @@
 {
-  "n_pt": 1,
-  "n_onnx": 1,
-  "matched": 1,
-  "worst_iou": 0.9757,
-  "worst_conf_delta": 0.001,
+  "n_pt": 47,
+  "n_onnx": 47,
+  "matched": 47,
+  "worst_iou": 0.9121,
+  "worst_conf_delta": 0.0145,
   "pass": true
 }

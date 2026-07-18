@@ -28,11 +28,11 @@ struct FrameResult {
 }
 
 /// Detector + Kalman tracker glued together. The tracker's pixel-tuned gates
-/// (gateBasePx etc.) were validated in 960-wide analysis space, so detections
+/// (gateBasePx etc.) were validated in 1920-wide analysis space, so detections
 /// are normalized into that space before tracking regardless of the source
 /// frame size.
 final class TrackerEngine {
-    static let analysisWidth: CGFloat = 960
+    static let analysisWidth: CGFloat = 1920
 
     private let detector: BallDetector
     private var manager: BallTrackManager?
@@ -75,11 +75,18 @@ final class TrackerEngine {
               }.joined(separator: " "))
     }
 
+    /// Restore exclusion zones computed on a previous run (from a checkpoint),
+    /// so a resumed analysis skips the scan pass and fences off exactly the same
+    /// clutter it did the first time.
+    func setExclusionZones(_ zones: ExclusionZones) {
+        exclusionZones = zones
+    }
+
     /// Detect and map into analysis space, dropping exclusion-zone clutter —
     /// no online tracking. The offline video path uses this to gather every
-    /// frame's candidates before solving the trajectory globally.
+    /// frame's candidates before replaying them through the streaming tracker.
     func analysisDetections(_ pixelBuffer: CVPixelBuffer)
-        throws -> (dets: [ViterbiDetection], inferenceMs: Double, frameSize: CGSize) {
+        throws -> (dets: [TrackerDetection], inferenceMs: Double, frameSize: CGSize) {
         let w = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
         let h = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
         scale = Self.analysisWidth / w
@@ -88,11 +95,11 @@ final class TrackerEngine {
         let detections = try detector.detect(in: pixelBuffer, conf: confThreshold)
         let inferenceMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
 
-        let dets = detections.compactMap { d -> ViterbiDetection? in
+        let dets = detections.compactMap { d -> TrackerDetection? in
             let x = Double(d.center.x * scale)
             let y = Double(d.center.y * scale)
             if exclusionZones.contains(x: x, y: y) { return nil }
-            return ViterbiDetection(x: x, y: y, conf: Double(d.conf))
+            return TrackerDetection(x: x, y: y, conf: Double(d.conf))
         }
         return (dets, inferenceMs, CGSize(width: w, height: h))
     }

@@ -35,8 +35,8 @@ FIX_DIR = Path(__file__).resolve().parent / "fixtures"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 FIX_DIR.mkdir(parents=True, exist_ok=True)
 
-IMGSZ = (544, 960)  # (h, w) — 16:9 letterbox, matches the mobile ONNX re-export
-CONF = 0.05         # ball parity threshold, same as export_onnx.py
+IMGSZ = (1088, 1920)  # (h, w) — 16:9 letterbox, matches the mobile ONNX re-export
+CONF = 0.1         # ball parity threshold, same as export_onnx.py
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from export_onnx import boxes_of, match_sets, get_frame, TEST_VIDEO  # noqa: E402
@@ -45,7 +45,7 @@ from export_onnx import boxes_of, match_sets, get_frame, TEST_VIDEO  # noqa: E40
 def main() -> int:
     from ultralytics import YOLO
 
-    frame_png = FIX_DIR / "frame_960x540.png"
+    frame_png = FIX_DIR / "frame_1920x1080.png"
     if frame_png.exists():
         frame = cv2.imread(str(frame_png))
     else:

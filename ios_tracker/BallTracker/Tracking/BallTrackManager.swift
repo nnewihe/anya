@@ -1,7 +1,8 @@
 import Foundation
 
-/// A pixel-centre detection plus its YOLO confidence.
-struct TrackerDetection {
+/// A pixel-centre detection plus its YOLO confidence. Codable so the offline
+/// video path can checkpoint Pass-1 detections to disk.
+struct TrackerDetection: Codable {
     let x: Double
     let y: Double
     let conf: Double
@@ -124,11 +125,18 @@ private final class ConfirmedTrack {
         detTimes.append(t)
     }
 
+    func markMissed() {
+        imm.updateWithoutMeasurement()
+    }
+
     var position: (Double, Double) { (imm.x.d[0], imm.x.d[1]) }
     var yPos: Double { imm.x.d[1] }
     func speedPxS() -> Double {
         (imm.x.d[2] * imm.x.d[2] + imm.x.d[3] * imm.x.d[3]).squareRoot()
     }
+    /// Filtered velocity (vx, vy) in px/s — the pre-gap heading for the
+    /// kinematic reacquisition gate.
+    var velocityVec: (Double, Double) { (imm.x.d[2], imm.x.d[3]) }
     func positionUncertainty() -> Double {
         imm.P.at(0, 0) + imm.P.at(1, 1) // trace of P[:2,:2]
     }
@@ -242,6 +250,11 @@ final class BallTrackManager {
     let fallbackGateK: Double
     let coastGateK: Double
     let coastGateCapPx: Double
+    let vMaxPxS: Double
+    let kinematicMinGapS: Double
+    let kinematicCosMin: Double
+    let kinematicMinPrevSpeed: Double
+    let kinematicContactProb: Double
 
     private var track: ConfirmedTrack?
     private var tentatives: [Tentative] = []
@@ -269,7 +282,20 @@ final class BallTrackManager {
          qBounceVy: Double = 300.0,
          fallbackGateK: Double = 1.8,
          coastGateK: Double = 0.5,
-         coastGateCapPx: Double = 400.0) {
+         coastGateCapPx: Double = 400.0,
+         // Kinematic reacquisition gate (#1) + physics cap (#3). After a coast
+         // gap the prediction-centred gate is a large circle a stray detection
+         // can fall into, producing an impractical teleport the high-Q IMM then
+         // bakes into the trajectory. Past kinematicMinGapS we validate the
+         // implied motion of a primary-gate candidate and reject unphysical
+         // ones. vMaxPxS is the ball-speed ceiling (near side, 960-wide px/s;
+         // ~60 mph ≈ 780 px/s at 30 fps) — it also caps the coast expansion so a
+         // teleport-inflated speed estimate can't blow the gate open.
+         vMaxPxS: Double = 2500.0,
+         kinematicMinGapS: Double = 0.10,
+         kinematicCosMin: Double = -0.5,
+         kinematicMinPrevSpeed: Double = 150.0,
+         kinematicContactProb: Double = 0.15) {
         self.fps = fps
         self.dt = 1.0 / max(fps, 1e-6)
         self.persp = perspectiveScale ?? noPerspective
@@ -293,6 +319,11 @@ final class BallTrackManager {
         self.fallbackGateK = fallbackGateK
         self.coastGateK = coastGateK
         self.coastGateCapPx = coastGateCapPx
+        self.vMaxPxS = vMaxPxS
+        self.kinematicMinGapS = kinematicMinGapS
+        self.kinematicCosMin = kinematicCosMin
+        self.kinematicMinPrevSpeed = kinematicMinPrevSpeed
+        self.kinematicContactProb = kinematicContactProb
     }
 
     func reset() {
@@ -308,19 +339,36 @@ final class BallTrackManager {
 
         // 2. Associate one detection to the confirmed track.
         var used = [Bool](repeating: false, count: detections.count)
+        var trackMeasured = false
         if let t = track, !detections.isEmpty {
             let (tx, ty) = t.position
             let scale = persp(t.yPos)
             var gate = gateBasePx * scale +
                 gateUncertaintyK * max(t.positionUncertainty(), 0.0).squareRoot()
             let tsd = now - t.lastDetectionT
-            gate += min(coastGateK * t.speedPxS() * tsd, coastGateCapPx)
+            // (#3) Cap the coast expansion by the physical travel envelope
+            // vMax·gap as well as the absolute cap, so a corrupted speed estimate
+            // can't open the gate wide enough to admit a teleport.
+            gate += min(coastGateK * t.speedPxS() * tsd,
+                        min(vMaxPxS * scale * tsd, coastGateCapPx))
             var bestI = -1
             var bestD = gate
             for i in 0..<detections.count {
                 let d = ((detections[i].x - tx) * (detections[i].x - tx) +
                          (detections[i].y - ty) * (detections[i].y - ty)).squareRoot()
                 if d <= bestD { bestD = d; bestI = i }
+            }
+
+            // (#1) Once a real coast gap has opened, the inflated primary gate is
+            // a large circle a stray detection can fall into, producing an
+            // impractical teleport. Reject a primary-gate candidate whose implied
+            // motion across the gap is unphysical; it then falls through to the
+            // small fallback gate (genuine contact reversals stay near the last
+            // measured point) or becomes a fresh tentative.
+            if bestI >= 0, tsd > kinematicMinGapS,
+               !kinematicallyPlausible(det: detections[bestI], track: t,
+                                       gap: tsd, scale: scale) {
+                bestI = -1
             }
 
             // Fallback gate around the last measured position.
@@ -341,7 +389,13 @@ final class BallTrackManager {
                 t.update(x: detections[bestI].x, y: detections[bestI].y, t: now)
                 used[bestI] = true
                 lastDetectionTime = now
+                trackMeasured = true
             }
+        }
+        // A frame that gave the track no detection still advances the mode
+        // prior one Markov step; otherwise mu stays frozen across a gap.
+        if let t = track, !trackMeasured {
+            t.markMissed()
         }
 
         // 3. Feed leftovers to tentative seeds; try to promote one.
@@ -357,6 +411,35 @@ final class BallTrackManager {
         let status = makeStatus(ballCount: detections.count, now: now)
         if status.state == .lost { track = nil }
         return status
+    }
+
+    /// Is associating `det` to the coasting `track` physically plausible?
+    /// Validates the velocity *implied* by the jump from the last measured
+    /// position over the gap:
+    ///   1. Teleport guard — implied speed must not exceed vMax (row-scaled).
+    ///   2. Free-flight reversal guard — if the track was moving, the implied
+    ///      heading must not reverse (cos < kinematicCosMin) against the pre-gap
+    ///      velocity, unless the IMM already favours a contact mode (racquet /
+    ///      bounce) — the only way a ball legitimately turns.
+    private func kinematicallyPlausible(det: TrackerDetection, track t: ConfirmedTrack,
+                                        gap: Double, scale: Double) -> Bool {
+        guard gap > 0 else { return true }
+        let (lmx, lmy) = t.lastMeasuredPos
+        let ivx = (det.x - lmx) / gap
+        let ivy = (det.y - lmy) / gap
+        let speedImpl = (ivx * ivx + ivy * ivy).squareRoot()
+        // 1. Teleport guard.
+        if speedImpl > vMaxPxS * scale { return false }
+        // 2. Free-flight reversal guard.
+        let (pvx, pvy) = t.velocityVec
+        let prevSpeed = (pvx * pvx + pvy * pvy).squareRoot()
+        if prevSpeed >= kinematicMinPrevSpeed, speedImpl > 1e-6 {
+            let cos = (ivx * pvx + ivy * pvy) / (speedImpl * prevSpeed)
+            let contact = t.racketProb > kinematicContactProb
+                || t.bounceProb > kinematicContactProb
+            if cos < kinematicCosMin && !contact { return false }
+        }
+        return true
     }
 
     private func feedTentative(x: Double, y: Double, now: Double) {

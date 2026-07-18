@@ -10,7 +10,7 @@ Two modes:
 | Mode | What it does |
 |---|---|
 | **Live** | Point the phone at the court; the ball is detected, Kalman-tracked, and drawn as a fading trail over the camera preview at 60 fps, with state / speed / latency HUD. |
-| **Video** | Pick a match video from the library; every frame is processed offline, then played back with the tracked trajectory overlaid (scrubbing stays in sync). |
+| **Video** | Pick a match video from the library; every frame is processed offline (ball detection + Vision player boxes), the rally detector (port of `pipeline/rally_detector.py`) cuts the active segments, and the video plays back with the tracked trajectory overlaid (scrubbing stays in sync). Detected rallies export as a stitched highlights reel. |
 
 ## Why it's fast
 
@@ -37,10 +37,13 @@ ios_tracker/
                              files under BallTracker/ are picked up automatically)
   BallTracker/
     App/                     entry point, tab root
-    Detection/               Letterbox (CoreImage), BallDetector (Core ML + NMS)
+    Detection/               Letterbox (CoreImage), BallDetector (Core ML + NMS),
+                             PlayerDetector (Vision human rectangles → near/far boxes)
     Tracking/                Mat/Kalman/IMM/BallTrackManager — line-by-line port
-                             of mobile/lib/engine (the validated Dart engine),
-                             plus TrackerEngine glue
+                             of mobile/lib/engine (the validated Dart engine) —
+                             plus RallyDetector (port of pipeline/rally_detector.py:
+                             carry suppression, segment cutting, serving-pattern
+                             HMM) and TrackerEngine glue
     Live/                    AVCaptureSession camera pipeline + overlay UI
     Video/                   AVAssetReader batch processing + synced playback overlay
     Resources/

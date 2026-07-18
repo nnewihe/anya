@@ -220,6 +220,11 @@ class _ConfirmedTrack:
     def speed_px_s(self) -> float:
         return float(math.hypot(self.imm.x[2, 0], self.imm.x[3, 0]))
 
+    def velocity_vec(self) -> Tuple[float, float]:
+        """Filtered velocity (vx, vy) in px/s — the pre-gap heading for the
+        kinematic reacquisition gate."""
+        return float(self.imm.x[2, 0]), float(self.imm.x[3, 0])
+
     def position_uncertainty(self) -> float:
         return float(np.trace(self.imm.P[:2, :2]))
 
@@ -364,6 +369,34 @@ class BallTrackManager:
         # fast ball can't blow the gate open to the whole frame.
         coast_gate_k: float = 0.5,
         coast_gate_cap_px: float = 400.0,
+        # ── Kinematic reacquisition gate (#1) + physics cap (#3) ──────────────
+        # After a real coast gap the prediction-centred gate is a large circle,
+        # and a stray detection falling inside it produces an impractical
+        # teleport that the high-Q IMM then bakes into the trajectory.  Once the
+        # gap exceeds kinematic_min_gap_s we validate the *implied* motion of a
+        # primary-gate candidate (jump from the last measured position over the
+        # gap) and reject unphysical ones; they fall through to the small
+        # fallback gate (the intended path for genuine contact reversals) or
+        # become a fresh tentative rather than corrupting the track.
+        #   • v_max_px_s      — physical ball-speed ceiling (near side, scale=1),
+        #                        in 960-wide analysis px/s; ~60 mph ≈ 780 px/s at
+        #                        30 fps, so 2500 leaves generous headroom for a
+        #                        fast serve while still fencing off teleports.
+        #                        Also caps the coast-gate expansion (#3) so a
+        #                        teleport-inflated speed estimate can't blow the
+        #                        gate open and admit the *next* teleport.
+        #   • kinematic_cos_min      — reject a free-flight heading reversal below
+        #                              this cosine (≈120°) unless a contact mode
+        #                              is active.
+        #   • kinematic_min_prev_speed — only heading-check a track that was
+        #                                actually moving (px/s).
+        #   • kinematic_contact_prob — racket/bounce μ above which reversals are
+        #                              allowed (a ball only turns at contact).
+        v_max_px_s: float = 2500.0,
+        kinematic_min_gap_s: float = 0.10,
+        kinematic_cos_min: float = -0.5,
+        kinematic_min_prev_speed: float = 150.0,
+        kinematic_contact_prob: float = 0.15,
     ):
         self.fps = float(fps)
         self.dt = 1.0 / max(self.fps, 1e-6)
@@ -389,6 +422,11 @@ class BallTrackManager:
         self.fallback_gate_k = float(fallback_gate_k)
         self.coast_gate_k = float(coast_gate_k)
         self.coast_gate_cap_px = float(coast_gate_cap_px)
+        self.v_max_px_s = float(v_max_px_s)
+        self.kinematic_min_gap_s = float(kinematic_min_gap_s)
+        self.kinematic_cos_min = float(kinematic_cos_min)
+        self.kinematic_min_prev_speed = float(kinematic_min_prev_speed)
+        self.kinematic_contact_prob = float(kinematic_contact_prob)
 
         self.reset()
 
@@ -421,14 +459,29 @@ class BallTrackManager:
             # ball could have travelled since its last detection (speed · gap time),
             # capped.  Negligible during continuous tracking, opens during net-crossing
             # dropouts so the reappearing far-side ball is re-associated, not lost.
+            # (#3) Cap the coast expansion by the physical travel envelope
+            # v_max·gap as well as the absolute cap, so a corrupted speed
+            # estimate can't open the gate wide enough to admit a teleport.
             tsd = now - self.track.last_detection_t
             gate += min(self.coast_gate_k * self.track.speed_px_s() * tsd,
+                        self.v_max_px_s * scale * tsd,
                         self.coast_gate_cap_px)
             best_i, best_d = -1, gate
             for i, (dx, dy, _conf) in enumerate(detections):
                 d = math.hypot(dx - tx, dy - ty)
                 if d <= best_d:
                     best_d, best_i = d, i
+
+            # (#1) Once a real coast gap has opened, the inflated primary gate is
+            # a large circle a stray detection can fall into, producing an
+            # impractical teleport.  Reject a primary-gate candidate whose implied
+            # motion across the gap is unphysical; it then falls through to the
+            # small fallback gate (genuine contact reversals stay near the last
+            # measured point) or becomes a fresh tentative.
+            if best_i >= 0 and tsd > self.kinematic_min_gap_s:
+                dx, dy, _ = detections[best_i]
+                if not self._kinematically_plausible(dx, dy, tsd, scale):
+                    best_i = -1
 
             # Fallback gate: if the primary prediction-based gate failed, search around
             # the *last measured* position instead.  At a racquet hit or bounce the ball
@@ -469,6 +522,38 @@ class BallTrackManager:
             self.track = None
 
         return status
+
+    # ------------------------------------------------------------------
+    def _kinematically_plausible(self, dx: float, dy: float,
+                                 gap: float, scale: float) -> bool:
+        """
+        Is associating detection (dx, dy) to the coasting track physically
+        plausible?  Validates the velocity *implied* by the jump from the last
+        measured position over the gap:
+          1. Teleport guard — implied speed must not exceed v_max (row-scaled).
+          2. Free-flight reversal guard — if the track was moving, the implied
+             heading must not reverse (cos < kinematic_cos_min) against the
+             pre-gap velocity, unless the IMM already favours a contact mode
+             (racquet / bounce) — the only way a ball legitimately turns.
+        """
+        if gap <= 0:
+            return True
+        lmx, lmy = self.track._last_measured_pos
+        ivx, ivy = (dx - lmx) / gap, (dy - lmy) / gap
+        speed_impl = math.hypot(ivx, ivy)
+        # 1. Teleport guard.
+        if speed_impl > self.v_max_px_s * scale:
+            return False
+        # 2. Free-flight reversal guard.
+        pvx, pvy = self.track.velocity_vec()
+        prev_speed = math.hypot(pvx, pvy)
+        if prev_speed >= self.kinematic_min_prev_speed and speed_impl > 1e-6:
+            cos = (ivx * pvx + ivy * pvy) / (speed_impl * prev_speed)
+            contact = (self.track.racket_prob > self.kinematic_contact_prob
+                       or self.track.bounce_prob > self.kinematic_contact_prob)
+            if cos < self.kinematic_cos_min and not contact:
+                return False
+        return True
 
     # ------------------------------------------------------------------
     def _feed_tentative(self, x: float, y: float, now: float) -> None:
@@ -814,6 +899,28 @@ def _run_self_test() -> int:
     check("trace never drifts far off the true ball on the far side",
           max(errs[20:]) < 120.0)
     check("trace stays alive across the net crossing", out[-1].has_moving_trace)
+
+    # --- Scenario 11: kinematic reacquisition gate (#1) — after a coast gap the
+    # inflated primary gate must still reject an impractical teleport while
+    # accepting a clean reacquisition on the predicted path. ---
+    mgr_k = BallTrackManager(fps)
+    xk, yk, tk = 100.0, 300.0, 0.0
+    for _ in range(20):                       # establish a track moving right @ 900 px/s
+        xk += 30.0
+        mgr_k.update([(xk, yk, 0.9)], tk); tk += dt
+    check("kinematic-gate scenario established a confirmed track",
+          mgr_k.track is not None)
+    lmx, lmy = mgr_k.track._last_measured_pos
+    gap, scale = 0.30, 1.0                    # a real coast gap, near side
+    # Clean reacquisition: where the ball would have flown (heading + plausible speed).
+    check("kinematic gate accepts a clean reacquisition on the predicted path",
+          mgr_k._kinematically_plausible(lmx + 900.0 * gap, lmy, gap, scale))
+    # Reversed teleport: ~180° against the pre-gap heading, no contact event.
+    check("kinematic gate rejects a free-flight reversal teleport",
+          not mgr_k._kinematically_plausible(lmx - 900.0 * gap, lmy + 400.0, gap, scale))
+    # Supra-physical jump: implied speed > v_max_px_s, even along the heading.
+    check("kinematic gate rejects a supra-physical teleport (speed cap)",
+          not mgr_k._kinematically_plausible(lmx + 3000.0 * gap, lmy, gap, scale))
 
     print()
     if failures:

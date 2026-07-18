@@ -11,11 +11,13 @@ swiftc -O -parse-as-library -o "$OUT" \
     BallTracker/Detection/Letterbox.swift \
     BallTracker/Detection/BallDetector.swift \
     BallTracker/Detection/ExclusionZones.swift \
+    BallTracker/Detection/PlayerDetector.swift \
     BallTracker/Tracking/Matrix.swift \
     BallTracker/Tracking/KalmanIMM.swift \
     BallTracker/Tracking/BallTrackManager.swift \
-    BallTracker/Tracking/ViterbiTracker.swift \
+    BallTracker/Tracking/RallyDetector.swift \
     BallTracker/Tracking/TrackerEngine.swift \
+    BallTracker/Video/CheckpointStore.swift \
     BallTracker/Video/VideoProcessor.swift
 
 ANYA_REPO="$REPO" VIDEO="$VIDEO" DUMP_CSV="${DUMP_CSV:-}" "$OUT"

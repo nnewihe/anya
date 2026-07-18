@@ -24,6 +24,7 @@ struct PickedMovie: Transferable {
 struct VideoModeView: View {
     enum Phase {
         case idle
+        case resumable(ResumeInfo)
         case loading
         case processing(Double)
         case done(VideoAnalysis)
@@ -33,12 +34,15 @@ struct VideoModeView: View {
     @State private var selection: PhotosPickerItem?
     @State private var phase: Phase = .idle
     @State private var task: Task<Void, Never>?
+    private let store = CheckpointStore()
 
     var body: some View {
         VStack(spacing: 0) {
             switch phase {
             case .idle:
                 pickerPrompt
+            case .resumable(let info):
+                resumePrompt(info)
             case .loading:
                 ProgressView("Loading video…")
                     .frame(maxHeight: .infinity)
@@ -73,6 +77,49 @@ struct VideoModeView: View {
             phase = .loading
             task = Task { await load(item) }
         }
+        .task {
+            // Reclaim old storage, then offer the last interrupted analysis (if
+            // its video and detector inputs still match) once, on entry.
+            store.prune()
+            if case .idle = phase,
+               let info = store.resumable(
+                    detectorFingerprint: VideoProcessor.detectorFingerprint(
+                        conf: BallDetector.defaultConf)) {
+                phase = .resumable(info)
+            }
+        }
+    }
+
+    private func resumePrompt(_ info: ResumeInfo) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "arrow.clockwise.circle")
+                .font(.system(size: 44))
+                .foregroundStyle(BallOverlay.ballYellow)
+            Text("Resume tracking “\(info.displayName)”?")
+                .multilineTextAlignment(.center)
+            Text("\(Int(info.progress * 100))% processed")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Button {
+                    resume(info)
+                } label: {
+                    Label("Resume", systemImage: "play.fill")
+                        .padding(.horizontal, 20).padding(.vertical, 10)
+                        .background(BallOverlay.ballYellow, in: Capsule())
+                        .foregroundStyle(.black)
+                }
+                Button(role: .destructive) {
+                    store.discard(key: info.key)
+                    phase = .idle
+                } label: {
+                    Label("Discard", systemImage: "trash")
+                        .padding(.horizontal, 20).padding(.vertical, 10)
+                }
+            }
+        }
+        .padding()
+        .frame(maxHeight: .infinity)
     }
 
     private var pickerPrompt: some View {
@@ -107,9 +154,37 @@ struct VideoModeView: View {
                 phase = .failed("Could not load that video.")
                 return
             }
-            phase = .processing(0)
+            // Give the picked video a stable identity and a persistent home, so
+            // an interrupted analysis can be resumed after the app is killed
+            // (the temp import would otherwise be purged / renamed).
+            let key = try store.fingerprint(of: movie.url)
+            let url = try store.adoptWorkingCopy(
+                tempURL: movie.url, key: key, ext: movie.url.pathExtension)
+            // PhotosPicker gives no human-readable title; label it by a short
+            // hash prefix so distinct pending videos are distinguishable.
+            let name = "Video \(key.prefix(6))"
+            await run(url: url, key: key, name: name)
+        } catch is CancellationError {
+            // User cancelled; phase already reset.
+        } catch {
+            phase = .failed("Processing failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func resume(_ info: ResumeInfo) {
+        task = Task { await run(url: info.workingCopyURL, key: info.key,
+                                name: info.displayName) }
+    }
+
+    /// Run (or resume) the offline analysis for a persistent working copy,
+    /// checkpointing Pass 1 under `key` so a kill mid-run can be resumed.
+    private func run(url: URL, key: String, name: String) async {
+        phase = .processing(0)
+        do {
+            let store = store
             let analysis = try await Task.detached(priority: .userInitiated) {
-                try await VideoProcessor().process(url: movie.url) { p in
+                try await VideoProcessor().process(
+                    url: url, checkpoint: (store, key, name)) { p in
                     Task { @MainActor in
                         if case .processing = phase { phase = .processing(p) }
                     }
@@ -117,7 +192,7 @@ struct VideoModeView: View {
             }.value
             phase = .done(analysis)
         } catch is CancellationError {
-            // User cancelled; phase already reset.
+            // User cancelled; progress is checkpointed and offered again later.
         } catch {
             phase = .failed("Processing failed: \(error.localizedDescription)")
         }

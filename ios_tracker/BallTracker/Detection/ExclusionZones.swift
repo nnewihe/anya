@@ -87,7 +87,10 @@ func dbscan(_ pts: [CGPoint], eps: Double, minSamples: Int) -> [Int] {
 enum ExclusionZoneScanner {
     /// Sample frames across the clip, detect balls, and cluster the centres
     /// that keep landing in the same place. Defaults mirror the production call
-    /// in anya_base.py (num_frames=50, conf=0.04, eps=12, padding=0).
+    /// in anya_base.py (num_frames=50, conf=0.04, eps=12) except `padding`,
+    /// widened from the pipeline's 0: measured DBSCAN cores on real footage run
+    /// a few px across (e.g. 5×1), tight enough that a solver conf down at 0.03
+    /// still picks up clutter just outside the fenced rect.
     ///
     /// Deviation from the pipeline: it scans at `BALL_IMGSZ=1920` to squeeze
     /// faint basket balls out of a stationary cluster, but the Core ML model is
@@ -101,7 +104,7 @@ enum ExclusionZoneScanner {
                      conf: Float = 0.04,
                      eps: Double = 12,
                      minSamples: Int = 15,
-                     padding: Double = 0) async throws -> ExclusionZones {
+                     padding: Double = 15) async throws -> ExclusionZones {
         let duration = try await asset.load(.duration)
         guard duration.seconds > 0 else { return .none }
 
