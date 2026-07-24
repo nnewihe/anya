@@ -30,7 +30,8 @@ class TrackData:
     ball_pos: Optional[Tuple[float, float]]
 
 class PointStartSystem:
-    def __init__(self, court_corners_pixels: np.ndarray, video_width: int, video_height: int, fps: int = 30):
+    def __init__(self, court_corners_pixels: np.ndarray, video_width: int, video_height: int, fps: int = 30,
+                 params: Optional[Dict] = None):
         self.state = MatchState.WAITING
         self.fps = fps
         self.video_width = video_width
@@ -82,6 +83,14 @@ class PointStartSystem:
 
         self.points: List[Dict] = []          # completed serve→point-end records
         self.current_point_start: Optional[int] = None
+
+        # Optional overrides (used by the parameter optimizer) — set after the
+        # defaults above so a params dict can tune any energy constant in place.
+        if params:
+            for k, v in params.items():
+                if not hasattr(self, k):
+                    raise KeyError(f"Unknown PointStartSystem param: {k}")
+                setattr(self, k, v)
 
         self.H = self._compute_homography(court_corners_pixels)
         self.H_inv = np.linalg.inv(self.H)
