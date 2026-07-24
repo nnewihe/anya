@@ -51,7 +51,10 @@ BALL_CONF       = 0.25
 MARGIN_SEC      = 6.0          # replay slack after GT end (bounds "no-end" penalty)
 EARLY_WEIGHT    = 3.0          # asymmetric: ending before GT is this much worse than after
 
-# The six parameters under optimization (resolution-independent) and their bounds.
+# The parameters under optimization (resolution-independent) and their bounds.
+# The BOOST terms were added to the search: with fixed boosts the earlier fit
+# ended points ~4s late because a rolling/retrieved ball kept pumping energy;
+# letting the boosts weaken relative to the drain is the direct lever.
 PARAM_SPACE = [
     ("ENERGY_DECAY_DEAD",    0.3, 6.0),
     ("ENERGY_DECAY_MISSING", 0.3, 6.0),
@@ -59,6 +62,8 @@ PARAM_SPACE = [
     ("STILL_PROLONGED_SEC",  0.0, 3.0),
     ("BALL_TRACE_SEC",       0.2, 3.0),
     ("PLAYER_STILL_FTS",     0.5, 6.0),
+    ("ENERGY_BOOST_BALL",    0.2, 6.0),
+    ("ENERGY_BOOST_MOTION",  0.2, 6.0),
 ]
 PARAM_NAMES = [p[0] for p in PARAM_SPACE]
 BOUNDS      = [(lo, hi) for _, lo, hi in PARAM_SPACE]
