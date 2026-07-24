@@ -1,0 +1,154 @@
+"""
+make_windows.py
+==============
+Stage 2 of the active/dead classifier: turn cached pose sequences into labeled
+2-second windows.
+
+Per near rally we emit, keyed by the window's END frame E:
+  - ~11 windows slid across the transition (E from gt_end - 1.5s to +1.5s),
+  - an early-rally ACTIVE anchor and a late-tail DEAD anchor.
+Each window covers [E - 2s, E], is resampled to a fixed L=60 timesteps (so 30
+and 60 fps clips align), and is auto-labeled by its END frame:
+    ACTIVE (1) if E <= gt_end, else DEAD (0).
+Windows whose end is within a ±DEADBAND of gt_end are flagged `boundary` — the
+genuinely ambiguous ones the audit tool surfaces for review.
+
+Output (at data_root):
+    windows.npz    X [N, 60, 51] float32 (NaN where pose missing), plus parallel
+                   metadata arrays (clip, rally, end_off, gt_end_off, auto,
+                   boundary, anchor, n_present)
+    labels.json    {wid: {auto, label, audited}} seeded from auto labels; the
+                   audit tool edits this, training reads it.
+
+Usage:
+    python pipeline/make_windows.py
+    python pipeline/make_windows.py --clips 36
+"""
+
+import os
+import sys
+import json
+import argparse
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from extract_pose import POSE_NPZ, POSE_META
+from optimize_energy import _near_rallies, TELEMETRY_CACHE
+
+L           = 60      # timesteps per window after resampling
+WIN_SEC     = 2.0
+N_SIDE      = 5       # slides each side of the transition
+STEP_SEC    = 0.33
+DEADBAND_SEC = 0.3    # +/- band around gt_end flagged as boundary
+
+
+def _window(arr, start, E, win_frames):
+    """Rows for frames [E-win_frames+1 .. E] (NaN where outside the rally),
+    resampled to L timesteps by nearest index."""
+    W = np.full((win_frames, arr.shape[1]), np.nan, dtype=np.float32)
+    for i in range(win_frames):
+        t = (E - win_frames + 1 + i) - start
+        if 0 <= t < arr.shape[0]:
+            W[i] = arr[t]
+    idx = np.linspace(0, win_frames - 1, L).round().astype(int)
+    return W[idx]
+
+
+def _rally_ends(fps, start, end, span_end, win_frames):
+    """(E, is_anchor) list of window end frames for one rally."""
+    step = max(1, round(fps * STEP_SEC))
+    ends = [(end + k * step, False) for k in range(-N_SIDE, N_SIDE + 1)]
+    ends.append((start + win_frames - 1, True))   # early-rally ACTIVE anchor
+    ends.append((span_end, True))                 # late-tail DEAD anchor
+    out, seen = [], set()
+    for E, anc in ends:
+        E = int(max(start, min(span_end, E)))
+        if E not in seen:
+            seen.add(E); out.append((E, anc))
+    return out
+
+
+def build(clip_dirs):
+    X, meta = [], []
+    for c in clip_dirs:
+        name = os.path.basename(c)
+        npz_p, meta_p = os.path.join(c, POSE_NPZ), os.path.join(c, POSE_META)
+        if not (os.path.isfile(npz_p) and os.path.isfile(meta_p)):
+            print(f"[skip] {name}: no pose cache")
+            continue
+        pose = np.load(npz_p)
+        pm = json.load(open(meta_p))
+        fps = pm["fps"]
+        win_frames = max(2, round(fps * WIN_SEC))
+        deadband = round(fps * DEADBAND_SEC)
+
+        for ri, r in enumerate(pm["rallies"]):
+            arr = pose[f"r{ri}"]
+            start, end, span_end = r["start"], r["end"], r["span_end"]
+            for E, anchor in _rally_ends(fps, start, end, span_end, win_frames):
+                W = _window(arr, start, E, win_frames)
+                n_present = int(np.sum(~np.isnan(W[:, 0])))
+                if n_present == 0:
+                    continue
+                auto = 1 if E <= end else 0
+                boundary = abs(E - end) <= deadband
+                X.append(W)
+                meta.append({
+                    "wid": f"{name}_r{ri}_e{E}",
+                    "clip": name, "rally": ri,
+                    "end_off": E - start, "gt_end_off": end - start,
+                    "auto": auto, "boundary": int(boundary),
+                    "anchor": int(anchor), "n_present": n_present,
+                })
+        print(f"[windows] {name}: {sum(1 for m in meta if m['clip']==name)} windows")
+    return np.asarray(X, dtype=np.float32), meta
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Build labeled 2s pose windows from pose caches")
+    ap.add_argument("--data_root", default="/Volumes/Anya/Data")
+    ap.add_argument("--clips", nargs="*", default=None)
+    ap.add_argument("--out", default="/Volumes/Anya/Data/windows.npz")
+    ap.add_argument("--labels", default="/Volumes/Anya/Data/labels.json")
+    args = ap.parse_args()
+
+    if args.clips:
+        clip_dirs = [os.path.join(args.data_root, c) for c in args.clips]
+    else:
+        clip_dirs = [os.path.join(args.data_root, d) for d in sorted(os.listdir(args.data_root))
+                     if os.path.isfile(os.path.join(args.data_root, d, POSE_NPZ))]
+
+    X, meta = build(clip_dirs)
+    if len(X) == 0:
+        raise SystemExit("No windows built — run extract_pose.py first.")
+
+    keys = ["clip", "rally", "end_off", "gt_end_off", "auto", "boundary", "anchor", "n_present"]
+    arrs = {"X": X}
+    arrs["wid"] = np.array([m["wid"] for m in meta])
+    for k in keys:
+        arrs[k] = np.array([m[k] for m in meta])
+    np.savez_compressed(args.out, **arrs)
+
+    # Seed labels.json (preserve any existing audited labels).
+    existing = json.load(open(args.labels)) if os.path.isfile(args.labels) else {}
+    labels = {}
+    for m in meta:
+        prev = existing.get(m["wid"])
+        labels[m["wid"]] = {
+            "auto": m["auto"],
+            "label": prev["label"] if prev and prev.get("audited") else m["auto"],
+            "audited": bool(prev["audited"]) if prev else False,
+        }
+    json.dump(labels, open(args.labels, "w"), indent=0)
+
+    n = len(meta)
+    n_bound = sum(m["boundary"] for m in meta)
+    n_active = sum(m["auto"] for m in meta)
+    print(f"\n[done] {n} windows  active={n_active} dead={n-n_active}  "
+          f"boundary={n_bound}  -> {args.out}")
+    print(f"[done] labels seeded -> {args.labels}")
+
+
+if __name__ == "__main__":
+    main()
