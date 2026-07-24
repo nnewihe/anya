@@ -529,7 +529,7 @@ def create_highlight_reel(video_path, points, fps, output_path,
                              pre_roll=pre_roll, merge_gap_sec=0.0)
 
 
-def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False, exclusion_frames: int = 60, exclusion_min_samples: int = 8, highlights: bool = False, highlight_out: str = None, pre_roll: float = 1.0, post_roll: float = 1.0):
+def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False, exclusion_frames: int = 60, exclusion_min_samples: int = 8, highlights: bool = False, highlight_out: str = None, pre_roll: float = 1.0, post_roll: float = 1.0, energy_params: str = None):
 
     court_corners = get_court_corners_interactive(video_path, headless)
     
@@ -547,7 +547,13 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
-    system = PointStartSystem(court_corners, width, height, fps=fps)
+    tuned = None
+    if energy_params:
+        with open(energy_params) as f:
+            data = json.load(f)
+        tuned = data.get("params", data)   # accept either {"params": {...}} or a bare dict
+        print(f"[INFO] Loaded {len(tuned)} tuned energy param(s) from {energy_params}")
+    system = PointStartSystem(court_corners, width, height, fps=fps, params=tuned)
     ready_zone_poly = system.get_ready_zone_polygon()
 
     # Bounding rect of the court (with margin) — the ball-search region while a point is ACTIVE.
@@ -736,6 +742,8 @@ if __name__ == "__main__":
                         help="Seconds of footage before each serve in the highlight reel")
     parser.add_argument("--post_roll", type=float, default=1.0,
                         help="Seconds of footage after each point end in the highlight reel")
+    parser.add_argument("--energy_params", type=str, default=None,
+                        help="Path to energy_params.json (from optimize_energy.py) to load tuned energy constants")
 
     args = parser.parse_args()
 
@@ -744,4 +752,4 @@ if __name__ == "__main__":
                        exclusion_padding=args.exclusion_padding, rescan_exclusion=args.rescan_exclusion,
                        exclusion_frames=args.exclusion_frames, exclusion_min_samples=args.exclusion_min_samples,
                        highlights=args.highlights, highlight_out=args.highlight_out,
-                       pre_roll=args.pre_roll, post_roll=args.post_roll)
+                       pre_roll=args.pre_roll, post_roll=args.post_roll, energy_params=args.energy_params)

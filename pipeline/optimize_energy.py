@@ -262,6 +262,39 @@ def per_clip_report(params, clip_tels, clip_names):
     return rows
 
 
+def coverage_report(clip_dirs, clip_names):
+    """Detection coverage within each GT rally span (start..end, excluding the
+    replay margin) — catches clips where the near player or ball isn't being
+    detected, which would silently skew the fit."""
+    print("\n[coverage] detection coverage within GT rally spans:")
+    for name, c in zip(clip_names, clip_dirs):
+        path = os.path.join(c, TELEMETRY_CACHE)
+        if not os.path.isfile(path):
+            print(f"  {name:>6}: no telemetry cache — run --extract")
+            continue
+        data = json.load(open(path))
+        ball_fracs, play_fracs, low = [], [], []
+        for r in data["rallies"]:
+            fr = r["frames"]
+            keys = [str(f) for f in range(r["start"], r["end"] + 1)]
+            n = len(keys)
+            if n == 0:
+                continue
+            nb = sum(1 for k in keys if fr.get(k, {}).get("near_bbox"))
+            bb = sum(1 for k in keys if fr.get(k, {}).get("ball"))
+            play_fracs.append(nb / n)
+            ball_fracs.append(bb / n)
+            if bb / n < 0.20 or nb / n < 0.50:
+                low.append((r["start"], r["end"], bb / n, nb / n))
+        if not ball_fracs:
+            print(f"  {name:>6}: no rally frames")
+            continue
+        print(f"  {name:>6}: ball={np.mean(ball_fracs):.0%}  player={np.mean(play_fracs):.0%}  "
+              f"rallies={len(ball_fracs)}  low_coverage={len(low)}")
+        for s, e, bf, pf in low:
+            print(f"          [{s}-{e}] ball={bf:.0%} player={pf:.0%}")
+
+
 def leave_one_clip_out(clip_tels, clip_names, maxiter):
     print("\n[LOCO] leave-one-clip-out generalization:")
     gaps = []
@@ -285,6 +318,7 @@ def main():
     ap.add_argument("--clips", nargs="*", default=None, help="Explicit clip folder names (default: auto-discover)")
     ap.add_argument("--extract", action="store_true", help="Build/refresh telemetry caches")
     ap.add_argument("--optimize", action="store_true", help="Run the parameter search")
+    ap.add_argument("--coverage", action="store_true", help="Print detection coverage from cached telemetry and exit")
     ap.add_argument("--rescan_telemetry", action="store_true")
     ap.add_argument("--loco", action="store_true", help="Also run leave-one-clip-out generalization")
     ap.add_argument("--maxiter", type=int, default=60, help="differential_evolution generations")
@@ -301,6 +335,10 @@ def main():
     clip_names = [os.path.basename(c) for c in clip_dirs]
     n_rallies = sum(len(_near_rallies(c)) for c in clip_dirs)
     print(f"[init] {len(clip_dirs)} clips, {n_rallies} near rallies: {clip_names}")
+
+    if args.coverage:
+        coverage_report(clip_dirs, clip_names)
+        return
 
     if args.extract:
         device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
