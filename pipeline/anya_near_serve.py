@@ -69,6 +69,7 @@ class PointStartSystem:
         self.PLAYER_STILL_FTS      = 2.0    # world-space ft/s → "very low velocity"
         self.STILL_PROLONGED_SEC   = 0.6    # the near player must be still this long before the hard drain
         self.PLAYER_MISSING_GRACE_SEC = 3.0 # near player may be missing this long (energy holds) before rapid drain
+        self.POINT_START_GRACE_SEC = 2.5    # energy cannot drain until this long after the serve registers
         self.BALL_TRACE_SEC        = 0.7    # a ball seen within this window counts as a live trace
         self.TRACE_MOVE_PX         = 10.0   # min spread across the trace window to count as "live" (not stationary)
         self.MAX_POINT_SEC         = 40.0   # hard safety cap on rally length
@@ -239,6 +240,14 @@ class PointStartSystem:
             else:
                 delta -= self.ENERGY_DECAY_BASE * dt
                 labels.append("draining")
+
+        # Start-of-point grace: for the first POINT_START_GRACE_SEC after the serve
+        # registers, energy may still rise but is never allowed to drain.
+        in_start_grace = (self.current_point_start is not None and
+                          frame_idx - self.current_point_start < int(self.fps * self.POINT_START_GRACE_SEC))
+        if in_start_grace and delta < 0:
+            delta = 0.0
+            labels = [f"START-GRACE {(frame_idx - self.current_point_start) / self.fps:.1f}s"]
 
         self.energy = max(0.0, min(self.ENERGY_MAX, self.energy + delta))
         self.energy_status = " + ".join(labels) if labels else "-"
