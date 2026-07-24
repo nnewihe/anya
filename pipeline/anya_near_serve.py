@@ -369,22 +369,58 @@ def _excl_cache_path(video_path: str) -> str:
     return os.path.join(d, f"{s}_near_exclusion_cache.json")
 
 
-def build_auto_exclusion_zones(video_path: str, ball_model, device, num_frames: int = 20,
-                               conf: float = 0.05, eps: int = 5, min_samples: int = 15,
+def _merge_overlapping_zones(zones, gap: int = 0):
+    """Union any rectangles that overlap (or sit within `gap` px), repeatedly,
+    so a fragmented cluster reads as one clean zone."""
+    zones = [list(z) for z in zones]
+    changed = True
+    while changed:
+        changed = False
+        out = []
+        while zones:
+            a = zones.pop()
+            i = 0
+            while i < len(zones):
+                b = zones[i]
+                overlap = not (a[2] + gap < b[0] or b[2] + gap < a[0] or
+                               a[3] + gap < b[1] or b[3] + gap < a[1])
+                if overlap:
+                    z = zones.pop(i)
+                    a = [min(a[0], z[0]), min(a[1], z[1]), max(a[2], z[2]), max(a[3], z[3])]
+                    changed = True
+                else:
+                    i += 1
+            out.append(a)
+        zones = out
+    return [tuple(z) for z in zones]
+
+
+def build_auto_exclusion_zones(video_path: str, ball_model, device, num_frames: int = 60,
+                               conf: float = 0.05, eps: int = None, min_samples: int = 8,
                                padding: int = 8) -> List[Tuple[int, int, int, int]]:
     """
     Full-resolution variant of utilities.create_auto_exclusion_zones: sample
     random frames, DBSCAN-cluster stationary ball detections by center, then
     bound each cluster by the UNION of its member detection boxes (not just
     their centers) so the zone covers the actual object footprint.
+
+    For recall on high-res footage: more frames give each stationary object
+    more chances to be seen, eps scales with resolution so a cluster doesn't
+    fragment, min_samples is modest so intermittently-detected objects still
+    survive, and overlapping boxes are merged into one zone.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return []
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total < num_frames:
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 960
+    num_frames = min(num_frames, total)
+    if total < min_samples:
         cap.release()
         return []
+
+    if eps is None:
+        eps = max(5, int(round(6.0 * width / 960.0)))  # ~24px at 4K, ~5px at 960
 
     centers, boxes = [], []
     for fi in random.sample(range(total), num_frames):
@@ -399,6 +435,8 @@ def build_auto_exclusion_zones(video_path: str, ball_model, device, num_frames: 
             boxes.append((x1, y1, x2, y2))
     cap.release()
 
+    print(f"[INFO]   scanned {num_frames} frames, {len(centers)} ball detection(s), "
+          f"eps={eps}, min_samples={min_samples}")
     if len(centers) < min_samples:
         return []
 
@@ -413,10 +451,11 @@ def build_auto_exclusion_zones(video_path: str, ball_model, device, num_frames: 
         x2, y2 = member[:, 2].max(), member[:, 3].max()
         zones.append((int(x1 - padding), int(y1 - padding),
                       int(x2 + padding), int(y2 + padding)))
-    return zones
+    return _merge_overlapping_zones(zones, gap=padding)
 
 
-def load_or_build_exclusion_zones(video_path, ball_model, device, padding=8, rescan=False):
+def load_or_build_exclusion_zones(video_path, ball_model, device, padding=8, rescan=False,
+                                  num_frames=60, min_samples=8):
     path = _excl_cache_path(video_path)
     if not rescan and os.path.isfile(path):
         try:
@@ -429,7 +468,8 @@ def load_or_build_exclusion_zones(video_path, ball_model, device, padding=8, res
 
     print("[INFO] Scanning video for static exclusion zones...")
     try:
-        zones = build_auto_exclusion_zones(video_path, ball_model, device, padding=padding)
+        zones = build_auto_exclusion_zones(video_path, ball_model, device, padding=padding,
+                                           num_frames=num_frames, min_samples=min_samples)
     except Exception as e:
         print(f"[WARN] Could not compute exclusion zones: {e}")
         return []
@@ -441,7 +481,7 @@ def load_or_build_exclusion_zones(video_path, ball_model, device, padding=8, res
     return zones
 
 
-def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False):
+def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False, exclusion_frames: int = 60, exclusion_min_samples: int = 8):
 
     court_corners = get_court_corners_interactive(video_path, headless)
     
@@ -475,7 +515,8 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
     # Zones bound the union of the member detection boxes (full-resolution) so
     # they cover the real object footprint, and are cached beside the video.
     exclusion_zones = load_or_build_exclusion_zones(
-        video_path, yolo_ball_model, device, padding=exclusion_padding, rescan=rescan_exclusion)
+        video_path, yolo_ball_model, device, padding=exclusion_padding, rescan=rescan_exclusion,
+        num_frames=exclusion_frames, min_samples=exclusion_min_samples)
     print(f"[INFO] {len(exclusion_zones)} exclusion zone(s) active")
 
     frame_idx = 0
@@ -619,9 +660,14 @@ if __name__ == "__main__":
                         help="Pixels to expand each auto exclusion zone beyond the detected object footprint")
     parser.add_argument("--rescan_exclusion", action="store_true",
                         help="Ignore the cached exclusion zones and recompute them")
+    parser.add_argument("--exclusion_frames", type=int, default=60,
+                        help="Number of random frames to scan for exclusion zones (more = better recall, slower)")
+    parser.add_argument("--exclusion_min_samples", type=int, default=8,
+                        help="Min clustered detections for a zone (lower = catches more, intermittently-seen objects)")
 
     args = parser.parse_args()
 
     run_point_detector(args.video_in, args.video_out, args.ball_model,
                        headless=args.headless, energy_debug=args.energy_debug,
-                       exclusion_padding=args.exclusion_padding, rescan_exclusion=args.rescan_exclusion)
+                       exclusion_padding=args.exclusion_padding, rescan_exclusion=args.rescan_exclusion,
+                       exclusion_frames=args.exclusion_frames, exclusion_min_samples=args.exclusion_min_samples)
