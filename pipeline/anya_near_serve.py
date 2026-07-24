@@ -20,7 +20,6 @@ class TrackData:
     frame_idx: int
     near_player_bbox: Optional[Tuple[float, float, float, float]]
     ball_pos: Optional[Tuple[float, float]]
-    far_player_bbox: Optional[Tuple[float, float, float, float]] = None
 
 class PointStartSystem:
     def __init__(self, court_corners_pixels: np.ndarray, video_width: int, video_height: int, fps: int = 30):
@@ -43,9 +42,10 @@ class PointStartSystem:
 
         # ── Energy bar (point-end detection) ──────────────────────────────
         # The point stays alive while the system has "energy". A live ball
-        # trace or either player moving rapidly pumps energy in; both players
-        # simultaneously still/paused with no ball trace drains it hard. When
-        # the energy is exhausted the rally is declared dead.
+        # trace or the near player moving rapidly pumps energy in; the near
+        # player still/paused with no ball trace drains it hard. When the
+        # energy is exhausted the rally is declared dead. (The far player is
+        # deliberately excluded — its bounding box is too noisy to trust.)
         self.energy = 0.0
         self.energy_status = "-"
         self.ENERGY_MAX            = 1.0
@@ -65,7 +65,6 @@ class PointStartSystem:
 
         vel_window = max(3, int(self.fps * 0.5))
         self.near_pos_buffer: deque = deque(maxlen=vel_window)
-        self.far_pos_buffer:  deque = deque(maxlen=vel_window)
         self.ball_trace:      deque = deque()
         self.still_frames = 0
 
@@ -178,9 +177,6 @@ class PointStartSystem:
         if d.near_player_bbox:
             x, y, w, h = d.near_player_bbox
             self.near_pos_buffer.append(self._get_world_coords(x + w / 2.0, y + h))
-        if d.far_player_bbox:
-            x, y, w, h = d.far_player_bbox
-            self.far_pos_buffer.append(self._get_world_coords(x + w / 2.0, y + h))
         if d.ball_pos:
             self.ball_trace.append((d.frame_idx, d.ball_pos[0], d.ball_pos[1]))
         window = int(self.fps * self.BALL_TRACE_SEC)
@@ -192,12 +188,11 @@ class PointStartSystem:
         dt = 1.0 / self.fps
         has_ball  = self._has_live_ball_trace(frame_idx)
         near_v    = self._player_velocity_fts(self.near_pos_buffer)
-        far_v     = self._player_velocity_fts(self.far_pos_buffer)
-        any_fast  = (near_v > self.PLAYER_FAST_FTS) or (far_v > self.PLAYER_FAST_FTS)
-        both_slow = (near_v < self.PLAYER_STILL_FTS) and (far_v < self.PLAYER_STILL_FTS)
+        near_fast = near_v > self.PLAYER_FAST_FTS
+        near_slow = near_v < self.PLAYER_STILL_FTS
 
-        # A prolonged simultaneous pause with no ball is the trigger for the hard drain.
-        if both_slow and not has_ball:
+        # A prolonged pause with no ball is the trigger for the hard drain.
+        if near_slow and not has_ball:
             self.still_frames += 1
         else:
             self.still_frames = 0
@@ -207,15 +202,15 @@ class PointStartSystem:
         if has_ball:
             delta += self.ENERGY_BOOST_BALL * dt
             labels.append("BALL")
-        if any_fast:
+        if near_fast:
             delta += self.ENERGY_BOOST_MOTION * dt
-            labels.append(f"MOTION {max(near_v, far_v):.1f}ft/s")
+            labels.append(f"MOTION {near_v:.1f}ft/s")
 
-        if not has_ball and not any_fast:
+        if not has_ball and not near_fast:
             prolonged = self.still_frames >= int(self.fps * self.STILL_PROLONGED_SEC)
-            if both_slow and prolonged:
+            if near_slow and prolonged:
                 delta -= self.ENERGY_DECAY_DEAD * dt
-                labels.append("DEAD (both still, no ball)")
+                labels.append("DEAD (near still, no ball)")
             else:
                 delta -= self.ENERGY_DECAY_BASE * dt
                 labels.append("draining")
@@ -292,7 +287,6 @@ class PointStartSystem:
         self.energy_status = "SERVE"
         self.still_frames = 0
         self.near_pos_buffer.clear()
-        self.far_pos_buffer.clear()
         self.ball_trace.clear()
         self.current_point_start = frame_idx
 
@@ -376,7 +370,6 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
         cv2.namedWindow("Anya Tennis - Processing", cv2.WINDOW_NORMAL)
 
     cached_near_player_bbox = None
-    cached_far_player_bbox = None
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -388,7 +381,6 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
             player_results = yolo_player_model.predict(frame, classes=[0], imgsz=640, device=device, verbose=False)[0]
             
             near_player_candidates = []
-            far_player_candidates = []
             for box in player_results.boxes:
                 x, y, x2, y2 = box.xyxy[0].cpu().numpy()
                 w, h = x2 - x, y2 - y
@@ -397,14 +389,10 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
                 wx, wy = system._get_world_coords(px_center, y + h)
                 if -2.0 <= wx <= 29.0 and wy <= 38.0:
                     near_player_candidates.append(((x, y, w, h), wx, wy))
-                elif -2.0 <= wx <= 29.0 and wy >= 40.0:
-                    far_player_candidates.append(((x, y, w, h), wx, wy))
 
             cached_near_player_bbox = min(near_player_candidates, key=lambda p: abs(p[2] - 0.0))[0] if near_player_candidates else None
-            cached_far_player_bbox = min(far_player_candidates, key=lambda p: abs(p[2] - 78.0))[0] if far_player_candidates else None
 
         near_player_bbox = cached_near_player_bbox
-        far_player_bbox = cached_far_player_bbox
 
         # --- B. Gated Ball Inference ---
         # ARMED: tight toss ROI (serve detection). ACTIVE (or energy-debug): full
@@ -434,8 +422,7 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
 
         # --- C. System Update ---
         track_data = TrackData(
-            frame_idx=frame_idx, near_player_bbox=near_player_bbox, ball_pos=ball_pos,
-            far_player_bbox=far_player_bbox
+            frame_idx=frame_idx, near_player_bbox=near_player_bbox, ball_pos=ball_pos
         )
         current_state = system.process_frame(track_data)
 
@@ -453,10 +440,6 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
         if near_player_bbox:
             nx, ny, nw, nh = near_player_bbox
             cv2.rectangle(frame, (int(nx), int(ny)), (int(nx+nw), int(ny+nh)), (255, 0, 0), 2)
-
-        if far_player_bbox:
-            fx, fy, fw, fh = far_player_bbox
-            cv2.rectangle(frame, (int(fx), int(fy)), (int(fx+fw), int(fy+fh)), (255, 128, 0), 2)
 
         if ball_pos:
             cv2.circle(frame, (int(ball_pos[0]), int(ball_pos[1])), 5, (0, 255, 255), -1)
@@ -480,9 +463,8 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
 
             if energy_debug:
                 near_v = system._player_velocity_fts(system.near_pos_buffer)
-                far_v = system._player_velocity_fts(system.far_pos_buffer)
                 has_ball = system._has_live_ball_trace(frame_idx)
-                readout = f"near {near_v:.1f}  far {far_v:.1f} ft/s   ball_trace: {'LIVE' if has_ball else '--'}"
+                readout = f"near {near_v:.1f} ft/s   ball_trace: {'LIVE' if has_ball else '--'}"
                 cv2.putText(frame, readout, (pad, by0 - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255) if has_ball else (200, 200, 200), 2, cv2.LINE_AA)
 
@@ -509,7 +491,7 @@ if __name__ == "__main__":
     parser.add_argument("--ball_model", type=str, default="/Users/tennis/Documents/Code/Laptop/src/anya/pipeline/models/ball_best.pt", help="Ball YOLO model path")
     parser.add_argument("--headless", action="store_true", help="Disable real-time visualizations")
     parser.add_argument("--energy_debug", action="store_true",
-                        help="Run the energy bar every frame (all states) with a near/far velocity + ball-trace readout, for tuning")
+                        help="Run the energy bar every frame (all states) with a near-player velocity + ball-trace readout, for tuning")
 
     args = parser.parse_args()
 
