@@ -9,13 +9,14 @@ from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 from ultralytics import YOLO
+import os
+import random
+from sklearn.cluster import DBSCAN
 
 try:
-    from utilities import (create_auto_exclusion_zones, _is_in_exclusion_zone,
-                           load_cached_exclusion_zones, save_cached_exclusion_zones)
+    from utilities import _is_in_exclusion_zone
 except ImportError:
-    from .utilities import (create_auto_exclusion_zones, _is_in_exclusion_zone,
-                            load_cached_exclusion_zones, save_cached_exclusion_zones)
+    from .utilities import _is_in_exclusion_zone
 
 class MatchState(Enum):
     WAITING = 0  
@@ -360,7 +361,87 @@ def get_court_corners_interactive(video_path: str, headless: bool) -> np.ndarray
     cv2.destroyAllWindows()
     return np.array(points, dtype=np.float32)
 
-def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False):
+def _excl_cache_path(video_path: str) -> str:
+    d = os.path.dirname(os.path.abspath(video_path))
+    s = os.path.splitext(os.path.basename(video_path))[0]
+    # Distinct from the shared pipeline cache so a 960x540-space cache can't be
+    # loaded here and drawn on a full-resolution frame at the wrong scale.
+    return os.path.join(d, f"{s}_near_exclusion_cache.json")
+
+
+def build_auto_exclusion_zones(video_path: str, ball_model, device, num_frames: int = 20,
+                               conf: float = 0.05, eps: int = 5, min_samples: int = 15,
+                               padding: int = 8) -> List[Tuple[int, int, int, int]]:
+    """
+    Full-resolution variant of utilities.create_auto_exclusion_zones: sample
+    random frames, DBSCAN-cluster stationary ball detections by center, then
+    bound each cluster by the UNION of its member detection boxes (not just
+    their centers) so the zone covers the actual object footprint.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return []
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total < num_frames:
+        cap.release()
+        return []
+
+    centers, boxes = [], []
+    for fi in random.sample(range(total), num_frames):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, fi)
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        res = ball_model.predict(frame, conf=conf, imgsz=1920, device=device, verbose=False)[0]
+        for b in res.boxes:
+            x1, y1, x2, y2 = b.xyxy[0].cpu().numpy()
+            centers.append((0.5 * (x1 + x2), 0.5 * (y1 + y2)))
+            boxes.append((x1, y1, x2, y2))
+    cap.release()
+
+    if len(centers) < min_samples:
+        return []
+
+    labels = DBSCAN(eps=eps, min_samples=min_samples).fit(np.array(centers)).labels_
+    boxes = np.array(boxes)
+    zones = []
+    for k in set(labels):
+        if k == -1:
+            continue
+        member = boxes[labels == k]
+        x1, y1 = member[:, 0].min(), member[:, 1].min()
+        x2, y2 = member[:, 2].max(), member[:, 3].max()
+        zones.append((int(x1 - padding), int(y1 - padding),
+                      int(x2 + padding), int(y2 + padding)))
+    return zones
+
+
+def load_or_build_exclusion_zones(video_path, ball_model, device, padding=8, rescan=False):
+    path = _excl_cache_path(video_path)
+    if not rescan and os.path.isfile(path):
+        try:
+            with open(path) as f:
+                zones = [tuple(z) for z in json.load(f)]
+            print(f"[INFO] Loaded {len(zones)} exclusion zone(s) from cache")
+            return zones
+        except Exception as e:
+            print(f"[WARN] Exclusion cache unreadable ({e}), recomputing")
+
+    print("[INFO] Scanning video for static exclusion zones...")
+    try:
+        zones = build_auto_exclusion_zones(video_path, ball_model, device, padding=padding)
+    except Exception as e:
+        print(f"[WARN] Could not compute exclusion zones: {e}")
+        return []
+    try:
+        with open(path, "w") as f:
+            json.dump([list(z) for z in zones], f)
+    except Exception as e:
+        print(f"[WARN] Could not save exclusion cache: {e}")
+    return zones
+
+
+def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False):
 
     court_corners = get_court_corners_interactive(video_path, headless)
     
@@ -391,17 +472,10 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
 
     # Static exclusion zones — auto-detected clusters of stationary ball-like
     # objects (e.g. ball baskets, court logos) whose detections should be ignored.
-    # Reused from utilities.create_auto_exclusion_zones; scanned at full resolution
-    # so the rects share ball_pos' full-frame coords, and cached beside the video.
-    exclusion_zones = load_cached_exclusion_zones(video_path) or []
-    if not exclusion_zones:
-        print("[INFO] Scanning video for static exclusion zones...")
-        try:
-            exclusion_zones = create_auto_exclusion_zones(video_path, yolo_ball_model, analysis_size=None)
-            save_cached_exclusion_zones(video_path, exclusion_zones)
-        except Exception as e:
-            print(f"[WARN] Could not compute exclusion zones: {e}")
-            exclusion_zones = []
+    # Zones bound the union of the member detection boxes (full-resolution) so
+    # they cover the real object footprint, and are cached beside the video.
+    exclusion_zones = load_or_build_exclusion_zones(
+        video_path, yolo_ball_model, device, padding=exclusion_padding, rescan=rescan_exclusion)
     print(f"[INFO] {len(exclusion_zones)} exclusion zone(s) active")
 
     frame_idx = 0
@@ -541,8 +615,13 @@ if __name__ == "__main__":
     parser.add_argument("--headless", action="store_true", help="Disable real-time visualizations")
     parser.add_argument("--energy_debug", action="store_true",
                         help="Run the energy bar every frame (all states) with a near-player velocity + ball-trace readout, for tuning")
+    parser.add_argument("--exclusion_padding", type=int, default=8,
+                        help="Pixels to expand each auto exclusion zone beyond the detected object footprint")
+    parser.add_argument("--rescan_exclusion", action="store_true",
+                        help="Ignore the cached exclusion zones and recompute them")
 
     args = parser.parse_args()
 
     run_point_detector(args.video_in, args.video_out, args.ball_model,
-                       headless=args.headless, energy_debug=args.energy_debug)
+                       headless=args.headless, energy_debug=args.energy_debug,
+                       exclusion_padding=args.exclusion_padding, rescan_exclusion=args.rescan_exclusion)
