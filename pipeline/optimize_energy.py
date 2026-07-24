@@ -364,9 +364,16 @@ def main():
     if not ready:
         print("[optimize] no telemetry caches available — run --extract first")
         return
-    clip_dirs = [c for c, _ in ready]
-    clip_names = [n for _, n in ready]
-    clip_tels = [json.load(open(os.path.join(c, TELEMETRY_CACHE))) for c in clip_dirs]
+    clip_tels, clip_names = [], []
+    for c, n in ready:
+        try:
+            clip_tels.append(json.load(open(os.path.join(c, TELEMETRY_CACHE))))
+            clip_names.append(n)
+        except Exception as e:
+            print(f"[optimize] could not read telemetry for {n}: {e} — excluded")
+    if not clip_tels:
+        print("[optimize] no readable telemetry caches — aborting")
+        return
     n_rallies = sum(len(ct["rallies"]) for ct in clip_tels)
 
     print(f"\n[optimize] {len(clip_names)} clips, {n_rallies} near rallies: {clip_names}")
