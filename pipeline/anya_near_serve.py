@@ -341,7 +341,7 @@ def get_court_corners_interactive(video_path: str, headless: bool) -> np.ndarray
     cv2.destroyAllWindows()
     return np.array(points, dtype=np.float32)
 
-def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False):
+def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False):
 
     court_corners = get_court_corners_interactive(video_path, headless)
     
@@ -407,15 +407,15 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
         far_player_bbox = cached_far_player_bbox
 
         # --- B. Gated Ball Inference ---
-        # ARMED: tight toss ROI (serve detection). ACTIVE: full court region so the
-        # energy bar sees a live ball trace during the rally.
+        # ARMED: tight toss ROI (serve detection). ACTIVE (or energy-debug): full
+        # court region so the energy bar sees a live ball trace during the rally.
         ball_pos = None
         ball_roi = None
         ball_imgsz = 256
         if system.current_toss_roi is not None:
             ball_roi = system.current_toss_roi
             ball_imgsz = 256
-        elif system.state == MatchState.ACTIVE:
+        elif system.state == MatchState.ACTIVE or energy_debug:
             ball_roi = court_rect
             ball_imgsz = 640
 
@@ -438,7 +438,14 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
             far_player_bbox=far_player_bbox
         )
         current_state = system.process_frame(track_data)
-        
+
+        # In energy-debug mode keep the bar alive outside ACTIVE so its response to
+        # real ball/player motion is visible across the whole clip. ACTIVE frames are
+        # already advanced inside process_frame; here we drive the other states.
+        if energy_debug and current_state != MatchState.ACTIVE:
+            system._update_active_buffers(track_data)
+            system._update_energy(frame_idx)
+
         # --- D. Visualizations ---
         cv2.putText(frame, f"State: {current_state.name}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.polylines(frame, [ready_zone_poly], isClosed=True, color=(0, 255, 0), thickness=2)
@@ -458,8 +465,8 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
             r_left, r_top, r_right, r_bottom = system.current_toss_roi
             cv2.rectangle(frame, (int(r_left), int(r_top)), (int(r_right), int(r_bottom)), (0, 0, 255), 2)
 
-        # Energy bar — visible while a point is live.
-        if current_state == MatchState.ACTIVE:
+        # Energy bar — always visible in energy-debug mode, otherwise only while a point is live.
+        if energy_debug or current_state == MatchState.ACTIVE:
             bar_h, pad = 26, 20
             bar_w_max = width - 2 * pad
             by0 = height - bar_h - pad
@@ -470,6 +477,14 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
             cv2.rectangle(frame, (pad, by0), (pad + fill, by0 + bar_h), colour, -1)
             cv2.putText(frame, f"ENERGY {system.energy:.2f} [{system.energy_status}]",
                         (pad + 6, by0 + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
+
+            if energy_debug:
+                near_v = system._player_velocity_fts(system.near_pos_buffer)
+                far_v = system._player_velocity_fts(system.far_pos_buffer)
+                has_ball = system._has_live_ball_trace(frame_idx)
+                readout = f"near {near_v:.1f}  far {far_v:.1f} ft/s   ball_trace: {'LIVE' if has_ball else '--'}"
+                cv2.putText(frame, readout, (pad, by0 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255) if has_ball else (200, 200, 200), 2, cv2.LINE_AA)
 
         out.write(frame)
 
@@ -493,7 +508,10 @@ if __name__ == "__main__":
     parser.add_argument("--video_out", type=str, default="/Volumes/Anya/Data/21/output_match_annotated.mp4", help="Output video path")
     parser.add_argument("--ball_model", type=str, default="/Users/tennis/Documents/Code/Laptop/src/anya/pipeline/models/ball_best.pt", help="Ball YOLO model path")
     parser.add_argument("--headless", action="store_true", help="Disable real-time visualizations")
-    
+    parser.add_argument("--energy_debug", action="store_true",
+                        help="Run the energy bar every frame (all states) with a near/far velocity + ball-trace readout, for tuning")
+
     args = parser.parse_args()
-    
-    run_point_detector(args.video_in, args.video_out, args.ball_model, headless=args.headless)
+
+    run_point_detector(args.video_in, args.video_out, args.ball_model,
+                       headless=args.headless, energy_debug=args.energy_debug)
