@@ -151,8 +151,12 @@ def _detect_near_player(frame, player_model, device, geom):
 def build_telemetry(clip_dir, ball_model, player_model, device, rescan=False):
     cache_path = os.path.join(clip_dir, TELEMETRY_CACHE)
     if os.path.isfile(cache_path) and not rescan:
-        print(f"[extract] {os.path.basename(clip_dir)}: cached")
-        return json.load(open(cache_path))
+        try:
+            data = json.load(open(cache_path))
+            print(f"[extract] {os.path.basename(clip_dir)}: cached")
+            return data
+        except Exception as e:
+            print(f"[extract] {os.path.basename(clip_dir)}: cache unreadable ({e}) — re-extracting")
 
     vid = _video_path(clip_dir)
     corners = _load_corners(vid)
