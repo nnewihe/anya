@@ -53,12 +53,14 @@ class PointStartSystem:
         self.ENERGY_DEAD           = 0.02   # point ends at/below this
         self.ENERGY_BOOST_BALL     = 3.0    # /s while a live ball trace exists
         self.ENERGY_BOOST_MOTION   = 2.5    # /s while either player sprints
-        self.ENERGY_DECAY_DEAD     = 1.5    # /s when both players still AND no ball (substantial)
+        self.ENERGY_DECAY_DEAD     = 1.5    # /s when the near player is still AND no ball (substantial)
         self.ENERGY_DECAY_BASE     = 0.4    # /s mild idle drain otherwise
+        self.ENERGY_DECAY_MISSING  = 2.5    # /s rapid drain once the near player has been missing past the grace
 
         self.PLAYER_FAST_FTS       = 6.0    # world-space ft/s → "moving rapidly"
         self.PLAYER_STILL_FTS      = 2.0    # world-space ft/s → "very low velocity"
-        self.STILL_PROLONGED_SEC   = 0.6    # both players must be still this long before the hard drain
+        self.STILL_PROLONGED_SEC   = 0.6    # the near player must be still this long before the hard drain
+        self.PLAYER_MISSING_GRACE_SEC = 3.0 # near player may be missing this long (energy holds) before rapid drain
         self.BALL_TRACE_SEC        = 0.7    # a ball seen within this window counts as a live trace
         self.TRACE_MOVE_PX         = 10.0   # min spread across the trace window to count as "live" (not stationary)
         self.MAX_POINT_SEC         = 40.0   # hard safety cap on rally length
@@ -67,6 +69,7 @@ class PointStartSystem:
         self.near_pos_buffer: deque = deque(maxlen=vel_window)
         self.ball_trace:      deque = deque()
         self.still_frames = 0
+        self.missing_frames = 0
 
         self.points: List[Dict] = []          # completed serve→point-end records
         self.current_point_start: Optional[int] = None
@@ -175,8 +178,12 @@ class PointStartSystem:
     def _update_active_buffers(self, d: TrackData):
         """Push per-frame telemetry (foot positions + ball trace) used by the energy bar."""
         if d.near_player_bbox:
+            self.missing_frames = 0
             x, y, w, h = d.near_player_bbox
             self.near_pos_buffer.append(self._get_world_coords(x + w / 2.0, y + h))
+        else:
+            self.missing_frames += 1
+            self.near_pos_buffer.clear()  # avoid a teleport-velocity spike when the player reappears
         if d.ball_pos:
             self.ball_trace.append((d.frame_idx, d.ball_pos[0], d.ball_pos[1]))
         window = int(self.fps * self.BALL_TRACE_SEC)
@@ -184,12 +191,13 @@ class PointStartSystem:
             self.ball_trace.popleft()
 
     def _update_energy(self, frame_idx: int) -> float:
-        """Advance the energy bar one frame based on ball trace + both players' motion."""
+        """Advance the energy bar one frame based on the ball trace + near-player motion."""
         dt = 1.0 / self.fps
         has_ball  = self._has_live_ball_trace(frame_idx)
+        missing   = self.missing_frames > 0
         near_v    = self._player_velocity_fts(self.near_pos_buffer)
-        near_fast = near_v > self.PLAYER_FAST_FTS
-        near_slow = near_v < self.PLAYER_STILL_FTS
+        near_fast = (not missing) and near_v > self.PLAYER_FAST_FTS
+        near_slow = (not missing) and near_v < self.PLAYER_STILL_FTS
 
         # A prolonged pause with no ball is the trigger for the hard drain.
         if near_slow and not has_ball:
@@ -206,7 +214,16 @@ class PointStartSystem:
             delta += self.ENERGY_BOOST_MOTION * dt
             labels.append(f"MOTION {near_v:.1f}ft/s")
 
-        if not has_ball and not near_fast:
+        if missing and not has_ball:
+            # Grace: energy holds while the near player is briefly lost. Past the
+            # grace window a continued absence drains rapidly.
+            missing_sec = self.missing_frames / self.fps
+            if self.missing_frames > int(self.fps * self.PLAYER_MISSING_GRACE_SEC):
+                delta -= self.ENERGY_DECAY_MISSING * dt
+                labels.append(f"MISSING {missing_sec:.1f}s (rapid drain)")
+            else:
+                labels.append(f"MISSING {missing_sec:.1f}s (grace)")
+        elif not has_ball and not near_fast:
             prolonged = self.still_frames >= int(self.fps * self.STILL_PROLONGED_SEC)
             if near_slow and prolonged:
                 delta -= self.ENERGY_DECAY_DEAD * dt
@@ -286,6 +303,7 @@ class PointStartSystem:
         self.energy = self.ENERGY_START
         self.energy_status = "SERVE"
         self.still_frames = 0
+        self.missing_frames = 0
         self.near_pos_buffer.clear()
         self.ball_trace.clear()
         self.current_point_start = frame_idx
