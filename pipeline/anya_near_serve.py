@@ -10,6 +10,13 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 from ultralytics import YOLO
 
+try:
+    from utilities import (create_auto_exclusion_zones, _is_in_exclusion_zone,
+                           load_cached_exclusion_zones, save_cached_exclusion_zones)
+except ImportError:
+    from .utilities import (create_auto_exclusion_zones, _is_in_exclusion_zone,
+                            load_cached_exclusion_zones, save_cached_exclusion_zones)
+
 class MatchState(Enum):
     WAITING = 0  
     ARMED = 1       
@@ -382,6 +389,21 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
         min(width, int(xs.max()) + margin), min(height, int(ys.max()) + margin),
     )
 
+    # Static exclusion zones — auto-detected clusters of stationary ball-like
+    # objects (e.g. ball baskets, court logos) whose detections should be ignored.
+    # Reused from utilities.create_auto_exclusion_zones; scanned at full resolution
+    # so the rects share ball_pos' full-frame coords, and cached beside the video.
+    exclusion_zones = load_cached_exclusion_zones(video_path) or []
+    if not exclusion_zones:
+        print("[INFO] Scanning video for static exclusion zones...")
+        try:
+            exclusion_zones = create_auto_exclusion_zones(video_path, yolo_ball_model, analysis_size=None)
+            save_cached_exclusion_zones(video_path, exclusion_zones)
+        except Exception as e:
+            print(f"[WARN] Could not compute exclusion zones: {e}")
+            exclusion_zones = []
+    print(f"[INFO] {len(exclusion_zones)} exclusion zone(s) active")
+
     frame_idx = 0
     print("Processing Video...")
     if not headless:
@@ -434,9 +456,13 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
                 roi_crop = frame[c_top:c_bottom, c_left:c_right]
                 ball_results = yolo_ball_model.predict(roi_crop, imgsz=ball_imgsz, device=device, verbose=False)[0]
 
-                if len(ball_results.boxes) > 0:
-                    bx1, by1, bx2, by2 = ball_results.boxes[0].xyxy[0].cpu().numpy()
-                    ball_pos = (bx1 + c_left + (bx2 - bx1)/2.0, by1 + c_top + (by2 - by1)/2.0)
+                for box in ball_results.boxes:
+                    bx1, by1, bx2, by2 = box.xyxy[0].cpu().numpy()
+                    cand = (bx1 + c_left + (bx2 - bx1)/2.0, by1 + c_top + (by2 - by1)/2.0)
+                    if _is_in_exclusion_zone(cand[0], cand[1], exclusion_zones):
+                        continue  # stationary ball-like object (basket, logo) — ignore
+                    ball_pos = cand
+                    break
 
         # --- C. System Update ---
         track_data = TrackData(
@@ -454,6 +480,11 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
         # --- D. Visualizations ---
         cv2.putText(frame, f"State: {current_state.name}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.polylines(frame, [ready_zone_poly], isClosed=True, color=(0, 255, 0), thickness=2)
+
+        for (zx1, zy1, zx2, zy2) in exclusion_zones:
+            cv2.rectangle(frame, (int(zx1), int(zy1)), (int(zx2), int(zy2)), (255, 0, 255), 2)
+            cv2.putText(frame, "EXCL", (int(zx1), int(zy1) - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1, cv2.LINE_AA)
         
         if near_player_bbox:
             nx, ny, nw, nh = near_player_bbox
