@@ -346,14 +346,31 @@ def main():
         ball_model = YOLO(args.ball_model)
         player_model = YOLO("yolov8n.pt")
         for c in clip_dirs:
-            build_telemetry(c, ball_model, player_model, device, rescan=args.rescan_telemetry)
+            try:
+                build_telemetry(c, ball_model, player_model, device, rescan=args.rescan_telemetry)
+            except Exception as e:
+                print(f"[WARN] extraction failed for {os.path.basename(c)}: {e} — skipping")
 
     if not args.optimize:
         return
 
+    # Only optimize over clips that actually have a telemetry cache (an
+    # uncalibrated or failed clip is simply excluded rather than aborting).
+    ready = [(c, n) for c, n in zip(clip_dirs, clip_names)
+             if os.path.isfile(os.path.join(c, TELEMETRY_CACHE))]
+    missing = [n for c, n in zip(clip_dirs, clip_names) if not os.path.isfile(os.path.join(c, TELEMETRY_CACHE))]
+    if missing:
+        print(f"[optimize] no telemetry for {missing} — excluded")
+    if not ready:
+        print("[optimize] no telemetry caches available — run --extract first")
+        return
+    clip_dirs = [c for c, _ in ready]
+    clip_names = [n for _, n in ready]
     clip_tels = [json.load(open(os.path.join(c, TELEMETRY_CACHE))) for c in clip_dirs]
+    n_rallies = sum(len(ct["rallies"]) for ct in clip_tels)
 
-    print(f"\n[optimize] differential_evolution over {len(PARAM_NAMES)} params, maxiter={args.maxiter}")
+    print(f"\n[optimize] {len(clip_names)} clips, {n_rallies} near rallies: {clip_names}")
+    print(f"[optimize] differential_evolution over {len(PARAM_NAMES)} params, maxiter={args.maxiter}")
     best_params, best_score = _run_de(clip_tels, args.maxiter)
 
     print(f"\n[optimize] best objective = {best_score:.4f}")
