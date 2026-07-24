@@ -31,9 +31,10 @@ class TrackData:
 
 class PointStartSystem:
     def __init__(self, court_corners_pixels: np.ndarray, video_width: int, video_height: int, fps: int = 30,
-                 params: Optional[Dict] = None):
+                 params: Optional[Dict] = None, verbose: bool = True):
         self.state = MatchState.WAITING
         self.fps = fps
+        self.verbose = verbose   # False silences state-transition prints (used by the optimizer)
         self.video_width = video_width
         self.video_height = video_height
         self.frame_buffer: List[TrackData] = []
@@ -262,6 +263,10 @@ class PointStartSystem:
         self.energy_status = " + ".join(labels) if labels else "-"
         return self.energy
 
+    def _log(self, msg: str):
+        if self.verbose:
+            print(msg)
+
     def process_frame(self, current_data: TrackData) -> MatchState:
         self.frame_buffer.append(current_data)
         if len(self.frame_buffer) > self.fps * 4: self.frame_buffer.pop(0)
@@ -270,13 +275,13 @@ class PointStartSystem:
         if self.state == MatchState.WAITING:
             if current_data.near_player_bbox and self._check_near_dwell():
                 self.state = MatchState.ARMED
-                print(f"[State] Player ready. Transition to ARMED at frame {current_data.frame_idx}")
+                self._log(f"[State] Player ready. Transition to ARMED at frame {current_data.frame_idx}")
             
         elif self.state == MatchState.ARMED:
             if not self._check_near_dwell():
                 self.state = MatchState.WAITING
                 self.toss_detected_frame_idx = 0
-                print(f"[State] Player broke dwell. Reset to WAITING")
+                self._log(f"[State] Player broke dwell. Reset to WAITING")
                 return self.state
 
             px, py, pw, ph = current_data.near_player_bbox
@@ -284,7 +289,7 @@ class PointStartSystem:
             
             if self._detect_near_toss():
                 self.toss_detected_frame_idx = current_data.frame_idx
-                print(f"[Event] Toss detected at frame {current_data.frame_idx}")
+                self._log(f"[Event] Toss detected at frame {current_data.frame_idx}")
                 
             # If toss happened within the last 1 second, look for rapid ratio shift
             if self.toss_detected_frame_idx > 0:
@@ -295,7 +300,7 @@ class PointStartSystem:
                         self._trigger_active(current_data.frame_idx, "Serve Executed (Toss + Ratio Shift)")
                         self.toss_detected_frame_idx = 0
                 else:
-                    print(f"[Event] Toss timed out. Continuing ARMED watch.")
+                    self._log(f"[Event] Toss timed out. Continuing ARMED watch.")
                     self.toss_detected_frame_idx = 0
 
         elif self.state == MatchState.ACTIVE:
@@ -312,7 +317,7 @@ class PointStartSystem:
                     "end_frame": current_data.frame_idx,
                     "reason": reason,
                 })
-                print(f"[State] Point ENDED at frame {current_data.frame_idx} ({reason}). Reset to WAITING")
+                self._log(f"[State] Point ENDED at frame {current_data.frame_idx} ({reason}). Reset to WAITING")
                 self.state = MatchState.WAITING
                 self.active_frame_counter = 0
                 self.current_point_start = None
@@ -334,7 +339,7 @@ class PointStartSystem:
         self.ball_trace.clear()
         self.current_point_start = frame_idx
 
-        print(f"[State] Point STARTED at frame {frame_idx} via {trigger_source}")
+        self._log(f"[State] Point STARTED at frame {frame_idx} via {trigger_source}")
 
 
 def get_court_corners_interactive(video_path: str, headless: bool) -> np.ndarray:
