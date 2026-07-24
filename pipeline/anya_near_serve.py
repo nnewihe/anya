@@ -14,9 +14,9 @@ import random
 from sklearn.cluster import DBSCAN
 
 try:
-    from utilities import _is_in_exclusion_zone
+    from utilities import _is_in_exclusion_zone, create_highlights_ffmpeg
 except ImportError:
-    from .utilities import _is_in_exclusion_zone
+    from .utilities import _is_in_exclusion_zone, create_highlights_ffmpeg
 
 class MatchState(Enum):
     WAITING = 0  
@@ -490,7 +490,32 @@ def load_or_build_exclusion_zones(video_path, ball_model, device, padding=8, res
     return zones
 
 
-def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False, exclusion_frames: int = 60, exclusion_min_samples: int = 8):
+def create_highlight_reel(video_path, points, fps, output_path,
+                          pre_roll: float = 1.0, post_roll: float = 1.0):
+    """
+    Splice each detected active point (start_frame..end_frame) into a single
+    highlight reel with pre_roll seconds before the serve and post_roll seconds
+    after the point end. Delegates to utilities.create_highlights_ffmpeg
+    (audio-preserving): the post-roll is baked into each segment end, and
+    pre_roll plus overlap-merging (merge_gap_sec=0) handle the starts so
+    back-to-back points never produce duplicated footage.
+    """
+    segments = []
+    for p in points:
+        sf, ef = p.get("start_frame"), p.get("end_frame")
+        if sf is None or ef is None:
+            continue
+        segments.append((sf / fps, ef / fps + post_roll))
+
+    if not segments:
+        print("[HIGHLIGHT] No active points to export.")
+        return
+
+    create_highlights_ffmpeg(video_path, segments, output_path,
+                             pre_roll=pre_roll, merge_gap_sec=0.0)
+
+
+def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False, exclusion_frames: int = 60, exclusion_min_samples: int = 8, highlights: bool = False, highlight_out: str = None, pre_roll: float = 1.0, post_roll: float = 1.0):
 
     court_corners = get_court_corners_interactive(video_path, headless)
     
@@ -651,11 +676,27 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
     out.release()
     if not headless:
         cv2.destroyAllWindows()
-    
+
+    # Flush a point still in progress at end-of-video so it makes the reel.
+    if system.state == MatchState.ACTIVE and system.current_point_start is not None:
+        system.points.append({
+            "start_frame": system.current_point_start,
+            "end_frame": frame_idx,
+            "reason": "video end",
+        })
+
     json_path = "serve_events.json"
     with open(json_path, 'w') as f:
         json.dump({"serves": system.serve_events, "points": system.points}, f, indent=4)
     print(f"Finished processing. {len(system.serve_events)} serve(s), {len(system.points)} point(s) saved to {json_path}")
+
+    if highlights:
+        if highlight_out is None:
+            d = os.path.dirname(os.path.abspath(video_path))
+            s = os.path.splitext(os.path.basename(video_path))[0]
+            highlight_out = os.path.join(d, f"{s}_highlights.mp4")
+        create_highlight_reel(video_path, system.points, fps, highlight_out,
+                              pre_roll=pre_roll, post_roll=post_roll)
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Anya Tennis Near-Serve Detector")
@@ -673,10 +714,20 @@ if __name__ == "__main__":
                         help="Number of random frames to scan for exclusion zones (more = better recall, slower)")
     parser.add_argument("--exclusion_min_samples", type=int, default=8,
                         help="Min clustered detections for a zone (lower = catches more, intermittently-seen objects)")
+    parser.add_argument("--highlights", action="store_true",
+                        help="After processing, splice the active points into a highlight reel")
+    parser.add_argument("--highlight_out", type=str, default=None,
+                        help="Highlight reel path (default: <video>_highlights.mp4 beside the input)")
+    parser.add_argument("--pre_roll", type=float, default=1.0,
+                        help="Seconds of footage before each serve in the highlight reel")
+    parser.add_argument("--post_roll", type=float, default=1.0,
+                        help="Seconds of footage after each point end in the highlight reel")
 
     args = parser.parse_args()
 
     run_point_detector(args.video_in, args.video_out, args.ball_model,
                        headless=args.headless, energy_debug=args.energy_debug,
                        exclusion_padding=args.exclusion_padding, rescan_exclusion=args.rescan_exclusion,
-                       exclusion_frames=args.exclusion_frames, exclusion_min_samples=args.exclusion_min_samples)
+                       exclusion_frames=args.exclusion_frames, exclusion_min_samples=args.exclusion_min_samples,
+                       highlights=args.highlights, highlight_out=args.highlight_out,
+                       pre_roll=args.pre_roll, post_roll=args.post_roll)
