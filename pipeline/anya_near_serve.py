@@ -881,7 +881,9 @@ if __name__ == "__main__":
     parser.add_argument("--exclusion_min_samples", type=int, default=8,
                         help="Min clustered detections for a zone (lower = catches more, intermittently-seen objects)")
     parser.add_argument("--highlights", action="store_true",
-                        help="After processing, splice the active points into a highlight reel")
+                        help="Splice the active points into a highlight reel (on by default when --active_model is set)")
+    parser.add_argument("--no_highlights", action="store_true",
+                        help="Disable the highlight reel even when --active_model is set")
     parser.add_argument("--highlight_out", type=str, default=None,
                         help="Highlight reel path (default: <video>_highlights.mp4 beside the input)")
     parser.add_argument("--pre_roll", type=float, default=1.0,
@@ -897,10 +899,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # Highlights default on whenever the learned point-end is used, unless disabled.
+    make_highlights = (args.highlights or bool(args.active_model)) and not args.no_highlights
+
     run_point_detector(args.video_in, args.video_out, args.ball_model,
                        headless=args.headless, energy_debug=args.energy_debug,
                        exclusion_padding=args.exclusion_padding, rescan_exclusion=args.rescan_exclusion,
                        exclusion_frames=args.exclusion_frames, exclusion_min_samples=args.exclusion_min_samples,
-                       highlights=args.highlights, highlight_out=args.highlight_out,
+                       highlights=make_highlights, highlight_out=args.highlight_out,
                        pre_roll=args.pre_roll, post_roll=args.post_roll, energy_params=args.energy_params,
                        active_model=args.active_model, active_offset_sec=args.active_offset_sec)
