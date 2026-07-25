@@ -40,7 +40,7 @@ L           = 60      # timesteps per window after resampling
 WIN_SEC     = 2.0
 N_SIDE      = 5       # slides each side of the transition
 STEP_SEC    = 0.33
-DEADBAND_SEC = 0.3    # +/- band around gt_end flagged as boundary
+DEADBAND_SEC = 0.3    # default +/- band around gt_end flagged as boundary (overridable)
 
 
 def _window(arr, start, E, win_frames):
@@ -69,7 +69,7 @@ def _rally_ends(fps, start, end, span_end, win_frames):
     return out
 
 
-def build(clip_dirs):
+def build(clip_dirs, deadband_sec=DEADBAND_SEC, transitions=None):
     X, meta = [], []
     for c in clip_dirs:
         name = os.path.basename(c)
@@ -81,23 +81,27 @@ def build(clip_dirs):
         pm = json.load(open(meta_p))
         fps = pm["fps"]
         win_frames = max(2, round(fps * WIN_SEC))
-        deadband = round(fps * DEADBAND_SEC)
+        deadband = round(fps * deadband_sec)
 
         for ri, r in enumerate(pm["rallies"]):
             arr = pose[f"r{ri}"]
             start, end, span_end = r["start"], r["end"], r["span_end"]
+            # Label boundary = human transition frame if marked, else GT end.
+            ref = end
+            if transitions is not None:
+                ref = int(transitions.get(f"{name}_r{ri}", end))
             for E, anchor in _rally_ends(fps, start, end, span_end, win_frames):
                 W = _window(arr, start, E, win_frames)
                 n_present = int(np.sum(~np.isnan(W[:, 0])))
                 if n_present == 0:
                     continue
-                auto = 1 if E <= end else 0
-                boundary = abs(E - end) <= deadband
+                auto = 1 if E < ref else 0            # ACTIVE strictly before the transition
+                boundary = abs(E - ref) <= deadband
                 X.append(W)
                 meta.append({
                     "wid": f"{name}_r{ri}_e{E}",
                     "clip": name, "rally": ri,
-                    "end_off": E - start, "gt_end_off": end - start,
+                    "end_off": E - start, "gt_end_off": ref - start,
                     "auto": auto, "boundary": int(boundary),
                     "anchor": int(anchor), "n_present": n_present,
                 })
@@ -111,6 +115,11 @@ def main():
     ap.add_argument("--clips", nargs="*", default=None)
     ap.add_argument("--out", default="/Volumes/Anya/Data/windows.npz")
     ap.add_argument("--labels", default="/Volumes/Anya/Data/labels.json")
+    ap.add_argument("--deadband_sec", type=float, default=DEADBAND_SEC,
+                    help="+/- band around the transition flagged boundary")
+    ap.add_argument("--transitions", default=None,
+                    help="transitions.json from mark_transitions.py — label windows by the human "
+                         "player-transition frame instead of the ball-based GT end")
     args = ap.parse_args()
 
     if args.clips:
@@ -119,7 +128,8 @@ def main():
         clip_dirs = [os.path.join(args.data_root, d) for d in sorted(os.listdir(args.data_root))
                      if os.path.isfile(os.path.join(args.data_root, d, POSE_NPZ))]
 
-    X, meta = build(clip_dirs)
+    transitions = json.load(open(args.transitions)) if args.transitions else None
+    X, meta = build(clip_dirs, deadband_sec=args.deadband_sec, transitions=transitions)
     if len(X) == 0:
         raise SystemExit("No windows built — run extract_pose.py first.")
 
@@ -130,16 +140,22 @@ def main():
         arrs[k] = np.array([m[k] for m in meta])
     np.savez_compressed(args.out, **arrs)
 
-    # Seed labels.json (preserve any existing audited labels).
+    # Seed labels.json. With --transitions the auto label IS the human-derived
+    # label (from the marked transition), so mark it audited. Otherwise preserve
+    # any prior per-window audited labels.
     existing = json.load(open(args.labels)) if os.path.isfile(args.labels) else {}
+    use_trans = transitions is not None
     labels = {}
     for m in meta:
         prev = existing.get(m["wid"])
-        labels[m["wid"]] = {
-            "auto": m["auto"],
-            "label": prev["label"] if prev and prev.get("audited") else m["auto"],
-            "audited": bool(prev["audited"]) if prev else False,
-        }
+        if use_trans:
+            labels[m["wid"]] = {"auto": m["auto"], "label": m["auto"], "audited": True}
+        else:
+            labels[m["wid"]] = {
+                "auto": m["auto"],
+                "label": prev["label"] if prev and prev.get("audited") else m["auto"],
+                "audited": bool(prev["audited"]) if prev else False,
+            }
     json.dump(labels, open(args.labels, "w"), indent=0)
 
     n = len(meta)
