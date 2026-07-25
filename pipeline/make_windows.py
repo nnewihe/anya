@@ -55,10 +55,11 @@ def _window(arr, start, E, win_frames):
     return W[idx]
 
 
-def _rally_ends(fps, start, end, span_end, win_frames):
-    """(E, is_anchor) list of window end frames for one rally."""
+def _rally_ends(fps, start, center, span_end, win_frames):
+    """(E, is_anchor) window end frames: slides centered on the transition
+    `center`, plus an early-rally active anchor and a late-tail dead anchor."""
     step = max(1, round(fps * STEP_SEC))
-    ends = [(end + k * step, False) for k in range(-N_SIDE, N_SIDE + 1)]
+    ends = [(center + k * step, False) for k in range(-N_SIDE, N_SIDE + 1)]
     ends.append((start + win_frames - 1, True))   # early-rally ACTIVE anchor
     ends.append((span_end, True))                 # late-tail DEAD anchor
     out, seen = [], set()
@@ -86,11 +87,16 @@ def build(clip_dirs, deadband_sec=DEADBAND_SEC, transitions=None):
         for ri, r in enumerate(pm["rallies"]):
             arr = pose[f"r{ri}"]
             start, end, span_end = r["start"], r["end"], r["span_end"]
-            # Label boundary = human transition frame if marked, else GT end.
+            # Label boundary = human transition frame. With --transitions, skip
+            # rallies with no marked transition (avoid mixing player-based and
+            # ball-based labels, which sit ~1.7s apart).
             ref = end
             if transitions is not None:
-                ref = int(transitions.get(f"{name}_r{ri}", end))
-            for E, anchor in _rally_ends(fps, start, end, span_end, win_frames):
+                key = f"{name}_r{ri}"
+                if key not in transitions:
+                    continue
+                ref = int(transitions[key])
+            for E, anchor in _rally_ends(fps, start, ref, span_end, win_frames):
                 W = _window(arr, start, E, win_frames)
                 n_present = int(np.sum(~np.isnan(W[:, 0])))
                 if n_present == 0:
