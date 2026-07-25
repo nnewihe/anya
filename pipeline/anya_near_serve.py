@@ -84,6 +84,7 @@ class PointStartSystem:
 
         self.points: List[Dict] = []          # completed serve→point-end records
         self.current_point_start: Optional[int] = None
+        self.use_fusion = False                # True: point-end driven by the pose+ball fusion
 
         # Optional overrides (used by the parameter optimizer) — set after the
         # defaults above so a params dict can tune any energy constant in place.
@@ -308,21 +309,32 @@ class PointStartSystem:
             self._update_active_buffers(current_data)
             self._update_energy(current_data.frame_idx)
 
-            depleted = self.energy <= self.ENERGY_DEAD
             timed_out = self.active_frame_counter >= int(self.fps * self.MAX_POINT_SEC)
-            if depleted or timed_out:
-                reason = "energy depleted" if depleted else "max duration"
-                self.points.append({
-                    "start_frame": self.current_point_start,
-                    "end_frame": current_data.frame_idx,
-                    "reason": reason,
-                })
-                self._log(f"[State] Point ENDED at frame {current_data.frame_idx} ({reason}). Reset to WAITING")
-                self.state = MatchState.WAITING
-                self.active_frame_counter = 0
-                self.current_point_start = None
+            if self.use_fusion:
+                # Point-end is driven externally by the pose+ball fusion in the
+                # frame loop (via end_active_point); here we only enforce the cap.
+                if timed_out:
+                    self.end_active_point(current_data.frame_idx, "max duration")
+            else:
+                depleted = self.energy <= self.ENERGY_DEAD
+                if depleted or timed_out:
+                    reason = "energy depleted" if depleted else "max duration"
+                    self.end_active_point(current_data.frame_idx, reason)
 
         return self.state
+
+    def end_active_point(self, frame_idx: int, reason: str, end_frame: int = None):
+        """Record the current point and reset to WAITING. end_frame lets the
+        caller apply an offset (e.g. align a player-transition end to the ball)."""
+        self.points.append({
+            "start_frame": self.current_point_start,
+            "end_frame": end_frame if end_frame is not None else frame_idx,
+            "reason": reason,
+        })
+        self._log(f"[State] Point ENDED at frame {frame_idx} ({reason}). Reset to WAITING")
+        self.state = MatchState.WAITING
+        self.active_frame_counter = 0
+        self.current_point_start = None
 
     def _trigger_active(self, frame_idx: int, trigger_source: str):
         self.state = MatchState.ACTIVE
@@ -383,6 +395,98 @@ def get_court_corners_interactive(video_path: str, headless: bool) -> np.ndarray
             
     cv2.destroyAllWindows()
     return np.array(points, dtype=np.float32)
+
+ANALYSIS_SIZE = (960, 540)   # pose is evaluated here to match the trained model
+_N_KP = 17
+
+
+def _iou_xywh_xyxy(nb, xyxy):
+    ax1, ay1, aw, ah = nb
+    ax2, ay2 = ax1 + aw, ay1 + ah
+    bx1, by1, bx2, by2 = xyxy
+    inter = max(0.0, min(ax2, bx2) - max(ax1, bx1)) * max(0.0, min(ay2, by2) - max(ay1, by1))
+    ua = aw * ah + (bx2 - bx1) * (by2 - by1) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+def _select_near_pose(result, near_bbox, iou_min=0.2):
+    if near_bbox is None or result.keypoints is None or len(result.boxes) == 0:
+        return None
+    boxes = result.boxes.xyxy.cpu().numpy()
+    kpts = result.keypoints.data.cpu().numpy()
+    best_i, best = -1, iou_min
+    for i, b in enumerate(boxes):
+        j = _iou_xywh_xyxy(near_bbox, b)
+        if j > best:
+            best, best_i = j, i
+    return kpts[best_i] if best_i >= 0 else None
+
+
+def _normalize_kp(kp, near_bbox):
+    bx, by, bw, bh = near_bbox
+    bw = bw or 1.0; bh = bh or 1.0
+    out = np.empty(_N_KP * 3, dtype=np.float32)
+    for k in range(_N_KP):
+        x, y, c = kp[k]
+        out[3*k], out[3*k+1], out[3*k+2] = (x - bx) / bw, (y - by) / bh, c
+    return out
+
+
+class ActiveDeadFusion:
+    """Live pose+ball fusion point-end. Holds the trained GRU and a rolling 2s
+    pose buffer; each frame returns the fused activity and whether the point
+    should end (sustained-dead run after a full-window start grace)."""
+    def __init__(self, model_path, fps, device="cpu", w_player=0.8, w_ball=0.2,
+                 thr=0.45, sustain_sec=1.0, smooth_sec=0.4, start_grace_sec=2.0,
+                 win_sec=2.0, offset_sec=0.0):
+        import torch
+        from train_active import make_model, featurize
+        self._torch = torch
+        self._featurize = featurize
+        ck = torch.load(model_path, map_location=device)
+        self.model = make_model(); self.model.load_state_dict(ck["state"]); self.model.eval()
+        self.fps = fps
+        self.win = max(2, round(fps * win_sec))
+        self.pose_buf: deque = deque(maxlen=self.win)
+        self.a_buf: deque = deque(maxlen=max(1, round(fps * smooth_sec)))
+        self.w_player, self.w_ball, self.thr = w_player, w_ball, thr
+        self.sustain = max(1, round(fps * sustain_sec))
+        self.grace = round(fps * start_grace_sec)
+        self.offset = round(offset_sec * fps)
+        self.run = 0
+        self.P = 0.0
+        self.A = 0.0
+
+    def reset(self):
+        self.pose_buf.clear(); self.a_buf.clear(); self.run = 0; self.P = 0.0; self.A = 0.0
+
+    def push_pose(self, kp):
+        self.pose_buf.append(kp)   # normalized [51] or None
+
+    def _p_active(self):
+        buf = list(self.pose_buf)
+        W = np.full((self.win, _N_KP * 3), np.nan, dtype=np.float32)
+        base = self.win - len(buf)
+        for i, kp in enumerate(buf):
+            if kp is not None:
+                W[base + i] = kp
+        idx = np.linspace(0, self.win - 1, 60).round().astype(int)
+        Xf = self._featurize(W[idx][None, ...])
+        with self._torch.no_grad():
+            return float(self._torch.sigmoid(self.model(self._torch.tensor(Xf))).item())
+
+    def step(self, ball_live, frames_since_start):
+        self.P = self._p_active()
+        a = self.w_player * self.P + self.w_ball * (1.0 if ball_live else 0.0)
+        self.a_buf.append(a)
+        self.A = sum(self.a_buf) / len(self.a_buf)
+        ended = False
+        if frames_since_start >= self.grace:
+            self.run = self.run + 1 if self.A < self.thr else 0
+            if self.run >= self.sustain:
+                ended = True
+        return self.A, ended
+
 
 def _excl_cache_path(video_path: str) -> str:
     d = os.path.dirname(os.path.abspath(video_path))
@@ -529,7 +633,7 @@ def create_highlight_reel(video_path, points, fps, output_path,
                              pre_roll=pre_roll, merge_gap_sec=0.0)
 
 
-def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False, exclusion_frames: int = 60, exclusion_min_samples: int = 8, highlights: bool = False, highlight_out: str = None, pre_roll: float = 1.0, post_roll: float = 1.0, energy_params: str = None):
+def run_point_detector(video_path: str, output_path: str, ball_model_path: str, stride: int = 10, headless: bool = False, energy_debug: bool = False, exclusion_padding: int = 8, rescan_exclusion: bool = False, exclusion_frames: int = 60, exclusion_min_samples: int = 8, highlights: bool = False, highlight_out: str = None, pre_roll: float = 1.0, post_roll: float = 1.0, energy_params: str = None, active_model: str = None, active_offset_sec: float = 0.0):
 
     court_corners = get_court_corners_interactive(video_path, headless)
     
@@ -554,6 +658,15 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
         tuned = data.get("params", data)   # accept either {"params": {...}} or a bare dict
         print(f"[INFO] Loaded {len(tuned)} tuned energy param(s) from {energy_params}")
     system = PointStartSystem(court_corners, width, height, fps=fps, params=tuned)
+
+    # Optional learned point-end: pose GRU + ball fusion replaces the energy bar.
+    fusion = None
+    pose_model = None
+    if active_model:
+        pose_model = YOLO("yolov8n-pose.pt")
+        fusion = ActiveDeadFusion(active_model, fps, device=device, offset_sec=active_offset_sec)
+        system.use_fusion = True
+        print(f"[INFO] Pose+ball fusion point-end enabled ({active_model}, offset {active_offset_sec}s)")
     ready_zone_poly = system.get_ready_zone_polygon()
 
     # Bounding rect of the court (with margin) — the ball-search region while a point is ACTIVE.
@@ -646,6 +759,26 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
             system._update_active_buffers(track_data)
             system._update_energy(frame_idx)
 
+        # --- C2. Pose + ball fusion point-end (learned) ---
+        if fusion is not None and current_state == MatchState.ACTIVE:
+            if system.active_frame_counter == 0:      # serve trigger frame → new point
+                fusion.reset()
+            norm = None
+            if near_player_bbox is not None:
+                sx, sy = ANALYSIS_SIZE[0] / width, ANALYSIS_SIZE[1] / height
+                nb960 = (near_player_bbox[0]*sx, near_player_bbox[1]*sy,
+                         near_player_bbox[2]*sx, near_player_bbox[3]*sy)
+                frame960 = cv2.resize(frame, ANALYSIS_SIZE, interpolation=cv2.INTER_AREA)
+                pres = pose_model.predict(frame960, imgsz=640, device=device, verbose=False)[0]
+                kp = _select_near_pose(pres, nb960)
+                norm = _normalize_kp(kp, nb960) if kp is not None else None
+            fusion.push_pose(norm)
+            ball_live = system._has_live_ball_trace(frame_idx)
+            _, ended = fusion.step(ball_live, system.active_frame_counter)
+            if ended:
+                system.end_active_point(frame_idx, "pose fusion", end_frame=frame_idx + fusion.offset)
+                current_state = system.state
+
         # --- D. Visualizations ---
         cv2.putText(frame, f"State: {current_state.name}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         cv2.polylines(frame, [ready_zone_poly], isClosed=True, color=(0, 255, 0), thickness=2)
@@ -666,8 +799,21 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str, 
             r_left, r_top, r_right, r_bottom = system.current_toss_roi
             cv2.rectangle(frame, (int(r_left), int(r_top)), (int(r_right), int(r_bottom)), (0, 0, 255), 2)
 
-        # Energy bar — always visible in energy-debug mode, otherwise only while a point is live.
-        if energy_debug or current_state == MatchState.ACTIVE:
+        # Activity bar — fusion (A) when the learned point-end is on, else energy.
+        if fusion is not None and current_state == MatchState.ACTIVE:
+            bar_h, pad = 26, 20
+            bar_w_max = width - 2 * pad
+            by0 = height - bar_h - pad
+            cv2.rectangle(frame, (pad, by0), (pad + bar_w_max, by0 + bar_h), (40, 40, 40), -1)
+            a = max(0.0, min(1.0, fusion.A))
+            cv2.rectangle(frame, (pad, by0), (pad + int(bar_w_max * a), by0 + bar_h),
+                          (0, int(255 * a), int(255 * (1.0 - a))), -1)
+            cv2.rectangle(frame, (pad + int(bar_w_max * fusion.thr), by0),
+                          (pad + int(bar_w_max * fusion.thr), by0 + bar_h), (255, 255, 255), 1)
+            cv2.putText(frame, f"ACTIVE P={fusion.P:.2f} A={fusion.A:.2f} (thr {fusion.thr})",
+                        (pad + 6, by0 + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
+
+        elif energy_debug or current_state == MatchState.ACTIVE:
             bar_h, pad = 26, 20
             bar_w_max = width - 2 * pad
             by0 = height - bar_h - pad
@@ -744,6 +890,10 @@ if __name__ == "__main__":
                         help="Seconds of footage after each point end in the highlight reel")
     parser.add_argument("--energy_params", type=str, default=None,
                         help="Path to energy_params.json (from optimize_energy.py) to load tuned energy constants")
+    parser.add_argument("--active_model", type=str, default=None,
+                        help="Path to active_model.pt (pose GRU) — enables the learned pose+ball fusion point-end")
+    parser.add_argument("--active_offset_sec", type=float, default=0.0,
+                        help="Seconds added to the fusion point-end (e.g. ~1.7 to align player-transition to ball end)")
 
     args = parser.parse_args()
 
@@ -752,4 +902,5 @@ if __name__ == "__main__":
                        exclusion_padding=args.exclusion_padding, rescan_exclusion=args.rescan_exclusion,
                        exclusion_frames=args.exclusion_frames, exclusion_min_samples=args.exclusion_min_samples,
                        highlights=args.highlights, highlight_out=args.highlight_out,
-                       pre_roll=args.pre_roll, post_roll=args.post_roll, energy_params=args.energy_params)
+                       pre_roll=args.pre_roll, post_roll=args.post_roll, energy_params=args.energy_params,
+                       active_model=args.active_model, active_offset_sec=args.active_offset_sec)
