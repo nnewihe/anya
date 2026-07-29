@@ -1,0 +1,2 @@
+# Review renders are large and regenerable from the model + pose caches.
+*.mp4
