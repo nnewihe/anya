@@ -1,0 +1,97 @@
+{
+  "video": "/Volumes/Anya/Data/22/snippet.mp4",
+  "fps": 29.970022839741148,
+  "label": "near_player_walking",
+  "intervals": [
+    {
+      "start_second": 9.509502262443439,
+      "end_second": 27.027006430102407,
+      "start_frame": 285,
+      "end_frame": 810
+    },
+    {
+      "start_second": 78.21148527427165,
+      "end_second": 83.71698658410733,
+      "start_frame": 2344,
+      "end_frame": 2509
+    },
+    {
+      "start_second": 115.04829403826308,
+      "end_second": 117.61752798285306,
+      "start_frame": 3448,
+      "end_frame": 3525
+    },
+    {
+      "start_second": 122.18876240374694,
+      "end_second": 126.92683019766612,
+      "start_frame": 3662,
+      "end_frame": 3804
+    },
+    {
+      "start_second": 144.07730094466936,
+      "end_second": 151.1510359609431,
+      "start_frame": 4318,
+      "end_frame": 4530
+    },
+    {
+      "start_second": 170.63717393030086,
+      "end_second": 172.43897435897438,
+      "start_frame": 5114,
+      "end_frame": 5168
+    },
+    {
+      "start_second": 174.47434150988332,
+      "end_second": 189.35587838374218,
+      "start_frame": 5229,
+      "end_frame": 5675
+    },
+    {
+      "start_second": 209.87638326585696,
+      "end_second": 212.51235055965708,
+      "start_frame": 6290,
+      "end_frame": 6369
+    },
+    {
+      "start_second": 214.68118440898627,
+      "end_second": 217.91775184567754,
+      "start_frame": 6434,
+      "end_frame": 6531
+    },
+    {
+      "start_second": 236.6698229737239,
+      "end_second": 242.97612447408113,
+      "start_frame": 7093,
+      "end_frame": 7282
+    },
+    {
+      "start_second": 255.92239422084626,
+      "end_second": 260.26006191950466,
+      "start_frame": 7670,
+      "end_frame": 7800
+    },
+    {
+      "start_second": 271.271064539176,
+      "end_second": 292.05850281813133,
+      "start_frame": 8130,
+      "end_frame": 8753
+    },
+    {
+      "start_second": 316.51627530364374,
+      "end_second": 325.49191077240613,
+      "start_frame": 9486,
+      "end_frame": 9755
+    },
+    {
+      "start_second": 350.14988330554894,
+      "end_second": 356.48955148051124,
+      "start_frame": 10494,
+      "end_frame": 10684
+    },
+    {
+      "start_second": 362.72911963165836,
+      "end_second": 365.36508692545846,
+      "start_frame": 10871,
+      "end_frame": 10950
+    }
+  ]
+}

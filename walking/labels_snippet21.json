@@ -1,0 +1,134 @@
+{
+  "video": "/Volumes/Anya/Data/21/snippet.mp4",
+  "fps": 29.97001570605873,
+  "label": "near_player_walking",
+  "intervals": [
+    {
+      "start_second": 3.570235032555185,
+      "end_second": 9.109104335397808,
+      "start_frame": 107,
+      "end_frame": 273
+    },
+    {
+      "start_second": 9.843171351437192,
+      "end_second": 17.51750833730348,
+      "start_frame": 295,
+      "end_frame": 525
+    },
+    {
+      "start_second": 43.543520724154355,
+      "end_second": 46.07938859774496,
+      "start_frame": 1305,
+      "end_frame": 1381
+    },
+    {
+      "start_second": 50.450424011434016,
+      "end_second": 54.22085913927267,
+      "start_frame": 1512,
+      "end_frame": 1625
+    },
+    {
+      "start_second": 82.54917262188343,
+      "end_second": 92.5258107035096,
+      "start_frame": 2474,
+      "end_frame": 2773
+    },
+    {
+      "start_second": 144.0773352390027,
+      "end_second": 149.7496712720343,
+      "start_frame": 4318,
+      "end_frame": 4488
+    },
+    {
+      "start_second": 150.6505717008099,
+      "end_second": 158.45837541686518,
+      "start_frame": 4515,
+      "end_frame": 4749
+    },
+    {
+      "start_second": 162.69594410036524,
+      "end_second": 164.83141178338892,
+      "start_frame": 4876,
+      "end_frame": 4940
+    },
+    {
+      "start_second": 183.0829871367318,
+      "end_second": 191.0909909480705,
+      "start_frame": 5487,
+      "end_frame": 5727
+    },
+    {
+      "start_second": 198.19809433063364,
+      "end_second": 206.63986501508654,
+      "start_frame": 5940,
+      "end_frame": 6193
+    },
+    {
+      "start_second": 208.34156582499602,
+      "end_second": 211.71160076226775,
+      "start_frame": 6244,
+      "end_frame": 6345
+    },
+    {
+      "start_second": 237.60414641892964,
+      "end_second": 246.4463172939495,
+      "start_frame": 7121,
+      "end_frame": 7386
+    },
+    {
+      "start_second": 279.646166428458,
+      "end_second": 284.2174019374305,
+      "start_frame": 8381,
+      "end_frame": 8518
+    },
+    {
+      "start_second": 293.25977290773386,
+      "end_second": 303.03621089407653,
+      "start_frame": 8789,
+      "end_frame": 9082
+    },
+    {
+      "start_second": 311.010848022868,
+      "end_second": 313.4132491662696,
+      "start_frame": 9321,
+      "end_frame": 9393
+    },
+    {
+      "start_second": 328.42825631252975,
+      "end_second": 336.06922661584883,
+      "start_frame": 9843,
+      "end_frame": 10072
+    },
+    {
+      "start_second": 343,
+      "end_second": 352,
+      "start_frame": 10290,
+      "end_frame": 10540
+    },
+    {
+      "start_second": 368.80194219469587,
+      "end_second": 371,
+      "start_frame": 11053,
+      "end_frame": 11110
+    },
+    {
+      "start_second": 379.7128473876449,
+      "end_second": 383.816949340956,
+      "start_frame": 11380,
+      "end_frame": 11503
+    },
+    {
+      "start_second": 384.81794981737335,
+      "end_second": 389.1556185485152,
+      "start_frame": 11533,
+      "end_frame": 11663
+    },
+    {
+      "start_second": 407,
+      "end_second": 420,
+      "start_frame": 12193,
+      "end_frame": 12581
+    }
+    
+  ]
+}

@@ -1,0 +1,188 @@
+{
+  "label": "near_player_walking",
+  "fps": 29.97001570605873,
+  "n_frames": 12594,
+  "walking_seconds": 128.39499444179768,
+  "intervals": [
+    {
+      "start_frame": 108,
+      "end_frame": 273,
+      "start_second": 3.6036017151024295,
+      "end_second": 9.142471017945054,
+      "duration_s": 5.538869302842623,
+      "mean_prob": 0.9996875169292392,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 296,
+      "end_frame": 525,
+      "start_second": 9.876538033984437,
+      "end_second": 17.55087501985072,
+      "duration_s": 7.674336985866286,
+      "mean_prob": 0.9997681952937942,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 1306,
+      "end_frame": 1381,
+      "start_second": 43.5768874067016,
+      "end_second": 46.112755280292205,
+      "duration_s": 2.5358678735905986,
+      "mean_prob": 0.9994242976494758,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 1512,
+      "end_frame": 1625,
+      "start_second": 50.450424011434016,
+      "end_second": 54.254225821819915,
+      "duration_s": 3.803801810385898,
+      "mean_prob": 0.9995778688128891,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 2474,
+      "end_frame": 2773,
+      "start_second": 82.54917262188343,
+      "end_second": 92.55917738605685,
+      "duration_s": 10.010004764173416,
+      "mean_prob": 0.9997022924615252,
+      "detection_coverage": 0.92
+    },
+    {
+      "start_frame": 4318,
+      "end_frame": 4489,
+      "start_second": 144.0773352390027,
+      "end_second": 149.81640463712878,
+      "duration_s": 5.739069398126092,
+      "mean_prob": 0.9996411328011758,
+      "detection_coverage": 0.9941860465116279
+    },
+    {
+      "start_frame": 4516,
+      "end_frame": 4749,
+      "start_second": 150.68393838335714,
+      "end_second": 158.49174209941242,
+      "duration_s": 7.807803716055265,
+      "mean_prob": 0.9998448630555062,
+      "detection_coverage": 0.9957264957264957
+    },
+    {
+      "start_frame": 4876,
+      "end_frame": 4941,
+      "start_second": 162.69594410036524,
+      "end_second": 164.8981451484834,
+      "duration_s": 2.2022010481181513,
+      "mean_prob": 0.9986616784462454,
+      "detection_coverage": 0.21212121212121213
+    },
+    {
+      "start_frame": 5488,
+      "end_frame": 5727,
+      "start_second": 183.11635381927903,
+      "end_second": 191.12435763061777,
+      "duration_s": 8.008003811338732,
+      "mean_prob": 0.9996359186061202,
+      "detection_coverage": 0.8208333333333333
+    },
+    {
+      "start_frame": 5940,
+      "end_frame": 6193,
+      "start_second": 198.19809433063364,
+      "end_second": 206.67323169763378,
+      "duration_s": 8.475137367000158,
+      "mean_prob": 0.9996193746415931,
+      "detection_coverage": 0.7519685039370079
+    },
+    {
+      "start_frame": 6244,
+      "end_frame": 6345,
+      "start_second": 208.34156582499602,
+      "end_second": 211.744967444815,
+      "duration_s": 3.403401619818961,
+      "mean_prob": 0.9994928888044092,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 7122,
+      "end_frame": 7387,
+      "start_second": 237.63751310147688,
+      "end_second": 246.51305065904398,
+      "duration_s": 8.875537557567096,
+      "mean_prob": 0.9997878100062627,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 8382,
+      "end_frame": 8519,
+      "start_second": 279.67953311100524,
+      "end_second": 284.284135302525,
+      "duration_s": 4.6046021915197715,
+      "mean_prob": 0.9996085545180241,
+      "detection_coverage": 0.8913043478260869
+    },
+    {
+      "start_frame": 8790,
+      "end_frame": 9083,
+      "start_second": 293.2931395902811,
+      "end_second": 303.102944259171,
+      "duration_s": 9.809804668889948,
+      "mean_prob": 0.9997089506416521,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 9322,
+      "end_frame": 9393,
+      "start_second": 311.0442147054153,
+      "end_second": 313.4466158488169,
+      "duration_s": 2.4024011434016197,
+      "mean_prob": 0.9992753725448608,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 9844,
+      "end_frame": 10073,
+      "start_second": 328.461622995077,
+      "end_second": 336.1359599809433,
+      "duration_s": 7.674336985866286,
+      "mean_prob": 0.9997830078177063,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 10290,
+      "end_frame": 10541,
+      "start_second": 343.34316341114817,
+      "end_second": 351.7515674130538,
+      "duration_s": 8.40840400190567,
+      "mean_prob": 0.9998740988089899,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 11380,
+      "end_frame": 11503,
+      "start_second": 379.7128473876449,
+      "end_second": 383.85031602350324,
+      "duration_s": 4.137468635858345,
+      "mean_prob": 0.9995669176861537,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 11534,
+      "end_frame": 11663,
+      "start_second": 384.8513164999206,
+      "end_second": 389.1889852310624,
+      "duration_s": 4.337668731141814,
+      "mean_prob": 0.9997124400884587,
+      "detection_coverage": 1.0
+    },
+    {
+      "start_frame": 12194,
+      "end_frame": 12581,
+      "start_second": 406.8733269811021,
+      "end_second": 419.81959980943304,
+      "duration_s": 12.946272828330951,
+      "mean_prob": 0.9998176782114319,
+      "detection_coverage": 1.0
+    }
+  ]
+}
