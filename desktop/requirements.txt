@@ -1,10 +1,18 @@
-# Minimal requirements to run rally_detector + the GUI app
-# (torch / torch_geometric / mediapipe are no longer needed here)
+# Anya Tennis desktop app — runs pipeline.rally_reel locally.
 
 opencv-python>=4.8
 numpy>=1.24
 ultralytics>=8.0
+torch>=2.0          # device selection (mps/cuda/cpu) + every ultralytics call
 filterpy>=1.4
-scikit-learn>=1.3
+scikit-learn>=1.3   # exclusion-zone clustering + the walking classifier
+scipy>=1.10
+joblib>=1.3         # loads walking/outputs/walking_model.joblib
 PyQt6>=6.5
-pyinstaller>=6.0   # only needed to build the distributable app
+pyinstaller>=6.0    # only needed to build the distributable app
+
+# ffmpeg is NOT a pip dependency — rally_reel shells out to it for the final
+# cut, so install it from your platform's package manager and keep it on PATH:
+#   macOS    brew install ffmpeg
+#   Debian   sudo apt install ffmpeg
+#   Windows  winget install Gyan.FFmpeg

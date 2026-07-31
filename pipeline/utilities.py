@@ -29,7 +29,7 @@ class Config:
     ANALYSIS_HEIGHT = 540
     PLAYER_IMGSZ = 960
     BALL_IMGSZ = 1920         # exclusion-zone scans (stationary objects; keep high)
-    ACTIVE_BALL_IMGSZ = 960  # per-frame ball detection in ACTIVE state (input is 960px wide)
+    ACTIVE_BALL_IMGSZ = 1920  # per-frame ball detection in ACTIVE state (input is 960px wide)
     TOSS_BALL_IMGSZ = 320
     FAR_PLAYER_X_PAD_FT  = 3.0      # homography-tolerance padding beyond the singles sidelines
                                      # for far-player feet (mirrors NEAR_PLAYER_X_PAD_FT)

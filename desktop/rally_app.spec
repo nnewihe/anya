@@ -1,17 +1,22 @@
 # rally_app.spec
-# PyInstaller spec for the Anya match-cutter app (Rally Reel + Remove Dead Time).
+# PyInstaller spec for Anya Tennis (pipeline.rally_reel).
 #
-# Before building, copy model weights into the models/ directory:
-#   models/ball_best.pt   ← from weights/ball/weights/best.pt
-#   models/yolo26n.pt     ← your player detection model
-# The dead-time cutter uses these SAME two models — no extra weights needed.
+# Weights are pulled straight from the repo (pipeline/models, walking/outputs)
+# — nothing to copy by hand.  Destinations mirror the source tree because the
+# pipeline resolves its weights relative to its own __file__, which under
+# PyInstaller lands under sys._MEIPASS with the same layout.
 #
-# Build commands:
-#   macOS  : pyinstaller rally_app.spec
-#   Windows: pyinstaller rally_app.spec
+# Build:
+#   macOS  : pyinstaller rally_app.spec   -> dist/Anya Tennis.app
+#   Windows: pyinstaller rally_app.spec   -> dist/AnyaTennis/  (one folder)
+#   Linux  : pyinstaller rally_app.spec   -> dist/AnyaTennis/  (one folder)
 #
-# Output: dist/Anya Tennis.app   (macOS)
-#         dist/AnyaTennis/        (Windows one-folder)
+# ffmpeg is NOT bundled: rally_reel shells out to it for the final cut, so it
+# must be on PATH on the target machine (brew install ffmpeg / apt install
+# ffmpeg / winget install ffmpeg).
+#
+# Expect a large bundle (~2 GB): torch + ultralytics are required by the
+# telemetry and pose stages and cannot be excluded.
 
 import sys
 from pathlib import Path
@@ -27,9 +32,12 @@ a = Analysis(
     pathex=[str(Path('.').resolve()), _REPO_ROOT],
     binaries=[],
     datas=[
-        # Bundle model weights — destination is the 'models' subfolder inside the app
-        ('models/ball_best.pt',  'models'),
-        ('models/yolo26n.pt',    'models'),
+        # Weights, at the paths the pipeline resolves relative to its own
+        # __file__ (pipeline/models, walking/outputs).
+        ('../pipeline/models/ball_best.pt',      'pipeline/models'),
+        ('../pipeline/models/yolo26n.pt',        'pipeline/models'),
+        ('../pipeline/models/yolov8n-pose.pt',   'pipeline/models'),
+        ('../walking/outputs/walking_model.joblib', 'walking/outputs'),
         # Brand logo (shared with the mobile app) — resolved by app._logo_path()
         ('../mobile/assets/images/anya_logo_black.svg', 'assets'),
     ],
@@ -42,10 +50,30 @@ a = Analysis(
         # filterpy
         'filterpy',
         'filterpy.kalman',
-        # sklearn
+        # sklearn — cluster for exclusion zones, ensemble for the walking model
         'sklearn',
         'sklearn.cluster',
         'sklearn.cluster._dbscan',
+        'sklearn.ensemble',
+        'sklearn.ensemble._hist_gradient_boosting',
+        'sklearn.ensemble._hist_gradient_boosting.gradient_boosting',
+        # walking classifier: loaded via joblib, imported dynamically in
+        # rally_reel.reel._walk_intervals so the analyzer cannot see it
+        'joblib',
+        'scipy',
+        'walking',
+        'walking.predict',
+        'walking.evaluate',
+        'walking.features',
+        'walking.court',
+        'walking.select_near',
+        'walking.extract_pose',
+        # rally_reel stages
+        'pipeline.rally_reel',
+        'pipeline.extract_far_pose',
+        'pipeline.anya_far_serve',
+        'pipeline.anya_near_serve',
+        'pipeline.anya_telemetry',
         # PyQt6 plugins (Fusion style)
         'PyQt6.QtCore',
         'PyQt6.QtGui',
@@ -58,8 +86,10 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # Heavy packages not needed for rally_detector path
-        'torch',
+        # NOTE torch is NOT excluded: anya_telemetry imports it to pick the
+        # mps/cuda/cpu device, and ultralytics needs it for every model call.
+        # Excluding it (as this spec used to) builds cleanly and then fails
+        # at runtime on the first stage.
         'torch_geometric',
         'mediapipe',
         'tensorflow',

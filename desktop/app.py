@@ -1,9 +1,15 @@
 """
 app.py — Anya Tennis desktop GUI (black & yellow)
 
-Two modes, both driven by the proven pipeline/ code:
-  • Rally Reel      — rally_detector.collect_rally_segments (highlights)
-  • Remove Dead Time — deadtime_cutter.cut_dead_time (keeps [serve .. point end])
+A thin shell over ``pipeline.rally_reel``: pick a match video, click the four
+court corners once, get a reel of just the rallies.  Colours and logo follow
+DESIGN.md and are shared with the mobile app.
+
+The pipeline is *imported*, never copied — the repo root goes on sys.path and
+``pipeline.rally_reel`` is imported as a package, so editing the pipeline takes
+effect on the next run with no rebuild.  The stage list, its labels and its
+progress reporting all come from rally_reel itself; this file renders whatever
+it is told, so adding or reordering a stage there needs no change here.
 """
 
 import os
@@ -26,15 +32,11 @@ from PyQt6.QtSvgWidgets import QSvgWidget
 # breaks on those relative imports.)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline.rally_detector import collect_rally_segments
-from pipeline.deadtime_cutter import cut_dead_time
-from pipeline.utilities import create_highlights_ffmpeg, init_court, Config
+from pipeline.rally_reel import ReelConfig, build_reel
+from pipeline.rally_reel.reel import ANALYSIS_SIZE, N_STAGES
+from pipeline.utilities import init_court
 
 from background import SleepBlocker, notify
-
-# Mode identifiers.
-MODE_RALLY    = "rally"
-MODE_DEADTIME = "deadtime"
 
 
 def _logo_path():
@@ -71,60 +73,46 @@ WHITE        = "#FFFFFF"
 
 
 class _Worker(QThread):
-    progress = pyqtSignal(int, int)   # (current, total)
-    finished = pyqtSignal(str, int)   # (output_path, n_segments)
+    """Runs pipeline.rally_reel off the GUI thread.
+
+    `stage` carries rally_reel's own stage reporting straight through, so the
+    UI never has to know the stage list — add or reorder a stage in the
+    pipeline and this reflects it with no change here.
+    """
+    stage    = pyqtSignal(int, int, str, float)  # (i, n, label, frac; -1 = busy)
+    finished = pyqtSignal(str, int)              # (output_path, n_segments)
     error    = pyqtSignal(str)
 
-    def __init__(self, video_path, output_path, start_frame, mode=MODE_RALLY):
+    def __init__(self, video_path, output_path, cfg=None):
         super().__init__()
         self.video_path  = video_path
         self.output_path = output_path
-        self.start_frame = start_frame
-        self.mode        = mode
+        self.cfg         = cfg or ReelConfig()
         self._stopped    = False
 
     def run(self):
         try:
-            def _cb(current, total):
+            def _on_progress(i, n, label, frac):
                 if not self._stopped:
-                    self.progress.emit(current, total)
+                    # Qt signals are strongly typed; -1.0 stands in for the
+                    # "indeterminate" None a stage sends when it cannot
+                    # report sub-progress.
+                    self.stage.emit(i, n, label, -1.0 if frac is None else frac)
 
-            if self.mode == MODE_DEADTIME:
-                self._run_deadtime(_cb)
-            else:
-                self._run_rally(_cb)
+            # Court calibration already ran on the main thread (init_court
+            # opens a cv2 window, unsafe off it); build_reel's stage 0 call
+            # hits the disk cache and is windowless here.
+            segments, out = build_reel(
+                self.video_path,
+                cfg=self.cfg,
+                output_path=self.output_path,
+                on_progress=_on_progress,
+            )
+            if self._stopped:
+                return
+            self.finished.emit(out or self.output_path, len(segments))
         except Exception as ex:
             self.error.emit(str(ex))
-
-    def _run_rally(self, cb):
-        segments = collect_rally_segments(
-            self.video_path,
-            headless=True,
-            start_frame=self.start_frame,
-            progress_cb=cb,
-        )
-        if self._stopped:
-            return
-        create_highlights_ffmpeg(
-            self.video_path,
-            [(s, e) for s, e, _ in segments],
-            self.output_path,
-        )
-        self.finished.emit(self.output_path, len(segments))
-
-    def _run_deadtime(self, cb):
-        # Court calibration was already handled on the main thread (init_court
-        # opens a cv2 window, unsafe off the main thread); the call inside
-        # cut_dead_time hits the disk cache and is windowless here.  Stage 1
-        # perception is cached alongside the video, so re-runs are fast.
-        segments, out = cut_dead_time(
-            self.video_path,
-            output_path=self.output_path,
-            progress_cb=cb,
-        )
-        if self._stopped:
-            return
-        self.finished.emit(out or self.output_path, len(segments))
 
     def stop(self):
         self._stopped = True
@@ -138,7 +126,7 @@ class RallyDetectorApp(QMainWindow):
         self.resize(580, 720)
         self._worker      = None
         self._output_path = ""
-        self._mode        = MODE_RALLY
+        self._cfg         = ReelConfig()
         self._sleep_blocker = SleepBlocker()
         self._setup_ui()
 
@@ -161,9 +149,6 @@ class RallyDetectorApp(QMainWindow):
 
         lay.addWidget(self._label("OUTPUT VIDEO  (auto-generated if blank)"))
         lay.addLayout(self._file_row("output"))
-
-        lay.addWidget(self._label("MODE"))
-        lay.addLayout(self._mode_row())
 
         lay.addStretch()
 
@@ -247,7 +232,7 @@ class RallyDetectorApp(QMainWindow):
             btn.clicked.connect(self._browse_video)
             edit.textChanged.connect(self._refresh_detect_btn)
         else:
-            edit.setPlaceholderText("match_rallies.mp4")
+            edit.setPlaceholderText("match_rally_reel.mp4")
             self._output_edit = edit
             btn.clicked.connect(self._browse_output)
 
@@ -263,34 +248,8 @@ class RallyDetectorApp(QMainWindow):
         btn.clicked.connect(self._on_detect)
         return btn
 
-    def _mode_row(self):
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self._mode_btns = {
-            MODE_RALLY:    QPushButton("Rally Reel"),
-            MODE_DEADTIME: QPushButton("Remove Dead Time"),
-        }
-        for mode, btn in self._mode_btns.items():
-            btn.setCheckable(True)
-            btn.setFixedHeight(38)
-            btn.clicked.connect(lambda _=False, m=mode: self._set_mode(m))
-            row.addWidget(btn)
-        self._refresh_mode_btns()
-        return row
-
-    def _set_mode(self, mode):
-        self._mode = mode
-        self._refresh_mode_btns()
-        self._detect_btn.setText(self._action_text())
-
-    def _refresh_mode_btns(self):
-        for mode, btn in self._mode_btns.items():
-            active = mode == self._mode
-            btn.setChecked(active)
-            btn.setStyleSheet(self._mode_btn_css(active))
-
     def _action_text(self):
-        return "DETECT RALLIES" if self._mode == MODE_RALLY else "REMOVE DEAD TIME"
+        return "BUILD RALLY REEL"
 
     def _make_result_panel(self):
         panel = QFrame()
@@ -349,24 +308,6 @@ class RallyDetectorApp(QMainWindow):
             QPushButton:hover {{ border-color: {YELLOW}; color: {YELLOW}; }}
         """
 
-    def _mode_btn_css(self, active):
-        if active:
-            return f"""
-                QPushButton {{
-                    background: rgba(232,255,61,0.14); color: {YELLOW};
-                    border: 1px solid {YELLOW}; border-radius: 6px;
-                    font-size: 13px; font-weight: 700;
-                }}
-            """
-        return f"""
-            QPushButton {{
-                background: transparent; color: rgba(255,255,255,0.55);
-                border: 1px solid rgba(255,255,255,0.18); border-radius: 6px;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{ border-color: rgba(232,255,61,0.5); color: {WHITE}; }}
-        """
-
     # ── Slots ──────────────────────────────────────────────────────────────
 
     def _browse_video(self):
@@ -380,7 +321,7 @@ class RallyDetectorApp(QMainWindow):
     def _browse_output(self):
         video = self._video_edit.text().strip()
         default_dir = str(Path(video).parent) if video else ""
-        default_name = "rallies.mp4" if self._mode == MODE_RALLY else "no_deadtime.mp4"
+        default_name = "rally_reel.mp4"
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Output Video As",
             os.path.join(default_dir, default_name),
@@ -400,24 +341,21 @@ class RallyDetectorApp(QMainWindow):
             self._set_status("Please select a valid video file.", error=True)
             return
 
-        suffix = "_rallies" if self._mode == MODE_RALLY else "_no_deadtime"
         output = self._output_edit.text().strip()
         if not output:
-            output = str(Path(video).parent / f"{Path(video).stem}{suffix}.mp4")
+            output = str(Path(video).parent / f"{Path(video).stem}_rally_reel.mp4")
         self._output_path = output
 
-        # Dead-time mode needs a one-time court calibration.  init_court opens
-        # a cv2 window, which must run on the MAIN thread — do it here (it
-        # caches to disk, so the worker's internal call is windowless).  A
-        # cached calibration returns instantly with no window.
-        if self._mode == MODE_DEADTIME:
-            try:
-                self._set_status("Court calibration…")
-                init_court(video, analysis_size=(Config.ANALYSIS_WIDTH,
-                                                 Config.ANALYSIS_HEIGHT))
-            except Exception as ex:
-                self._set_status(f"Calibration cancelled: {ex}", error=True)
-                return
+        # One-time court calibration.  init_court opens a cv2 window, which
+        # must run on the MAIN thread — do it here (it caches to disk, so
+        # build_reel's stage-0 call is windowless).  A cached calibration
+        # returns instantly with no window.
+        try:
+            self._set_status("Court calibration…")
+            init_court(video, analysis_size=ANALYSIS_SIZE)
+        except Exception as ex:
+            self._set_status(f"Calibration cancelled: {ex}", error=True)
+            return
 
         self._result_panel.setVisible(False)
         self._progress.setValue(0)
@@ -425,42 +363,41 @@ class RallyDetectorApp(QMainWindow):
         self._detect_btn.setEnabled(False)
         self._detect_btn.setStyleSheet(self._detect_css(enabled=False))
         self._detect_btn.setText("WORKING…")
-        for btn in self._mode_btns.values():
-            btn.setEnabled(False)
 
         # Keep the machine awake for the duration of the (possibly long) job so
         # a backgrounded window keeps processing instead of sleeping mid-run.
         self._sleep_blocker.start()
 
-        self._worker = _Worker(video, output, start_frame=0, mode=self._mode)
-        self._worker.progress.connect(self._on_progress)
+        self._worker = _Worker(video, output, cfg=self._cfg)
+        self._worker.stage.connect(self._on_stage)
         self._worker.finished.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.error.connect(self._worker.deleteLater)
         self._worker.start()
 
-    def _on_progress(self, current, total):
-        if total > 0:
-            self._progress.setValue(int(100 * current / total))
-            self._set_status(f"Analyzing frame {current:,} / {total:,}")
+    def _on_stage(self, i, n, label, frac):
+        # Map (stage, fraction-within-stage) onto one continuous bar, so a
+        # long stage still shows movement instead of sitting at a step.
+        if frac < 0:                      # stage cannot report sub-progress
+            pct = int(100 * i / max(1, n))
+            self._progress.setValue(pct)
+            self._set_status(f"Stage {i}/{n} — {label}…")
+        else:
+            pct = int(100 * (i - 1 + frac) / max(1, n))
+            self._progress.setValue(max(0, pct))
+            self._set_status(f"Stage {i}/{n} — {label}  {frac:.0%}")
 
     def _on_finished(self, output_path, n_segments):
         self._worker = None
         self._sleep_blocker.stop()
         self._progress.setValue(100)
-        if self._mode == MODE_RALLY:
-            noun = "rally" if n_segments == 1 else "rallies"
-            badge = f"{n_segments} RALL{'Y' if n_segments == 1 else 'IES'}"
-        else:
-            noun = "point" if n_segments == 1 else "points"
-            badge = f"{n_segments} POINT{'' if n_segments == 1 else 'S'}"
+        noun = "rally" if n_segments == 1 else "rallies"
+        badge = f"{n_segments} RALL{'Y' if n_segments == 1 else 'IES'}"
         self._set_status(f"Done — {n_segments} {noun}")
-        notify("Anya — analysis complete",
+        notify("Anya Tennis — reel complete",
                f"{n_segments} {noun} · {os.path.basename(output_path)}")
         self._detect_btn.setText(self._action_text())
-        for btn in self._mode_btns.values():
-            btn.setEnabled(True)
         self._refresh_detect_btn()
 
         self._result_path_lbl.setText(os.path.basename(output_path))
@@ -473,8 +410,6 @@ class RallyDetectorApp(QMainWindow):
         self._progress.setValue(0)
         self._set_status(f"Error: {msg}", error=True)
         self._detect_btn.setText(self._action_text())
-        for btn in self._mode_btns.values():
-            btn.setEnabled(True)
         self._refresh_detect_btn()
 
     def _set_status(self, text, error=False):
