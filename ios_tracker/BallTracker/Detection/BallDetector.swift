@@ -174,39 +174,33 @@ final class BallDetector {
         guard n > 0 else { return [] }
         // The backing buffer can be padded (e.g. channel stride 10720 for
         // n=10710), so index via the declared strides, never densely.
-        let chStride = arr.strides[1].intValue
-        let anchorStride = arr.strides[2].intValue
+        let declaredChStride = arr.strides[1].intValue
+        let declaredAnchorStride = arr.strides[2].intValue
 
         var candidates: [(box: CGRect, conf: Float)] = []
         var maxConf: Float = 0
         arr.withUnsafeBufferPointer(ofType: Float.self) { p in
-            // Index via the reported strides — but only while they actually fit
-            // the buffer we were handed. On device the buffer exposes the padded
-            // storage (buffer.count 53600 vs logical 53550 for n=10710), so the
-            // padded strides read in bounds. The Simulator's CPU/MPS backend can
-            // hand back a *torn* prediction: the array still reports the padded
-            // strides while the backing buffer is only the dense size, so the
-            // stride math runs past the allocation — that over-read is the
-            // EXC_BAD_ACCESS. When the reported strides overrun, fall back to
-            // dense channel-major strides ([5n, n, 1]), which fit [1,5,n].
-            var chS = chStride
-            var anS = anchorStride
-            if anS < 1 || chS < 1 || (n - 1) * anS + 4 * chS >= p.count {
-                chS = n
-                anS = 1
-            }
-            // If even the dense layout doesn't fit, the output is malformed;
-            // decode nothing rather than read past the buffer.
-            guard (n - 1) * anS + 4 * chS < p.count else { return }
+            // On device (and macOS, .all/.cpuOnly) the backing buffer is
+            // allocated at the *padded* size, so the declared strides read in
+            // bounds. The iOS Simulator's CPU/MPS backend reports the same
+            // padded strides but hands back a buffer only the *dense* size —
+            // stride math then runs past the allocation and crashes with
+            // EXC_BAD_ACCESS on decode. Only trust the declared strides while
+            // the highest index they produce stays in bounds; otherwise fall
+            // back to dense channel-major strides ([5n, n, 1]).
+            let maxDeclaredIdx = (n - 1) * declaredAnchorStride + 4 * declaredChStride
+            let stridesInBounds = maxDeclaredIdx < p.count
+            let chStride = stridesInBounds ? declaredChStride : n
+            let anchorStride = stridesInBounds ? declaredAnchorStride : 1
             for i in 0..<n {
-                let base = i * anS
-                let c = p[base + 4 * chS]
+                let base = i * anchorStride
+                let c = p[base + 4 * chStride]
                 if c > maxConf { maxConf = c }
                 if c < conf { continue }
                 let cx = CGFloat(p[base])
-                let cy = CGFloat(p[base + chS])
-                let w = CGFloat(p[base + 2 * chS])
-                let h = CGFloat(p[base + 3 * chS])
+                let cy = CGFloat(p[base + chStride])
+                let w = CGFloat(p[base + 2 * chStride])
+                let h = CGFloat(p[base + 3 * chStride])
                 if Float(w) > maxBoxPx || Float(h) > maxBoxPx { continue }
                 candidates.append((CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h), c))
             }
