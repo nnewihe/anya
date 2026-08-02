@@ -22,8 +22,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QProgressBar, QLineEdit, QFrame,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QFont
-from PyQt6.QtSvgWidgets import QSvgWidget
+from PyQt6.QtGui import QFont, QPixmap
 
 # Import the pipeline as a PACKAGE: its modules use intra-package relative
 # imports (`from .ball_tracker import …`), so the repo root — the parent of
@@ -40,14 +39,13 @@ from background import SleepBlocker, notify
 
 
 def _logo_path():
-    """Locate the white-on-dark Anya Tennis logo (shared with the mobile app).
+    """Locate the Anya Tennis logo mark (shared with the mobile app).
 
-    Named for its target background: ``anya_logo_black.svg`` is the white /
-    reversed variant, for the dark UI here. Resolves both the packaged
-    (PyInstaller ``_MEIPASS/assets``) and dev-run (``../mobile/assets/images``)
-    locations; returns "" if neither exists so the header degrades gracefully.
+    Resolves both the packaged (PyInstaller ``_MEIPASS/assets``) and dev-run
+    (``../mobile/assets/images``) locations; returns "" if neither exists so
+    the header degrades gracefully.
     """
-    name = "anya_logo_black.svg"
+    name = "anya_logo.png"
     here = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     candidates = [
         here / "assets" / name,
@@ -179,20 +177,27 @@ class RallyDetectorApp(QMainWindow):
         row = QHBoxLayout()
         logo_path = _logo_path()
         if logo_path:
-            # The SVG already contains the "ANYA" wordmark + tagline, so it
-            # stands alone as the header lockup. viewBox is 800×580 (~1.38:1).
-            logo = QSvgWidget(logo_path)
-            logo.setFixedSize(QSize(179, 130))
+            # anya_logo.png is the ball-mark only (no wordmark/tagline baked
+            # in), so it's a QPixmap on a QLabel, not the QSvgWidget an .svg
+            # asset would need.
+            pixmap = QPixmap(logo_path).scaled(
+                72, 72, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+            logo = QLabel()
+            logo.setPixmap(pixmap)
+            logo.setFixedSize(QSize(72, 72))
             row.addWidget(logo)
         else:
             # Fallback if the asset can't be found (keeps the app usable).
             ball = QLabel("●")
             ball.setStyleSheet(f"color: {YELLOW}; font-size: 34px; padding-right: 4px;")
             ball.setFixedWidth(46)
-            title = QLabel("ANYA TENNIS")
-            title.setStyleSheet(f"color: {WHITE}; font-size: 20px; font-weight: 700; letter-spacing: 0.16em;")
             row.addWidget(ball)
-            row.addWidget(title)
+
+        tagline = QLabel("Watch your matches in minutes not hours.")
+        tagline.setStyleSheet(f"color: {TEXT_DIM}; font-size: 18px;")
+        row.addWidget(tagline)
+
         row.addStretch()
         return row
 
