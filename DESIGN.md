@@ -337,3 +337,109 @@ desktop (`desktop/background.py`).
 
 **Not in scope:** the rally-detection / dead-time engine and any other business
 logic — unchanged.
+
+---
+
+## 8. Desktop inference performance
+
+Notes on what actually makes the desktop pipeline fast, measured rather than
+assumed. Recorded here because two plausible-sounding optimisations do **not**
+work on this path, and both are the kind of idea that comes back around.
+
+### 8.1 Batching is the win (adopted)
+
+The per-frame model calls each pay a fixed cost — Python-side preprocess, the
+MPS dispatch, postprocess — that batching amortises. Measured on an M4 over
+Data/21 (12,594 frames, 7:00 of 4K):
+
+| Stage | Before | After | |
+|---|---|---|---|
+| telemetry (3 calls/frame) | 954.7s | 411.9s | 2.32x |
+| far pose | 189.8s | 202.1s | unchanged (see 8.4) |
+| walking pose | 428.6s | 179.8s | 2.38x |
+| **total perception** | **1573.1s** | **793.8s** | **1.98x** |
+
+That is 3.75x realtime down to 1.89x. Two things carried the gain, and neither
+is the one you would guess:
+
+- **The ROI player call**, 10.09 -> 3.25 ms/frame (3.1x). A 556x540 crop at
+  imgsz=384 was almost entirely fixed cost. The two full-frame 960px calls are
+  genuinely compute-bound and only gave back ~15%.
+- **Threaded decode.** 4K read+resize is ~6.4-6.9 ms/frame of pure CPU against
+  ~12.6 ms of GPU, and both passes were running them strictly one after the
+  other. Overlapping is free and lossless: telemetry's wall time fell further
+  than its CPU time (757 -> 637s user against 954 -> 412s real), and adding
+  the same reader thread to the walking pass alone took it 248.3 -> 179.8s
+  (1.38x) with bit-identical output.
+
+Beware when timing any of this: `time.time()` counts machine sleep, and an
+unattended run that sleeps mid-pass reports absurd figures (one such run
+reported 11,113s and 21,746s for passes that actually take ~250s) *and* can
+appear to change detection counts. Run long benchmarks under `caffeinate -i`
+and include a same-config control arm — this pipeline is deterministic, so
+two identical runs must produce bit-identical `.npz` output.
+
+Batching does not change results: ultralytics only switches letterbox mode for
+mixed-shape batches (`pre_transform`: `auto=same_shapes and ...`), and every
+batch built here is shape-uniform. Verified on Data/21 — far-serve and
+near-serve event times identical, final segments byte-identical.
+
+### 8.2 CoreML export is SLOWER here (rejected)
+
+The intuition — a compiled graph collapses the Python-side preprocess/NMS/
+postprocess, as `ios_tracker` does at ~5 ms/frame on the ANE — does not
+survive measurement on the desktop Python path. ms/frame, M4:
+
+| call | torch B=1 | torch B=16 | CoreML |
+|---|---|---|---|
+| ball (960px) | 12.9 | **11.0** | 18.8 |
+| player full (960px) | 11.9 | **9.7** | 20.3 |
+| player ROI (crop) | 9.7 | **3.3** | 20.9 |
+
+This is not just wrapper overhead. A raw `coremltools.predict` forward, with
+ultralytics stripped out entirely, is still **8.3 ms** against 5.0 ms for
+batched torch-MPS — the compiled graph is not faster before any bridge cost.
+`compute_units` made no difference (ALL 8.35, CPU_AND_NE 8.32, CPU_AND_GPU
+8.83), so the ANE is not being meaningfully engaged from Python.
+
+Why `ios_tracker`'s ~5 ms does not transfer: that is native Swift handing an
+MLMultiArray straight to the ANE. Through Python the input marshalling costs
+more than the graph saves.
+
+Two structural problems on top of the timings: CoreML exports are
+**shape-fixed** (the ROI pass at imgsz=384 needs its own separate export from
+the 960px passes) and **batch-fixed** — mutually exclusive with the change in
+8.1 that did work.
+
+Accuracy, for the record, was fine (99.9% of torch detections matched within
+5px, median centre shift 0.13px). Speed is the reason to say no.
+
+### 8.3 Decoupled player striding (rejected)
+
+Running the two player calls every 2nd frame while keeping the ball call on
+every frame — motivated by the player consumers all integrating over 0.5-3s
+while every ball consumer is detection-starved. Measured: total 862 -> 787s,
+**only 1.10x**, because stage 1's wall clock is set by the ball call plus
+decode, which the reader thread already overlapped.
+
+For that 10% it changed the output: far serves 7 -> 6, near serves 8 -> 9
+(a spurious detection at t=340.17s, p=0.982 — not a borderline flip),
+segments 6 -> 8, footage kept 125.0s -> 160.7s (+29%). `all_balls` was
+identical on 12,594/12,594 frames, isolating the cause entirely to the player
+fields.
+
+The mechanism is worth remembering: **zero-order hold is the wrong
+interpolator for a differentiated signal.** `anya_near_serve` takes a second
+derivative of the box aspect ratio, and a staircase has more curvature than
+the smooth original — so holding *inflated* jerk rather than suppressing it.
+A working stride-2 needs the consumers changed (rate-aware
+`jerk_min_samples` / `ratio_smooth_n`, linear interpolation instead of hold),
+not just the extractor.
+
+### 8.4 Why the far-pose pass is not batched
+
+`extract_far_pose` crops `fpr` + padding, giving **3,323 distinct crop shapes
+across 7,302 frames** (mean consecutive equal-shape run: 1.04). A mixed-shape
+batch flips ultralytics' letterbox mode, which would shift the very keypoints
+the hand-raise gate reads. Making it batchable requires a fixed-size crop
+window — a change to detection behaviour, needing its own validation.
