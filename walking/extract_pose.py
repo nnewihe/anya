@@ -35,6 +35,15 @@ N_KP = 17
 MAX_PERSONS = 8
 POSE_CONF = 0.20
 
+BATCH = 16
+# One model call per frame pays a fixed per-call cost (Python preprocess, the
+# MPS dispatch, postprocess) that batching amortises: measured on an M4 over
+# Data/21, 14.69 ms/frame at B=1 -> 12.31 at B=8 -> 12.02 at B=16, flat after.
+# Every frame here is the same ANALYSIS_SIZE, and ultralytics only changes its
+# letterbox mode for mixed-shape batches (`pre_transform`: `auto=same_shapes
+# and ...`), so results are unchanged — verified identical on Data/21.
+# Set to 1 for the old one-frame-at-a-time path.
+
 
 def dets_path(video_path):
     d = os.path.dirname(video_path)
@@ -42,8 +51,24 @@ def dets_path(video_path):
     return os.path.join(d, f"{stem}_walk_dets.npz")
 
 
+def _read_frames(cap, total, batch):
+    """Yields lists of (frame_index, analysis_frame), at most `batch` long."""
+    buf = []
+    for f in range(total):
+        ok, frame = cap.read()
+        if not ok:
+            break
+        buf.append((f, cv2.resize(frame, ANALYSIS_SIZE,
+                                  interpolation=cv2.INTER_AREA)))
+        if len(buf) >= batch:
+            yield buf
+            buf = []
+    if buf:
+        yield buf
+
+
 def extract(video_path, model_path="yolov8n-pose.pt", device="mps",
-            limit=None, rescan=False):
+            limit=None, rescan=False, batch=BATCH):
     out_p = dets_path(video_path)
     if os.path.isfile(out_p) and not rescan:
         print(f"[walk-dets] cached: {out_p}")
@@ -63,28 +88,28 @@ def extract(video_path, model_path="yolov8n-pose.pt", device="mps",
     cf = np.full((total, MAX_PERSONS), np.nan, dtype=np.float32)
 
     t0, empty = time.time(), 0
-    for f in range(total):
-        ok, frame = cap.read()
-        if not ok:
-            break
-        frame = cv2.resize(frame, ANALYSIS_SIZE, interpolation=cv2.INTER_AREA)
-        res = model.predict(frame, imgsz=960, conf=POSE_CONF, device=device,
-                            classes=[0], verbose=False)[0]
-        if res.keypoints is None or len(res.boxes) == 0:
-            empty += 1
-            continue
-        boxes = res.boxes.xyxy.cpu().numpy()
-        confs = res.boxes.conf.cpu().numpy()
-        kpts = res.keypoints.data.cpu().numpy()
-        order = np.argsort(confs)[::-1][:MAX_PERSONS]
-        k = len(order)
-        kp[f, :k] = kpts[order]
-        bx[f, :k] = boxes[order]
-        cf[f, :k] = confs[order]
-        if f and f % 1000 == 0:
-            el = time.time() - t0
-            print(f"  {f}/{total}  {f / el:.1f} fps  empty {empty / (f + 1):.1%}",
-                  flush=True)
+    batch = max(1, int(batch))
+    for chunk in _read_frames(cap, total, batch):
+        frames = [c[1] for c in chunk]
+        results = model.predict(frames if batch > 1 else frames[0], imgsz=960,
+                                conf=POSE_CONF, device=device, classes=[0],
+                                verbose=False)
+        for (f, _), res in zip(chunk, results):
+            if res.keypoints is None or len(res.boxes) == 0:
+                empty += 1
+                continue
+            boxes = res.boxes.xyxy.cpu().numpy()
+            confs = res.boxes.conf.cpu().numpy()
+            kpts = res.keypoints.data.cpu().numpy()
+            order = np.argsort(confs)[::-1][:MAX_PERSONS]
+            k = len(order)
+            kp[f, :k] = kpts[order]
+            bx[f, :k] = boxes[order]
+            cf[f, :k] = confs[order]
+            if f and f % 1000 == 0:
+                el = time.time() - t0
+                print(f"  {f}/{total}  {f / el:.1f} fps  empty {empty / (f + 1):.1%}",
+                      flush=True)
     cap.release()
 
     np.savez_compressed(out_p, kp=kp, box=bx, conf=cf, fps=np.float64(fps))
@@ -165,11 +190,14 @@ def main():
     ap.add_argument("--rescue", action="store_true",
                     help="high-resolution second pass over empty frames")
     ap.add_argument("--imgsz", type=int, default=1920)
+    ap.add_argument("--batch", type=int, default=BATCH,
+                    help=f"frames per model call (default {BATCH}; 1 = the old "
+                         "one-frame-at-a-time path)")
     a = ap.parse_args()
     if a.rescue:
         rescue(a.video, a.model, a.device, a.imgsz)
     else:
-        extract(a.video, a.model, a.device, a.limit, a.rescan)
+        extract(a.video, a.model, a.device, a.limit, a.rescan, batch=a.batch)
 
 
 if __name__ == "__main__":
