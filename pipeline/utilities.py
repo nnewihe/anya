@@ -612,6 +612,48 @@ def resize_for_analysis(frame):
                       interpolation=cv2.INTER_AREA)
 
 
+_VIDEO_ENCODER_CACHE = None
+
+
+def video_encode_args():
+    """FFmpeg video-encoder flags: Apple's hardware H.264 when available.
+
+    Cutting the reel re-encodes every kept second at source resolution, which
+    on 4K footage is the second-largest cost in the whole pipeline — measured
+    on an M4 over a 20s 4K segment, software x264 took 30.3s wall against
+    10.1s for VideoToolbox, and since ~3.4s of each is 4K decode the encode
+    itself is roughly 4x faster.  That is ~19% of total pipeline time on a
+    20-minute 4K match, spent on the CPU while the hardware encoder sits idle.
+
+    Bitrate rather than CRF because VideoToolbox has no CRF mode.  40 Mbps is
+    chosen against what x264 -crf 18 actually produced on this footage (33.1
+    Mbps): hardware H.264 needs more bits for the same picture, so matching
+    x264's bitrate would visibly lose to it, and the reel is for reviewing
+    your own match.  It trades ~20% file size for ~4x encode speed.
+
+    Falls back to the original x264 settings wherever VideoToolbox is missing
+    (non-Apple platforms, or a ffmpeg built without it), so behaviour is
+    unchanged off macOS.  Probed once and cached.
+    """
+    global _VIDEO_ENCODER_CACHE
+    if _VIDEO_ENCODER_CACHE is None:
+        have_vt = False
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                                 capture_output=True, timeout=20)
+            have_vt = b"h264_videotoolbox" in out.stdout
+        except Exception:
+            have_vt = False
+        if have_vt:
+            _VIDEO_ENCODER_CACHE = ["-c:v", "h264_videotoolbox", "-b:v", "40M"]
+            print("[HIGHLIGHT] Using hardware encoder: h264_videotoolbox @ 40 Mbps")
+        else:
+            _VIDEO_ENCODER_CACHE = ["-c:v", "libx264", "-crf", "18",
+                                    "-preset", "fast"]
+            print("[HIGHLIGHT] VideoToolbox unavailable — falling back to libx264")
+    return list(_VIDEO_ENCODER_CACHE)
+
+
 def create_highlights_ffmpeg_multisource(
     segments: List[Tuple[str, float, float]],
     output_path: str,
@@ -645,7 +687,7 @@ def create_highlights_ffmpeg_multisource(
                 "-ss", f"{start:.3f}",
                 "-to", f"{end:.3f}",
                 "-i", src,
-                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                *video_encode_args(),
                 "-c:a", "aac", "-b:a", "192k",
                 "-vsync", "cfr",
                 seg_path,
@@ -738,7 +780,7 @@ def create_highlights_ffmpeg(
                 "-ss", f"{start:.3f}",
                 "-to", f"{end:.3f}",
                 "-i", video_path,
-                "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                *video_encode_args(),
                 "-c:a", "aac", "-b:a", "192k",
                 "-vsync", "cfr",
                 seg_path,
