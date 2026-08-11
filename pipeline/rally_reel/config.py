@@ -133,6 +133,26 @@ class ReelConfig:
     #
     # --no-fast-end reverts.
 
+    walk_model_15hz: bool = True
+    # Under fast_end, score walking with the model retrained at the fast path's
+    # 15 Hz pose rate (walking/outputs/walking_model_15hz.joblib) rather than
+    # the shipped 30 Hz one.  Measured on Data/21 walk onsets against the
+    # labelled rally ends:
+    #
+    #   baseline 30 Hz pose, shipped model     8/12 recall, 20 onsets, -0.32s
+    #   fast 15 Hz pose, shipped model         7/12 recall, 18 onsets, -1.13s
+    #   fast 15 Hz pose, 15 Hz model           8/12 recall, 18 onsets, -0.38s
+    #
+    # Note the retrained model looks WORSE on the metrics the classifier was
+    # tuned on — cross-clip frame F1 0.813/0.775 against 0.844/0.819, and 0.890
+    # agreement with the baseline mask against the shipped model's 0.938.  It
+    # is more permissive and its intervals run long.  Stage 6 reads only the
+    # ONSET of a walk, so interval extent costs nothing and onset recall is
+    # what matters.  Do not "fix" this by picking the higher frame F1.
+    #
+    # False on a 30 Hz pose pass (pose_fps 30 costs 20.28 ms/frame against
+    # 12.84), where the shipped model is the matched one.
+
     ball_quiet_min_looks: int = 6
     # How many frames the quiet window must actually have LOOKED at the ball
     # before its silence counts.  Per-frame ball recall varies from 7% to 92%

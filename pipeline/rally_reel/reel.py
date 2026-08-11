@@ -83,9 +83,27 @@ def _stem_path(video_path: str, suffix: str) -> str:
     return os.path.join(d, f"{stem}{suffix}")
 
 
+def _walk_model_path(cfg: ReelConfig) -> Optional[str]:
+    """The walking model matching the pose rate this run will feed it.
+
+    The shipped model was trained on 30 Hz window statistics; the fast path
+    extracts at 15 Hz, and applying the 30 Hz model to it costs a real point
+    end (Data/21 walk onsets 8/12 -> 7/12, median error -0.32s -> -1.13s).
+    Retrained at 15 Hz it is back to 8/12 with FEWER false onsets, 18 against
+    20 — even though its frame F1 against the baseline mask is LOWER (0.890 vs
+    0.938).  Frame F1 is the proxy here; onsets are what stage 6 consumes.
+    """
+    if not cfg.fast_end or not cfg.walk_model_15hz:
+        return None
+    repo_root = Path(__file__).resolve().parents[2]
+    p = repo_root / "walking" / "outputs" / "walking_model_15hz.joblib"
+    return str(p) if p.is_file() else None
+
+
 def _walk_intervals(video_path: str, device: str = "mps",
                     dets_npz: Optional[str] = None,
-                    pose_npz: Optional[str] = None) -> List[Dict]:
+                    pose_npz: Optional[str] = None,
+                    model_path: Optional[str] = None) -> List[Dict]:
     """Walking intervals, as the dead-time proxy for point ends.
 
     `dets_npz`/`pose_npz` point the classifier at a pose pass someone else
@@ -102,14 +120,15 @@ def _walk_intervals(video_path: str, device: str = "mps",
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
     import numpy as np
-    from walking.predict import predict_video
+    from walking.predict import predict_video, MODEL_PATH
     from walking.evaluate import to_intervals
 
     if dets_npz is not None and pose_npz is not None and not os.path.isfile(pose_npz):
         from walking.select_near import select
         select(video_path, dets_npz=dets_npz, out=pose_npz)
 
-    res = predict_video(video_path, device=device, pose_npz=pose_npz)
+    res = predict_video(video_path, device=device, pose_npz=pose_npz,
+                        model_path=model_path or MODEL_PATH)
     fps, prob, mask = res["fps"], res["prob"], res["is_walking"]
     valid = res["sig"]["valid"]
     return [{
@@ -359,7 +378,8 @@ def build_reel(video_path: str,
                                                cur / max(1, tot)))
         walks = _walk_intervals(video_path, device=device,
                                 dets_npz=end_dets_path_for(video_path),
-                                pose_npz=end_pose_path_for(video_path))
+                                pose_npz=end_pose_path_for(video_path),
+                                model_path=_walk_model_path(cfg))
     else:
         print("[REEL] Stage 5/7  walking (dead-time proxy)")
         _emit(on_progress, 5)   # predict_video returns only when done

@@ -1,0 +1,896 @@
+{
+  "clips": [
+    "21",
+    "22"
+  ],
+  "tuning_objective": "F2",
+  "cv": {
+    "within_clip": "GroupKFold 5 folds over 30s blocks",
+    "cross_clip": "leave-one-clip-out"
+  },
+  "within_clip": {
+    "21": {
+      "frame": {
+        "tp": 1512,
+        "fp": 280,
+        "fn": 441,
+        "tn": 4064,
+        "precision": 0.84375,
+        "recall": 0.7741935483870968,
+        "f1": 0.8074766355140187,
+        "accuracy": 0.8855010322375735
+      },
+      "second": {
+        "tp": 100,
+        "fp": 18,
+        "fn": 30,
+        "tn": 273,
+        "precision": 0.847457627118644,
+        "recall": 0.7692307692307693,
+        "f1": 0.8064516129032259,
+        "accuracy": 0.8859857482185273
+      },
+      "event": {
+        "n_true": 21,
+        "n_pred": 20,
+        "matched": 15,
+        "recall": 0.7142857142857143,
+        "precision": 0.75,
+        "false_events_per_min": 0.7139117605064015,
+        "mean_iou": 0.6818326989541303,
+        "onset_mae_s": 1.5526629611984542,
+        "offset_mae_s": 0.9654093483669471
+      },
+      "event_detectable_subset": {
+        "min_detection_coverage": 0.5,
+        "excluded_labelled_events": [
+          {
+            "start_second": 82.54917262188343,
+            "end_second": 92.5258107035096,
+            "coverage": 0.22
+          },
+          {
+            "start_second": 144.0773352390027,
+            "end_second": 149.7496712720343,
+            "coverage": 0.0
+          }
+        ],
+        "n_true": 19,
+        "n_pred": 18,
+        "matched": 15,
+        "recall": 0.7894736842105263,
+        "precision": 0.8333333333333334,
+        "false_events_per_min": 0.4450258065575459,
+        "mean_iou": 0.6884156398227855,
+        "onset_mae_s": 1.4770318140913663,
+        "offset_mae_s": 0.9654093483669471
+      },
+      "detection_coverage": 0.7568683500079403,
+      "positive_rate": 0.31014768937589327,
+      "post_processing_choice": "hysteresis",
+      "post_variants": {
+        "threshold": {
+          "tp": 1501,
+          "fp": 541,
+          "fn": 452,
+          "tn": 3803,
+          "precision": 0.7350636630754163,
+          "recall": 0.7685611879160267,
+          "f1": 0.751439299123905,
+          "accuracy": 0.8423058599333015
+        },
+        "hysteresis": {
+          "tp": 1512,
+          "fp": 280,
+          "fn": 441,
+          "tn": 4064,
+          "precision": 0.84375,
+          "recall": 0.7741935483870968,
+          "f1": 0.8074766355140187,
+          "accuracy": 0.8855010322375735
+        },
+        "viterbi": {
+          "tp": 1393,
+          "fp": 494,
+          "fn": 560,
+          "tn": 3850,
+          "precision": 0.7382087970323264,
+          "recall": 0.7132616487455197,
+          "f1": 0.7255208333333333,
+          "accuracy": 0.8326187073209464
+        }
+      },
+      "frame_boundary_guarded": {
+        "tp": 1325,
+        "fp": 148,
+        "fn": 313,
+        "tn": 3888,
+        "precision": 0.8995247793618466,
+        "recall": 0.8089133089133089,
+        "f1": 0.8518161362905818,
+        "accuracy": 0.9187522030313712
+      },
+      "frame_raw_0.5": {
+        "tp": 1288,
+        "fp": 148,
+        "fn": 665,
+        "tn": 4196,
+        "precision": 0.8969359331476323,
+        "recall": 0.6594982078853047,
+        "f1": 0.7601062260253761,
+        "accuracy": 0.8708909004287756
+      },
+      "speed_threshold_baseline": {
+        "tp": 1462,
+        "fp": 889,
+        "fn": 491,
+        "tn": 3455,
+        "precision": 0.6218630370055296,
+        "recall": 0.7485919098822325,
+        "f1": 0.679368029739777,
+        "accuracy": 0.7808480228680323
+      },
+      "per_fold_f1": [
+        0.6394557823129251,
+        0.5525291828793774,
+        0.9357045143638851,
+        0.9297752808988764,
+        0.8483333333333332
+      ],
+      "per_fold_f1_mean": 0.7811596187576795,
+      "per_fold_f1_std": 0.15673857291334184
+    },
+    "22": {
+      "frame": {
+        "tp": 1396,
+        "fp": 410,
+        "fn": 252,
+        "tn": 4241,
+        "precision": 0.7729789590254706,
+        "recall": 0.8470873786407767,
+        "f1": 0.80833815865663,
+        "accuracy": 0.8949039530084141
+      },
+      "second": {
+        "tp": 94,
+        "fp": 27,
+        "fn": 15,
+        "tn": 285,
+        "precision": 0.7768595041322314,
+        "recall": 0.8623853211009175,
+        "f1": 0.817391304347826,
+        "accuracy": 0.9002375296912114
+      },
+      "event": {
+        "n_true": 15,
+        "n_pred": 18,
+        "matched": 12,
+        "recall": 0.8,
+        "precision": 0.6666666666666666,
+        "false_events_per_min": 0.8564223068984611,
+        "mean_iou": 0.7010463307562657,
+        "onset_mae_s": 1.7851170913709618,
+        "offset_mae_s": 1.5793559313063958
+      },
+      "event_detectable_subset": {
+        "min_detection_coverage": 0.5,
+        "excluded_labelled_events": [],
+        "n_true": 15,
+        "n_pred": 18,
+        "matched": 12,
+        "recall": 0.8,
+        "precision": 0.6666666666666666,
+        "false_events_per_min": 0.8564223068984611,
+        "mean_iou": 0.7010463307562657,
+        "onset_mae_s": 1.7851170913709618,
+        "offset_mae_s": 1.5793559313063958
+      },
+      "detection_coverage": 0.8658517224956342,
+      "positive_rate": 0.26162882997301157,
+      "post_processing_choice": "hysteresis",
+      "post_variants": {
+        "threshold": {
+          "tp": 1379,
+          "fp": 393,
+          "fn": 269,
+          "tn": 4258,
+          "precision": 0.7782167042889391,
+          "recall": 0.8367718446601942,
+          "f1": 0.8064327485380117,
+          "accuracy": 0.8949039530084141
+        },
+        "hysteresis": {
+          "tp": 1396,
+          "fp": 410,
+          "fn": 252,
+          "tn": 4241,
+          "precision": 0.7729789590254706,
+          "recall": 0.8470873786407767,
+          "f1": 0.80833815865663,
+          "accuracy": 0.8949039530084141
+        },
+        "viterbi": {
+          "tp": 1332,
+          "fp": 375,
+          "fn": 316,
+          "tn": 4276,
+          "precision": 0.7803163444639719,
+          "recall": 0.808252427184466,
+          "f1": 0.7940387481371087,
+          "accuracy": 0.8903000476266074
+        }
+      },
+      "frame_boundary_guarded": {
+        "tp": 1252,
+        "fp": 309,
+        "fn": 171,
+        "tn": 4117,
+        "precision": 0.8020499679692504,
+        "recall": 0.8798313422347154,
+        "f1": 0.839142091152815,
+        "accuracy": 0.9179346896905454
+      },
+      "frame_raw_0.5": {
+        "tp": 1225,
+        "fp": 260,
+        "fn": 423,
+        "tn": 4391,
+        "precision": 0.8249158249158249,
+        "recall": 0.7433252427184466,
+        "f1": 0.7819980849026492,
+        "accuracy": 0.891570090490554
+      },
+      "speed_threshold_baseline": {
+        "tp": 1383,
+        "fp": 1103,
+        "fn": 265,
+        "tn": 3548,
+        "precision": 0.5563153660498793,
+        "recall": 0.8391990291262136,
+        "f1": 0.6690856313497823,
+        "accuracy": 0.7828226702651214
+      },
+      "per_fold_f1": [
+        0.7586206896551724,
+        0.6380090497737557,
+        0.9350180505415163,
+        0.6173285198555957,
+        0.8987012987012988
+      ],
+      "per_fold_f1_mean": 0.7695355217054678,
+      "per_fold_f1_std": 0.13011808720276127
+    }
+  },
+  "loco": {
+    "21": {
+      "trained_on": [
+        "22"
+      ],
+      "n_train_samples": 6299,
+      "post_processing_choice": "hysteresis",
+      "raw_0.5": {
+        "tp": 1292,
+        "fp": 56,
+        "fn": 661,
+        "tn": 4288,
+        "precision": 0.9584569732937686,
+        "recall": 0.6615463389656938,
+        "f1": 0.7827930930021206,
+        "accuracy": 0.8861362553596951
+      },
+      "by_post_processing": {
+        "threshold": {
+          "config": {
+            "kind": "threshold",
+            "smooth_s": 3.0,
+            "thr": 0.1,
+            "min_dur_s": 0.0
+          },
+          "frame": {
+            "tp": 1422,
+            "fp": 129,
+            "fn": 531,
+            "tn": 4215,
+            "precision": 0.9168278529980658,
+            "recall": 0.728110599078341,
+            "f1": 0.8116438356164384,
+            "accuracy": 0.8951881848499286
+          },
+          "second": {
+            "tp": 93,
+            "fp": 9,
+            "fn": 37,
+            "tn": 282,
+            "precision": 0.9117647058823529,
+            "recall": 0.7153846153846154,
+            "f1": 0.8017241379310345,
+            "accuracy": 0.8907363420427553
+          },
+          "event": {
+            "n_true": 21,
+            "n_pred": 17,
+            "matched": 16,
+            "recall": 0.7619047619047619,
+            "precision": 0.9411764705882353,
+            "false_events_per_min": 0.1427823521012803,
+            "mean_iou": 0.7617434909510561,
+            "onset_mae_s": 0.4421085437509925,
+            "offset_mae_s": 1.242908924884866
+          },
+          "event_detectable_subset": {
+            "min_detection_coverage": 0.5,
+            "excluded_labelled_events": [
+              {
+                "start_second": 82.54917262188343,
+                "end_second": 92.5258107035096,
+                "coverage": 0.22
+              },
+              {
+                "start_second": 144.0773352390027,
+                "end_second": 149.7496712720343,
+                "coverage": 0.0
+              }
+            ],
+            "n_true": 19,
+            "n_pred": 17,
+            "matched": 16,
+            "recall": 0.8421052631578947,
+            "precision": 0.9411764705882353,
+            "false_events_per_min": 0.14834193551918198,
+            "mean_iou": 0.7625593417669069,
+            "onset_mae_s": 0.4337668731141814,
+            "offset_mae_s": 1.242908924884866
+          },
+          "detection_coverage": 0.7568683500079403,
+          "positive_rate": 0.31014768937589327
+        },
+        "hysteresis": {
+          "config": {
+            "kind": "hysteresis",
+            "smooth_s": 3.0,
+            "hi": 0.2,
+            "lo": 0.06,
+            "min_dur_s": 0.0
+          },
+          "frame": {
+            "tp": 1439,
+            "fp": 148,
+            "fn": 514,
+            "tn": 4196,
+            "precision": 0.9067422810333964,
+            "recall": 0.7368151561699949,
+            "f1": 0.812994350282486,
+            "accuracy": 0.8948705732888678
+          },
+          "second": {
+            "tp": 94,
+            "fp": 11,
+            "fn": 36,
+            "tn": 280,
+            "precision": 0.8952380952380953,
+            "recall": 0.7230769230769231,
+            "f1": 0.7999999999999999,
+            "accuracy": 0.8883610451306413
+          },
+          "event": {
+            "n_true": 21,
+            "n_pred": 17,
+            "matched": 16,
+            "recall": 0.7619047619047619,
+            "precision": 0.9411764705882353,
+            "false_events_per_min": 0.1427823521012803,
+            "mean_iou": 0.7551619970470099,
+            "onset_mae_s": 0.47964606161664286,
+            "offset_mae_s": 1.2512505955216768
+          },
+          "event_detectable_subset": {
+            "min_detection_coverage": 0.5,
+            "excluded_labelled_events": [
+              {
+                "start_second": 82.54917262188343,
+                "end_second": 92.5258107035096,
+                "coverage": 0.22
+              },
+              {
+                "start_second": 144.0773352390027,
+                "end_second": 149.7496712720343,
+                "coverage": 0.0
+              }
+            ],
+            "n_true": 19,
+            "n_pred": 17,
+            "matched": 16,
+            "recall": 0.8421052631578947,
+            "precision": 0.9411764705882353,
+            "false_events_per_min": 0.14834193551918198,
+            "mean_iou": 0.7559778478628607,
+            "onset_mae_s": 0.4713043909798317,
+            "offset_mae_s": 1.2512505955216768
+          },
+          "detection_coverage": 0.7568683500079403,
+          "positive_rate": 0.31014768937589327
+        },
+        "viterbi": {
+          "config": {
+            "kind": "viterbi",
+            "smooth_s": 3.0,
+            "switch_cost": 8.0,
+            "bias": 1.8
+          },
+          "frame": {
+            "tp": 1412,
+            "fp": 107,
+            "fn": 541,
+            "tn": 4237,
+            "precision": 0.9295589203423305,
+            "recall": 0.7229902713773682,
+            "f1": 0.8133640552995391,
+            "accuracy": 0.8970938542162935
+          },
+          "second": {
+            "tp": 92,
+            "fp": 7,
+            "fn": 38,
+            "tn": 284,
+            "precision": 0.9292929292929293,
+            "recall": 0.7076923076923077,
+            "f1": 0.8034934497816595,
+            "accuracy": 0.8931116389548693
+          },
+          "event": {
+            "n_true": 21,
+            "n_pred": 16,
+            "matched": 16,
+            "recall": 0.7619047619047619,
+            "precision": 1.0,
+            "false_events_per_min": 0.0,
+            "mean_iou": 0.763414454501121,
+            "onset_mae_s": 0.4087418612037478,
+            "offset_mae_s": 1.251250595521677
+          },
+          "event_detectable_subset": {
+            "min_detection_coverage": 0.5,
+            "excluded_labelled_events": [
+              {
+                "start_second": 82.54917262188343,
+                "end_second": 92.5258107035096,
+                "coverage": 0.22
+              },
+              {
+                "start_second": 144.0773352390027,
+                "end_second": 149.7496712720343,
+                "coverage": 0.0
+              }
+            ],
+            "n_true": 19,
+            "n_pred": 16,
+            "matched": 16,
+            "recall": 0.8421052631578947,
+            "precision": 1.0,
+            "false_events_per_min": 0.0,
+            "mean_iou": 0.76382182384933,
+            "onset_mae_s": 0.4045710258853422,
+            "offset_mae_s": 1.251250595521677
+          },
+          "detection_coverage": 0.7568683500079403,
+          "positive_rate": 0.31014768937589327
+        }
+      },
+      "headline": {
+        "config": {
+          "kind": "hysteresis",
+          "smooth_s": 3.0,
+          "hi": 0.2,
+          "lo": 0.06,
+          "min_dur_s": 0.0
+        },
+        "frame": {
+          "tp": 1439,
+          "fp": 148,
+          "fn": 514,
+          "tn": 4196,
+          "precision": 0.9067422810333964,
+          "recall": 0.7368151561699949,
+          "f1": 0.812994350282486,
+          "accuracy": 0.8948705732888678
+        },
+        "second": {
+          "tp": 94,
+          "fp": 11,
+          "fn": 36,
+          "tn": 280,
+          "precision": 0.8952380952380953,
+          "recall": 0.7230769230769231,
+          "f1": 0.7999999999999999,
+          "accuracy": 0.8883610451306413
+        },
+        "event": {
+          "n_true": 21,
+          "n_pred": 17,
+          "matched": 16,
+          "recall": 0.7619047619047619,
+          "precision": 0.9411764705882353,
+          "false_events_per_min": 0.1427823521012803,
+          "mean_iou": 0.7551619970470099,
+          "onset_mae_s": 0.47964606161664286,
+          "offset_mae_s": 1.2512505955216768
+        },
+        "event_detectable_subset": {
+          "min_detection_coverage": 0.5,
+          "excluded_labelled_events": [
+            {
+              "start_second": 82.54917262188343,
+              "end_second": 92.5258107035096,
+              "coverage": 0.22
+            },
+            {
+              "start_second": 144.0773352390027,
+              "end_second": 149.7496712720343,
+              "coverage": 0.0
+            }
+          ],
+          "n_true": 19,
+          "n_pred": 17,
+          "matched": 16,
+          "recall": 0.8421052631578947,
+          "precision": 0.9411764705882353,
+          "false_events_per_min": 0.14834193551918198,
+          "mean_iou": 0.7559778478628607,
+          "onset_mae_s": 0.4713043909798317,
+          "offset_mae_s": 1.2512505955216768
+        },
+        "detection_coverage": 0.7568683500079403,
+        "positive_rate": 0.31014768937589327
+      }
+    },
+    "22": {
+      "trained_on": [
+        "21"
+      ],
+      "n_train_samples": 6297,
+      "post_processing_choice": "hysteresis",
+      "raw_0.5": {
+        "tp": 1468,
+        "fp": 451,
+        "fn": 180,
+        "tn": 4200,
+        "precision": 0.7649817613340282,
+        "recall": 0.8907766990291263,
+        "f1": 0.8231006447995516,
+        "accuracy": 0.8998253691062074
+      },
+      "by_post_processing": {
+        "threshold": {
+          "config": {
+            "kind": "threshold",
+            "smooth_s": 1.0,
+            "thr": 0.1,
+            "min_dur_s": 0.0
+          },
+          "frame": {
+            "tp": 1551,
+            "fp": 932,
+            "fn": 97,
+            "tn": 3719,
+            "precision": 0.6246476037051953,
+            "recall": 0.9411407766990292,
+            "f1": 0.7509077705156137,
+            "accuracy": 0.836640736624861
+          },
+          "second": {
+            "tp": 102,
+            "fp": 66,
+            "fn": 7,
+            "tn": 246,
+            "precision": 0.6071428571428571,
+            "recall": 0.9357798165137615,
+            "f1": 0.7364620938628159,
+            "accuracy": 0.8266033254156769
+          },
+          "event": {
+            "n_true": 15,
+            "n_pred": 25,
+            "matched": 13,
+            "recall": 0.8666666666666667,
+            "precision": 0.52,
+            "false_events_per_min": 1.7128446137969222,
+            "mean_iou": 0.7220999449180852,
+            "onset_mae_s": 1.5451337009422268,
+            "offset_mae_s": 0.9804668999334396
+          },
+          "event_detectable_subset": {
+            "min_detection_coverage": 0.5,
+            "excluded_labelled_events": [],
+            "n_true": 15,
+            "n_pred": 25,
+            "matched": 13,
+            "recall": 0.8666666666666667,
+            "precision": 0.52,
+            "false_events_per_min": 1.7128446137969222,
+            "mean_iou": 0.7220999449180852,
+            "onset_mae_s": 1.5451337009422268,
+            "offset_mae_s": 0.9804668999334396
+          },
+          "detection_coverage": 0.8658517224956342,
+          "positive_rate": 0.26162882997301157
+        },
+        "hysteresis": {
+          "config": {
+            "kind": "hysteresis",
+            "smooth_s": 0.0,
+            "hi": 0.25,
+            "lo": 0.075,
+            "min_dur_s": 1.0
+          },
+          "frame": {
+            "tp": 1551,
+            "fp": 803,
+            "fn": 97,
+            "tn": 3848,
+            "precision": 0.6588785046728972,
+            "recall": 0.9411407766990292,
+            "f1": 0.7751124437781111,
+            "accuracy": 0.8571201778060009
+          },
+          "second": {
+            "tp": 102,
+            "fp": 54,
+            "fn": 7,
+            "tn": 258,
+            "precision": 0.6538461538461539,
+            "recall": 0.9357798165137615,
+            "f1": 0.769811320754717,
+            "accuracy": 0.8551068883610451
+          },
+          "event": {
+            "n_true": 15,
+            "n_pred": 20,
+            "matched": 13,
+            "recall": 0.8666666666666667,
+            "precision": 0.65,
+            "false_events_per_min": 0.9991593580482047,
+            "mean_iou": 0.72522083370014,
+            "onset_mae_s": 1.4681336826228468,
+            "offset_mae_s": 1.0061335727065663
+          },
+          "event_detectable_subset": {
+            "min_detection_coverage": 0.5,
+            "excluded_labelled_events": [],
+            "n_true": 15,
+            "n_pred": 20,
+            "matched": 13,
+            "recall": 0.8666666666666667,
+            "precision": 0.65,
+            "false_events_per_min": 0.9991593580482047,
+            "mean_iou": 0.72522083370014,
+            "onset_mae_s": 1.4681336826228468,
+            "offset_mae_s": 1.0061335727065663
+          },
+          "detection_coverage": 0.8658517224956342,
+          "positive_rate": 0.26162882997301157
+        },
+        "viterbi": {
+          "config": {
+            "kind": "viterbi",
+            "smooth_s": 1.0,
+            "switch_cost": 8.0,
+            "bias": 1.8
+          },
+          "frame": {
+            "tp": 1544,
+            "fp": 781,
+            "fn": 104,
+            "tn": 3870,
+            "precision": 0.6640860215053763,
+            "recall": 0.9368932038834952,
+            "f1": 0.7772464132897056,
+            "accuracy": 0.859501508175901
+          },
+          "second": {
+            "tp": 102,
+            "fp": 54,
+            "fn": 7,
+            "tn": 258,
+            "precision": 0.6538461538461539,
+            "recall": 0.9357798165137615,
+            "f1": 0.769811320754717,
+            "accuracy": 0.8551068883610451
+          },
+          "event": {
+            "n_true": 15,
+            "n_pred": 18,
+            "matched": 13,
+            "recall": 0.8666666666666667,
+            "precision": 0.7222222222222222,
+            "false_events_per_min": 0.7136852557487177,
+            "mean_iou": 0.736422802463868,
+            "onset_mae_s": 1.3911336643034669,
+            "offset_mae_s": 0.9856002344880648
+          },
+          "event_detectable_subset": {
+            "min_detection_coverage": 0.5,
+            "excluded_labelled_events": [],
+            "n_true": 15,
+            "n_pred": 18,
+            "matched": 13,
+            "recall": 0.8666666666666667,
+            "precision": 0.7222222222222222,
+            "false_events_per_min": 0.7136852557487177,
+            "mean_iou": 0.736422802463868,
+            "onset_mae_s": 1.3911336643034669,
+            "offset_mae_s": 0.9856002344880648
+          },
+          "detection_coverage": 0.8658517224956342,
+          "positive_rate": 0.26162882997301157
+        }
+      },
+      "headline": {
+        "config": {
+          "kind": "hysteresis",
+          "smooth_s": 0.0,
+          "hi": 0.25,
+          "lo": 0.075,
+          "min_dur_s": 1.0
+        },
+        "frame": {
+          "tp": 1551,
+          "fp": 803,
+          "fn": 97,
+          "tn": 3848,
+          "precision": 0.6588785046728972,
+          "recall": 0.9411407766990292,
+          "f1": 0.7751124437781111,
+          "accuracy": 0.8571201778060009
+        },
+        "second": {
+          "tp": 102,
+          "fp": 54,
+          "fn": 7,
+          "tn": 258,
+          "precision": 0.6538461538461539,
+          "recall": 0.9357798165137615,
+          "f1": 0.769811320754717,
+          "accuracy": 0.8551068883610451
+        },
+        "event": {
+          "n_true": 15,
+          "n_pred": 20,
+          "matched": 13,
+          "recall": 0.8666666666666667,
+          "precision": 0.65,
+          "false_events_per_min": 0.9991593580482047,
+          "mean_iou": 0.72522083370014,
+          "onset_mae_s": 1.4681336826228468,
+          "offset_mae_s": 1.0061335727065663
+        },
+        "event_detectable_subset": {
+          "min_detection_coverage": 0.5,
+          "excluded_labelled_events": [],
+          "n_true": 15,
+          "n_pred": 20,
+          "matched": 13,
+          "recall": 0.8666666666666667,
+          "precision": 0.65,
+          "false_events_per_min": 0.9991593580482047,
+          "mean_iou": 0.72522083370014,
+          "onset_mae_s": 1.4681336826228468,
+          "offset_mae_s": 1.0061335727065663
+        },
+        "detection_coverage": 0.8658517224956342,
+        "positive_rate": 0.26162882997301157
+      }
+    }
+  },
+  "final_post_processing": {
+    "kind": "hysteresis",
+    "stride": 2,
+    "max_gap_s": 0.5,
+    "smooth_s": 0.0,
+    "hi": 0.25,
+    "lo": 0.075,
+    "min_dur_s": 1.0,
+    "tuning_objective": "F2"
+  },
+  "top_features": [
+    {
+      "name": "w8_vy_p10",
+      "importance": 0.041414652179817414
+    },
+    {
+      "name": "w8_range_y",
+      "importance": 0.03159583951375984
+    },
+    {
+      "name": "w4_net_disp",
+      "importance": 0.027584746815575746
+    },
+    {
+      "name": "w8_speed_p10",
+      "importance": 0.02403360811650703
+    },
+    {
+      "name": "w8_knee_std",
+      "importance": 0.017776349176874474
+    },
+    {
+      "name": "w8_frac_slow",
+      "importance": 0.0175667440599653
+    },
+    {
+      "name": "w8_net_disp",
+      "importance": 0.01614346432654521
+    },
+    {
+      "name": "w8_net_speed",
+      "importance": 0.01484118946474946
+    },
+    {
+      "name": "w2_frac_walkband",
+      "importance": 0.01321955998158202
+    },
+    {
+      "name": "w4_dy_signed",
+      "importance": 0.011378355565107311
+    },
+    {
+      "name": "w8_hipank_std",
+      "importance": 0.010945702221345277
+    },
+    {
+      "name": "w8_dy_signed",
+      "importance": 0.009725784648583757
+    },
+    {
+      "name": "w8_hipank_p90",
+      "importance": 0.009027237414427281
+    },
+    {
+      "name": "w8_ankrel_p50",
+      "importance": 0.007842306956173894
+    },
+    {
+      "name": "w2_anksep_p10",
+      "importance": 0.007572991532322359
+    },
+    {
+      "name": "w8_knee_max",
+      "importance": 0.007062981721622274
+    },
+    {
+      "name": "w8_speed_mean",
+      "importance": 0.006090421703005844
+    },
+    {
+      "name": "w8_knee_mean",
+      "importance": 0.005199970959889888
+    },
+    {
+      "name": "w2_knee_p10",
+      "importance": 0.00415839901538162
+    },
+    {
+      "name": "w1_knee_p50",
+      "importance": 0.0034891068112159252
+    },
+    {
+      "name": "w8_range_x",
+      "importance": 0.003082651582452023
+    },
+    {
+      "name": "w4_valid",
+      "importance": 0.0030379555679333815
+    },
+    {
+      "name": "w1_net_disp",
+      "importance": 0.0028165350339667715
+    },
+    {
+      "name": "w4_frac_slow",
+      "importance": 0.002796384459206558
+    },
+    {
+      "name": "w8_knee_p10",
+      "importance": 0.0027510257681669036
+    }
+  ]
+}
