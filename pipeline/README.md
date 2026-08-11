@@ -12,6 +12,13 @@ the desktop app and the backend server automatically.
 | `point_segmenter.py` | Dead-time cutter stage 2: serve events (near + far) + fused point ends (no video/models needed) |
 | `serve_stgcn.py` | Far-side ST-GCN serve classifier (MediaPipe pose + graph conv) |
 | `rally_detector.py` | Trace-driven rally detector — segment detection, HMM filter, highlight export |
+| `anya_telemetry.py` | Rally-reel stage 1: general-purpose perception pass (both players + raw whole-court balls) → cached JSONL |
+| `extract_far_pose.py` | Rally-reel stage 2: pose over the far-player crop, keyed by frame |
+| `anya_far_serve.py` | Far-side serve starts: baseline arming + hand-raise gate, ball trace as confirmation only |
+| `anya_near_serve.py` | Near-side serve starts: dwell / toss / jerk scorer |
+| `anya_far_telemetry.py` | **Far fast path** — far-only extractor (band proxy + 5 fps player + batched pose + gated ball); replaces stages 1-2 for `anya_far_serve` at ~5x |
+| `anya_near_telemetry.py` | **Near fast path** — near-only extractor (540p proxy + 5 fps player + toss-ROI ball) at ~12x |
+| `proxy.py` | One-time frame-exact ffmpeg proxies (downscaled whole frame, or native-resolution crop) shared by both fast paths |
 | `anya_base.py` | YOLO player + ball telemetry provider |
 | `ball_tracker.py` | IMM Kalman single-ball tracker |
 | `utilities.py` | ffmpeg highlight cutter, court homography helpers |
