@@ -295,8 +295,8 @@ def build_reel(video_path: str,
             video_path, force=force_telemetry,
             progress_cb=lambda cur, tot: _emit(on_progress, 1, cur / max(1, tot)))
     else:
-        print("[REEL] Stage 1/7  telemetry — skipped (nothing needs the full "
-              "pass: fast_near, fast_far, ball_quiet_mode=off)")
+        print("[REEL] Stage 1/7  telemetry — skipped (every consumer has its "
+              "own pass: fast_near, fast_far, fast_end)")
         _emit(on_progress, 1, 1.0)
 
     # ── Stage 2: far-player pose ────────────────────────────────────────
