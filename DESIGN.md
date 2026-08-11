@@ -545,3 +545,76 @@ finds 1 of 11 and 2 of 13. Whatever the fast path is doing differently
 outright, which says the full pass's keypoints are not the better ones in any
 absolute sense — they are just the ones the current thresholds were fitted to.
 Treat far-serve recall on a new clip as an open question, not a solved one.
+
+### 8.6 The point-end fast path (`anya_end_telemetry`)
+
+Point end has two signals and they were paying for two full-rate passes: the
+walking classifier's own pose pass over every frame of the 4K source
+(14.3 ms/frame on Data/21), and `all_balls` out of stage 1 (~11.4 ms/frame of
+ball inference on top of a 6.9 ms/frame 4K decode). Stage 1 had no other
+consumer left once `fast_near` and `fast_far` landed, so ball-quiet alone was
+keeping a 32.7 ms/frame pass alive.
+
+`anya_end_telemetry` decodes the shared 540p proxy once and runs both models
+over that stream — pose at 15 fps, whole-court ball at 10 fps — writing
+`walking/extract_pose.py`'s npz schema (decimated, with its stride alongside)
+plus a telemetry-shaped JSONL. Measured on Data/21 (12,594 frames, M4):
+
+| | baseline | fast |
+|---|---|---|
+| walking pose | 179.8s | 85.8s (4,733 samples @15.0 fps) |
+| ball | in stage 1 | 73.5s (4,198 samples @10.0 fps) |
+| decode | 6.9 ms/frame of 4K | overlapped, 540p |
+| **attributed total** | **~32.6 ms/frame** | **12.84 ms/frame** |
+
+**2.5x, not the ~5x the arithmetic predicted, and the gap is worth naming.**
+Per call, pose came out at 18.1 ms/sample against the 12.0 ms the same model
+costs in the batched full-rate pass, and ball at 17.5 ms against 11.4. Both
+models are ~50% slower per call here than they are alone. The difference is
+that this pass alternates two models over one decode; `anya_near_telemetry` and
+`anya_far_telemetry` both run their passes one after the other with a hot
+model. Interleaving to save a second decode looks like it costs more in model
+switching than the decode it saves — a second 540p decode is only ~1.2 ms/frame.
+
+#### 15 Hz pose changes the signal, and the proxy does not
+
+`walking.predict` already scored at 15 Hz (every 2nd frame of a 30 fps clip),
+so the pose beneath it ran at twice the rate anything read. Extracting at 15 Hz
+directly is therefore free of *decision*-rate change — but not free of feature
+change: `window_features` computes its statistics over half as many samples.
+
+Isolated by decimating the baseline's own full-rate pose in software, so the
+only variable is rate (Data/21):
+
+| pose source | walking total | intervals | the 82.8-84.8s walk |
+|---|---|---|---|
+| baseline, source decode, 30 Hz | 114.8s | 20 | found |
+| baseline decimated to 15 Hz | 123.0s | 19 | **missing** |
+| proxy, 15 Hz | 120.8s | 19 | **missing** |
+
+The proxy is exonerated: software decimation of the *baseline's own pixels*
+loses the same interval. Frame-level agreement with the baseline is F1 0.938
+(P 0.915 / R 0.962) — close, but the missing interval is not a cosmetic loss:
+it is exactly the onset that ended baseline segment [01], and losing it pushed
+that end from 83.8s out to the next serve at 89.0s.
+
+Scored against ground truth on Data/21 (12 labelled ends):
+
+| arm | recall | precision | median end err | per-point median | truncations |
+|---|---|---|---|---|---|
+| baseline | 7/12 | 7/10 | +0.27s | +0.67s | 1 |
+| fast, shipped model | 5/12 | 5/8 | +0.23s | +6.61s | 1 |
+
+So the rate change has to be paid for in the model, not waved through — the
+classifier was trained on 30 Hz window statistics. Retraining at 15 Hz under
+the shipped LOCO protocol is the fix being measured.
+
+#### The empty-frame rescue is not part of the shipped path
+
+`walking/extract_pose.py` has a `rescue()` that re-runs empty frames at imgsz
+1920 (blind frames 25.4% -> 7.7% on Data/21, recovering a labelled walk from
+interval recall 0.00 -> 0.89), but `walking.predict` never calls it — it runs
+`extract()` and stops. It is a corpus-building step. Enabling it inside the
+fast path is also expensive in a way that does not show up in the arithmetic:
+batching sixteen 1920px frames on MPS took a clip whose main pass is ~2.5
+minutes past 20 minutes. Off by default, and small-batched when on.

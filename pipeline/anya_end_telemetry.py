@@ -125,18 +125,25 @@ class EndExtractorConfig:
     pose_conf:  float = 0.20     # walking/extract_pose.POSE_CONF
     pose_model: str   = "yolov8n-pose.pt"
 
-    # Empty-frame rescue.  The full-rate pass re-runs frames with no detection
-    # at imgsz 1920 on a 1920x1080 work frame, taking blind frames 25.4% ->
-    # 7.7% on Data/21 and recovering a whole labelled walk (interval recall
-    # 0.00 -> 0.89).  Off the 540p proxy there are no extra pixels to find, so
-    # this re-runs the SAME pixels upscaled: it can still help (the model is
-    # scale-sensitive and a distant player is only a few dozen px tall) but it
-    # cannot recover detail the proxy threw away.  Measure the blind rate
-    # against the source-decode baseline before trusting it; if the proxy
-    # loses ground, the fix is a native-resolution near-band crop proxy
-    # (proxy.ensure_crop_proxy), not a bigger imgsz.
-    rescue_empty: bool = True
+    # Empty-frame rescue, OFF by default — matching the shipped path, which is
+    # the only honest baseline to measure against.  walking/extract_pose.py has
+    # a `rescue()` that re-runs empty frames at imgsz 1920 (blind frames 25.4%
+    # -> 7.7% on Data/21, recovering a labelled walk from interval recall 0.00
+    # -> 0.89), but `walking.predict` never calls it: it runs `extract()` and
+    # stops.  So the rescue is a corpus-building step, not part of the reel.
+    #
+    # Turning it on here also costs more than it looks: at 1920 the activations
+    # are ~4x a 960 batch, and batching 16 of them on MPS was measured spending
+    # 20+ minutes on a clip whose main pass is ~2.  Hence the separate, much
+    # smaller rescue batch.
+    #
+    # And off the 540p proxy there are no extra pixels to find — this re-runs
+    # the SAME pixels upscaled.  If the proxy turns out to lose blind frames
+    # against a source decode, the fix is a native-resolution near-band crop
+    # proxy (proxy.ensure_crop_proxy), not a bigger imgsz.
+    rescue_empty: bool = False
     rescue_imgsz: int  = 1920
+    rescue_batch: int  = 4
 
     # --- near-player pick (mirrors anya_telemetry's near branch)
     near_min_conf: float = 0.5
@@ -360,14 +367,15 @@ class EndTelemetryExtractor:
                 continue
             self._store_pose(fi, res, kp, bx, cf, near)
 
-        if rescue_idx:
-            # Same pixels, larger letterbox.  Batched like the main pass: the
-            # crops are all the analysis frame, so shapes stay uniform and
-            # ultralytics keeps its same-shape letterbox path.
-            res2 = self.pose_model.predict(rescue_img, imgsz=cfg.rescue_imgsz,
+        for lo in range(0, len(rescue_idx), cfg.rescue_batch):
+            # Same pixels, larger letterbox — in small batches, because a 1920
+            # batch of 16 does not fit MPS gracefully.
+            chunk_i = rescue_idx[lo:lo + cfg.rescue_batch]
+            res2 = self.pose_model.predict(rescue_img[lo:lo + cfg.rescue_batch],
+                                           imgsz=cfg.rescue_imgsz,
                                            conf=cfg.pose_conf, device=_DEVICE,
                                            classes=[0], verbose=False)
-            for fi, res in zip(rescue_idx, res2):
+            for fi, res in zip(chunk_i, res2):
                 if res.keypoints is None or len(res.boxes) == 0:
                     continue
                 self.n_rescued += 1
@@ -447,6 +455,12 @@ class EndTelemetryExtractor:
                     flush_pose()
                     if progress_cb:
                         progress_cb(idx, self.total_frames)
+                    if idx // self.pose_stride % 1000 < cfg.batch_size:
+                        el = time.perf_counter() - t0
+                        print(f"[END-TELEM]   {idx}/{self.total_frames}  "
+                              f"{idx / max(1e-9, el):.0f} src-fps  "
+                              f"empty {self.n_empty / max(1, len(near) + self.n_empty):.1%}",
+                              flush=True)
             if idx % self.ball_stride == 0:
                 ball_idx.append(idx)
                 ball_img.append(frame)
@@ -567,8 +581,11 @@ if __name__ == "__main__":
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--no-proxy", action="store_true",
                     help="Decode the source directly instead of the 540p proxy")
-    ap.add_argument("--no-rescue", action="store_true",
-                    help="Skip the imgsz-1920 re-run of empty pose frames")
+    ap.add_argument("--rescue", action="store_true",
+                    help="Re-run empty pose frames at imgsz 1920.  Off by "
+                         "default because walking.predict does not do it "
+                         "either, and off a 540p proxy there are no extra "
+                         "pixels to find")
     ap.add_argument("--pose-fps", type=float, default=None)
     ap.add_argument("--pose-imgsz", type=int, default=None)
     ap.add_argument("--ball-fps", type=float, default=None)
@@ -580,8 +597,8 @@ if __name__ == "__main__":
     c = EndExtractorConfig()
     if args.no_proxy:
         c.use_proxy = False
-    if args.no_rescue:
-        c.rescue_empty = False
+    if args.rescue:
+        c.rescue_empty = True
     if args.pose_fps is not None:
         c.pose_fps = args.pose_fps
     if args.pose_imgsz is not None:

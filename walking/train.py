@@ -71,18 +71,36 @@ def load_labels(path, n_frames):
 
 
 def load_clip(video, pose_npz, labels_path, stride, block_s, name):
-    """Everything downstream needs about one clip, in one dict."""
+    """Everything downstream needs about one clip, in one dict.
+
+    A pose npz may already be decimated (pipeline/anya_end_telemetry extracts
+    at 15 fps whatever the source runs at), in which case it carries its own
+    `stride` and an `fps` that is the rate of ITS rows.  `stride` here is a
+    decision rate on top of that, exactly as in walking/predict.py, so the
+    npz's own stride is divided out rather than compounded.  Labels are always
+    in SOURCE frames and are indexed back through the npz stride.
+    """
     z = np.load(pose_npz)
     kp, bbox, fps = z["kp"], z["bbox"], float(z["fps"])
+    pose_stride = int(z["stride"]) if "stride" in z else 1
+    stride = max(1, int(round(stride / pose_stride)))
     n = len(kp)
     sig = frame_signals(kp, bbox, load_homography(video), fps,
                         on_court=z.get("on_court"))
     idx = np.arange(0, n, stride)
     X, names = window_features(sig, fps, idx)
-    y_full, meta = load_labels(labels_path, n)
-    return {"name": name, "X": X, "y": y_full[idx], "idx": idx, "names": names,
+    n_src = int(z["n_src_frames"]) if "n_src_frames" in z else n * pose_stride
+    y_src, meta = load_labels(labels_path, n_src)
+    # Everything below this point lives on the npz's OWN row grid, whose rate
+    # is `fps`; seconds therefore still come out right, and only the label
+    # lookup has to know about the source timeline.
+    rows = np.clip(np.arange(n) * pose_stride, 0, n_src - 1)
+    y_full = y_src[rows]
+    y = y_full[idx]
+    return {"name": name, "X": X, "y": y, "idx": idx, "names": names,
             "fps": fps, "fps_s": fps / stride, "n_frames": n, "y_full": y_full,
             "sig": sig, "meta": meta, "stride": stride,
+            "pose_stride": pose_stride,
             "groups": (idx / fps // block_s).astype(int)}
 
 
@@ -203,8 +221,10 @@ def clip_report(clip, pred, fps=None):
     # not a classifier miss; those events are also scored separately.
     scored = np.ones(clip["n_frames"], bool)
     excluded = []
+    ps = clip.get("pose_stride", 1)      # label frames are SOURCE frames
     for iv in clip["meta"]["intervals"]:
-        s0, s1 = iv["start_frame"], min(iv["end_frame"] + 1, clip["n_frames"])
+        s0 = iv["start_frame"] // ps
+        s1 = min(iv["end_frame"] // ps + 1, clip["n_frames"])
         cov = float(clip["sig"]["valid"][s0:s1].mean()) if s1 > s0 else 0.0
         if cov < MIN_COVERAGE:
             scored[s0:s1] = False
