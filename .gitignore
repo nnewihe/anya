@@ -2,3 +2,8 @@ backend/app/__pycache__/
 __pycache__/
 .DS_Store
 .claude/
+
+# Ultralytics auto-downloads model weights into the CWD when a model is
+# named without a path (walking/extract_pose.py, pipeline/anya_end_telemetry.py).
+# The real copy is tracked at pipeline/models/yolov8n-pose.pt.
+/yolov8n-pose.pt
