@@ -117,6 +117,31 @@ class ReelConfig:
     # coverage interval is a guess made across a hole in the input, and its
     # own docs say downstream code should be able to drop those.
 
+    fast_end: bool = True
+    # Take BOTH point-end signals from anya_end_telemetry (shared 540p proxy,
+    # 15 fps pose, 10 fps whole-court ball) instead of a full-rate walking pose
+    # pass plus the shared anya_telemetry ball stream.
+    #
+    # This is the stage that decides whether the reel needs the full pass at
+    # all: with fast_near and fast_far already on, ball-quiet was the last
+    # consumer of it, so turning this on is what lets stages 1-2 be skipped.
+    #
+    # walking.predict was already scoring at 15 Hz — every 2nd frame of a 30
+    # fps clip — so the pose beneath it ran at twice the rate anything read.
+    # 15 Hz is also the floor: the features measure a 0.7-4.0 Hz cadence band,
+    # and 7.5 Hz would be below Nyquist for it.
+    #
+    # --no-fast-end reverts.
+
+    ball_quiet_min_looks: int = 6
+    # How many frames the quiet window must actually have LOOKED at the ball
+    # before its silence counts.  Per-frame ball recall varies from 7% to 92%
+    # across the corpus, so a thinly-sampled window is silent by sampling
+    # noise rather than by evidence — and a false quiet ends the point early,
+    # which is the point-end error that loses tennis rather than just footage.
+    # Non-binding on the full pass (a 1.5 s window there holds ~45 looks) and
+    # still clear at the fast path's 10 fps (~15).
+
     ball_quiet_mode: str = "gated"      # "off" | "gated" | "always"
     ball_quiet_s: float = 1.5
     # Walking stays the primary point-end signal.  Ball-quiet is a scoped

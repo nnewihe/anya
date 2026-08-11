@@ -10,7 +10,8 @@ config change costs seconds rather than another perception pass):
     3  far serve starts   anya_far_serve                (in memory)
     4  near serve starts  anya_near_telemetry           <stem>_anya_near_telemetry.jsonl
                           + anya_near_serve             <stem>_near_serve_events.json
-    5  walking / deadtime walking.predict               <stem>_walk_pose.npz
+    5  walking / deadtime anya_end_telemetry            <stem>_anya_end_telemetry.jsonl
+                          + walking.predict             <stem>_end_walk_pose.npz
     6  segments           rally_reel.points             <stem>_rally_segments.json
     7  cut + concat       utilities.create_highlights   <stem>_rally_reel.mp4
 
@@ -35,6 +36,8 @@ from ..extract_far_pose import extract_far_pose
 from ..anya_near_serve import score_telemetry, NearServeConfig
 from ..anya_near_telemetry import extract_near_telemetry
 from ..anya_far_telemetry import extract_far_telemetry
+from ..anya_end_telemetry import (extract_end_telemetry, end_dets_path_for,
+                                  end_pose_path_for)
 from ..utilities import Config, init_court, create_highlights_ffmpeg, probe_video
 
 from .config import ReelConfig
@@ -52,7 +55,7 @@ STAGE_LABELS = {
     2: "far-player pose",    # includes its own perception pass under fast_far
     3: "far serve starts",
     4: "near serve starts",   # includes its own perception pass under fast_near
-    5: "walking (dead time)",
+    5: "walking (dead time)",  # includes its own perception pass under fast_end
     6: "segment assembly",
     7: "cutting reel",
 }
@@ -80,8 +83,16 @@ def _stem_path(video_path: str, suffix: str) -> str:
     return os.path.join(d, f"{stem}{suffix}")
 
 
-def _walk_intervals(video_path: str, device: str = "mps") -> List[Dict]:
+def _walk_intervals(video_path: str, device: str = "mps",
+                    dets_npz: Optional[str] = None,
+                    pose_npz: Optional[str] = None) -> List[Dict]:
     """Walking intervals, as the dead-time proxy for point ends.
+
+    `dets_npz`/`pose_npz` point the classifier at a pose pass someone else
+    already ran — under fast_end that is anya_end_telemetry's decimated pass,
+    which the near-player selector and the feature builder read unchanged
+    because both take fps as a parameter.  With neither, walking.predict
+    extracts its own full-rate pass as before.
 
     Imported lazily: `walking` is a sibling top-level package with its own
     heavier deps (joblib, sklearn), and a caller that only wants segments
@@ -94,7 +105,11 @@ def _walk_intervals(video_path: str, device: str = "mps") -> List[Dict]:
     from walking.predict import predict_video
     from walking.evaluate import to_intervals
 
-    res = predict_video(video_path, device=device)
+    if dets_npz is not None and pose_npz is not None and not os.path.isfile(pose_npz):
+        from walking.select_near import select
+        select(video_path, dets_npz=dets_npz, out=pose_npz)
+
+    res = predict_video(video_path, device=device, pose_npz=pose_npz)
     fps, prob, mask = res["fps"], res["prob"], res["is_walking"]
     valid = res["sig"]["valid"]
     return [{
@@ -114,23 +129,37 @@ def _near_blind_mask(records: List[Dict], fps: float,
     tracked but has stayed inside near_stationary_ft for near_stationary_s.
     Either way the walking signal carries no evidence about whether the
     point is still live, which is where ball-quiet is allowed to speak.
+
+    Windows are in SECONDS over record timestamps, not in record counts.  The
+    full telemetry has one record per frame so the two agreed; a fast-path
+    file has records only where a model actually ran, and counting rows there
+    would silently shrink every window by the sampling factor.
+
+    `pn` marks a record that carries a player observation at all.  Records
+    without it (the full pass, which looks every frame) count as observations,
+    so this is unchanged against that file.
     """
     n = len(records)
+    ts = [float(r.get("t", 0.0)) for r in records]
     xs = [r.get("npw") for r in records]
-    w_untr = max(1, int(cfg.near_untracked_s * fps))
-    w_stat = max(1, int(cfg.near_stationary_s * fps))
+    looked = [bool(r.get("pn", True)) for r in records]
 
     blind = [False] * n
+    lo_untr = lo_stat = 0
     for i in range(n):
-        lo = max(0, i - w_untr)
-        if not any(xs[j] for j in range(lo, i + 1)):
+        t = ts[i]
+        while ts[lo_untr] < t - cfg.near_untracked_s:
+            lo_untr += 1
+        if not any(xs[j] for j in range(lo_untr, i + 1)):
             blind[i] = True
             continue
-        lo = max(0, i - w_stat)
-        seen = [xs[j] for j in range(lo, i + 1) if xs[j]]
-        # Needs a real majority of the window tracked, otherwise "stationary"
-        # is really just absence wearing a different hat.
-        if len(seen) >= 0.5 * (i - lo + 1) and len(seen) >= 2:
+        while ts[lo_stat] < t - cfg.near_stationary_s:
+            lo_stat += 1
+        seen = [xs[j] for j in range(lo_stat, i + 1) if xs[j]]
+        n_looked = sum(1 for j in range(lo_stat, i + 1) if looked[j])
+        # Needs a real majority of the LOOKS to have found the player,
+        # otherwise "stationary" is really just absence wearing a different hat.
+        if len(seen) >= 0.5 * max(1, n_looked) and len(seen) >= 2:
             dx = max(p[0] for p in seen) - min(p[0] for p in seen)
             dy = max(p[1] for p in seen) - min(p[1] for p in seen)
             if dx <= cfg.near_stationary_ft and dy <= cfg.near_stationary_ft:
@@ -166,16 +195,36 @@ def _ball_quiet_onsets(telemetry_path: str, cfg: ReelConfig) -> List[tuple]:
     last_ball: Optional[float] = None
     pending = False
     n_raw = 0
+    n_thin = 0
+    # How many looks at the ball the window must contain before its silence
+    # means anything.  Per-frame ball recall is clip-dependent (7% / 36% / 92%
+    # across the corpus), so a window that was only sampled twice is silent by
+    # sampling noise, not by evidence — and a false quiet ends the point early,
+    # which is the one point-end error that loses tennis.  At the full pass's
+    # 30 fps a 1.5 s window holds ~45 looks and this never binds; at 10 fps it
+    # holds ~15 and still clears it.
+    looks: List[float] = []       # timestamps of records that sampled the ball
+    lo = 0
     for i, r in enumerate(records):
         t = r["t"]
+        if r.get("bn", True):
+            looks.append(t)
         if det._filter_balls(r.get("all_balls", [])):
             last_ball, pending = t, False
         elif last_ball is not None and not pending and t - last_ball >= cfg.ball_quiet_s:
+            while lo < len(looks) and looks[lo] < t - cfg.ball_quiet_s:
+                lo += 1
+            if len(looks) - lo < cfg.ball_quiet_min_looks:
+                n_thin += 1
+                continue       # too few looks to call this silence
             pending = True     # one onset per silence, not one per frame
             n_raw += 1
             if blind is not None and not blind[i]:
                 continue       # near player visible and moving — not our call
             onsets.append((last_ball + cfg.ball_quiet_s, "ball-quiet"))
+    if n_thin:
+        print(f"[REEL]   ball-quiet: {n_thin} silence(s) dropped for fewer than "
+              f"{cfg.ball_quiet_min_looks} looks in the window")
     if gated:
         print(f"[REEL]   ball-quiet: {len(onsets)}/{n_raw} onset(s) passed the "
               f"near-blind gate")
@@ -214,7 +263,7 @@ def build_reel(video_path: str,
     # time reads it, and so do far serves and near serves whenever their fast
     # paths are turned off.  When nothing needs it, stages 1-2 are skipped
     # outright — that is where the speedup actually lands.
-    needs_full = (cfg.ball_quiet_mode != "off"
+    needs_full = ((cfg.ball_quiet_mode != "off" and not cfg.fast_end)
                   or (cfg.use_far and not cfg.fast_far)
                   or not cfg.fast_near)
 
@@ -297,14 +346,29 @@ def build_reel(video_path: str,
           f"(p >= {cfg.near_threshold})")
 
     # ── Stage 5: walking / dead time ────────────────────────────────────
-    print("[REEL] Stage 5/7  walking (dead-time proxy)")
-    _emit(on_progress, 5)   # predict_video returns only when done
-    walks = _walk_intervals(video_path, device=device)
+    end_telemetry = telemetry
+    if cfg.fast_end:
+        # One decode of the shared 540p proxy feeds both point-end signals:
+        # the pose pass the walking classifier reads, and the whole-court ball
+        # stream ball-quiet reads.
+        print("[REEL] Stage 5/7  walking + ball quiet (fast path)")
+        _emit(on_progress, 5)   # opens with a possible one-time proxy build
+        end_telemetry = extract_end_telemetry(
+            video_path, force=force_telemetry,
+            progress_cb=lambda cur, tot: _emit(on_progress, 5,
+                                               cur / max(1, tot)))
+        walks = _walk_intervals(video_path, device=device,
+                                dets_npz=end_dets_path_for(video_path),
+                                pose_npz=end_pose_path_for(video_path))
+    else:
+        print("[REEL] Stage 5/7  walking (dead-time proxy)")
+        _emit(on_progress, 5)   # predict_video returns only when done
+        walks = _walk_intervals(video_path, device=device)
     dead_onsets = walk_onsets(walks, cfg)
     n_walk = len(dead_onsets)
     print(f"[REEL]   walk intervals: {len(walks)} -> {n_walk} usable onset(s)")
     if cfg.ball_quiet_mode != "off":
-        dead_onsets += _ball_quiet_onsets(telemetry, cfg)
+        dead_onsets += _ball_quiet_onsets(end_telemetry, cfg)
         print(f"[REEL]   dead-time onsets: {n_walk} walk + "
               f"{len(dead_onsets) - n_walk} ball-quiet "
               f"(mode={cfg.ball_quiet_mode})")

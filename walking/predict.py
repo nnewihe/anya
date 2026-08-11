@@ -46,7 +46,15 @@ def predict_video(video, model_path=MODEL_PATH, pose_npz=None, device="mps",
 
     sig = frame_signals(kp, bbox, load_homography(video), fps,
                         on_court=z.get("on_court"))
-    stride = int(post.get("stride", 2))
+
+    # `post["stride"]` is a DECISION RATE, tuned on 30 fps clips extracted
+    # every frame: stride 2 there meant scoring 15 times a second.  A pass that
+    # already extracted pose at a lower rate (anya_end_telemetry samples at
+    # 15 fps whatever the source does) must not decimate a second time, or the
+    # decisions land at 7.5 Hz — below Nyquist for the 0.7-4.0 Hz cadence band
+    # the features measure.  So the npz's own stride is divided out.
+    pose_stride = int(z["stride"]) if "stride" in z else 1
+    stride = max(1, int(round(int(post.get("stride", 2)) / pose_stride)))
     idx = np.arange(0, n, stride)
     X, got = window_features(sig, fps, idx)
     if got != names:
@@ -61,8 +69,11 @@ def predict_video(video, model_path=MODEL_PATH, pose_npz=None, device="mps",
     for i, t in enumerate(idx):
         prob[t:min(t + stride, n)] = prob_s[i]
         mask[t:min(t + stride, n)] = mask_s[i]
+    # `fps` is the rate of the returned arrays, so a caller converting index to
+    # seconds gets source time without knowing the stride; `pose_stride` is
+    # there for anything that wants source FRAME numbers back.
     return {"fps": fps, "n_frames": n, "prob": prob, "is_walking": mask,
-            "sig": sig}
+            "sig": sig, "pose_stride": pose_stride}
 
 
 def write_outputs(res, out_json, jsonl=None):
@@ -72,7 +83,8 @@ def write_outputs(res, out_json, jsonl=None):
     # was actually tracked. An interval with low coverage is a guess made across
     # a hole in the input, not a confident call, and downstream code should be
     # able to drop those without re-deriving them.
-    intervals = [{"start_frame": int(a), "end_frame": int(b),
+    st = int(res.get("pose_stride", 1))
+    intervals = [{"start_frame": int(a) * st, "end_frame": int(b) * st,
                   "start_second": a / fps, "end_second": (b + 1) / fps,
                   "duration_s": (b - a + 1) / fps,
                   "mean_prob": float(np.mean(prob[a:b + 1])),

@@ -130,8 +130,15 @@ def select(video, dets_npz=None, out=None, verbose=True):
         since = 1
 
     out = out or pose_path(video)
+    # `fps` is the rate of THESE rows, which is the source rate only when the
+    # detections were extracted every frame.  A decimated pass (pipeline/
+    # anya_end_telemetry) writes its effective rate as fps and carries the
+    # stride alongside, so everything here — the MAX_SPEED gate above included
+    # — works on a consistent timeline, and only the mapping back to source
+    # frame numbers needs the stride.
+    extra = {k: z[k] for k in ("stride", "src_fps", "n_src_frames") if k in z}
     np.savez_compressed(out, kp=kp_out, bbox=bb_out, on_court=on_out,
-                        fps=np.float64(fps))
+                        fps=np.float64(fps), **extra)
     if verbose:
         cov = float(np.mean(np.isfinite(bb_out[:, 0])))
         print(f"[select] {out}: coverage {cov:.1%} "

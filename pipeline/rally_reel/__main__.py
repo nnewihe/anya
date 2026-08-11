@@ -36,6 +36,10 @@ def main(argv=None):
                     help="Detect far serves from the shared full-resolution "
                          "telemetry plus extract_far_pose, instead of the "
                          "cheaper and more accurate anya_far_telemetry pass")
+    ap.add_argument("--no-fast-end", action="store_true",
+                    help="Take point ends from a full-rate walking pose pass "
+                         "plus the shared telemetry ball stream, instead of "
+                         "the cheaper anya_end_telemetry pass")
     ap.add_argument("--no-near", action="store_true", help="Far-side serves only")
     ap.add_argument("--no-far", action="store_true", help="Near-side serves only")
     ap.add_argument("--pre-roll", type=float, default=None, help="Lead-in seconds")
@@ -82,6 +86,8 @@ def main(argv=None):
         cfg.fast_near = False
     if args.no_fast_far:
         cfg.fast_far = False
+    if args.no_fast_end:
+        cfg.fast_end = False
 
     if not (cfg.use_near or cfg.use_far):
         ap.error("--no-near and --no-far together leave no serve detector")
