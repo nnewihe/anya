@@ -443,3 +443,105 @@ across 7,302 frames** (mean consecutive equal-shape run: 1.04). A mixed-shape
 batch flips ultralytics' letterbox mode, which would shift the very keypoints
 the hand-raise gate reads. Making it batchable requires a fixed-size crop
 window — a change to detection behaviour, needing its own validation.
+
+That validation is 8.5, which does exactly this and measures the consequences.
+
+### 8.5 The far fast path (`anya_far_telemetry`)
+
+Stages 1 and 2 exist to serve three consumers; `anya_far_serve` is one of
+them and reads only `fpr`, `fprw`, `all_balls` and the pixels inside `fpr`.
+`anya_far_telemetry` serves that consumer alone, writing both a
+schema-compatible telemetry and a v2 pose cache in one pass, so
+`detect_far_serves` runs against it unmodified. Four levers, in descending
+order of what they actually bought:
+
+1. **A native-resolution band proxy.** The band around the far baseline is
+   ~12% of a 4K frame, and both far passes read it instead of the source. No
+   downscale — these are the same pixels the full pass crops out.
+2. **Pose at imgsz 320, batched.** The crop is ~110x160, so ultralytics'
+   default 640 was upscaling it fourfold and paying for the pixels. Halves
+   the pass and the raise signal comes out *cleaner*, not coarser.
+3. **Far player at 5 fps.** Arming is a 1 s stationarity test; it does not
+   need 30 samples a second to decide someone is standing still.
+4. **Ball at 10 fps, gated on whether a point could be open.**
+
+Measured over the 13 ground-truthed clips (289,665 frames), against a
+baseline of 48.7 ms/frame (Data/21: 411.9s telemetry + 202.1s far pose):
+
+| | total | ms/frame |
+|---|---|---|
+| including one-time proxy builds | 2,719s | 9.4 |
+| steady state | 1,997s | **6.9** (~7x) |
+
+Of the steady state, pose is 57%, ball 34%, player 8%.
+
+**What did NOT pay off, and why it is worth remembering:**
+
+- **Gating pose on the armed windows** — the direct analogue of the near
+  path's ready gate, which is where most of that path's win came from. Here
+  the duty cycle is **91%**: the far player stands still for most of a match,
+  so "armed" is almost always true. Kept because it bounds the pass and costs
+  nothing, but it is not a lever.
+- **Batching is not a correctness risk** (contra 8.4's caution): with
+  shape-uniform crops, batch 1 and batch 16 produce *identical* raise-gate
+  crossings. The letterbox concern is real only for mixed shapes.
+- **Dropping the ball to 5 fps is free** on detections (0 recall change, +2
+  FP across 83 serves) but is not the default, because precision — not speed
+  — is this detector's weak point. 2.5 fps costs +6 FP.
+- **The 5 fps player track is not why the keypoints differ.** Sampling the
+  player at 60 fps instead reproduces the 5 fps result exactly.
+
+**The keypoints are not the full pass's keypoints**, and no crop tuning made
+them so. Raise-gate crossings on Data/23, where the full pass gives 44:
+
+| variant | crossings |
+|---|---|
+| band proxy crf 14, crop resized to canonical | 72 |
+| band proxy crf 14, crop padded into canvas (shipped) | 67 |
+| band proxy crf 6 | 64 |
+| source pixels, no proxy | 56 |
+| source pixels, batch size 1 | 56 |
+
+Roughly half the gap is the band's re-encode and the rest is crop geometry.
+But the fast stream's signal is **different, not degraded**: it crosses more
+often at a low threshold while holding on to true serves at a high one, where
+the full pass starts losing them. Hence a separate preset
+(`FarServeDetectorConfig.for_fast_path`), selected from the telemetry's
+`meta.source` so the two streams cannot be scored with each other's
+thresholds by accident.
+
+**Trap — do not fit thresholds on absolute corpus F1.** Clip 25's 10 far
+serves are invisible to *both* extractors (0/10 either way; the raise ratio
+there peaks at p99=0.18 against a working clip's 0.88). A sweep scored on
+corpus totals therefore rewards whichever setting simply detects less, and it
+picked a preset that was mid-table in the comparison that matters. Score the
+fast path against the full pass clip for clip.
+
+**Accuracy.** Both extractors, 10 clips, 77 ground-truthed far serves:
+
+| clip | GT | baseline | fast @ 0.20/0.65 |
+|---|---|---|---|
+| 21 | 1 | 0, 8 FP | 0, 5 FP |
+| 22 | 4 | 3, 2 FP | 3, 2 FP |
+| 23 | 15 | 15, 5 FP | 15, 3 FP |
+| 24 | 12 | 12, 1 FP | 12, 2 FP |
+| 25 | 10 | 0, 4 FP | 0, 2 FP |
+| 26 | 11 | **1**, 7 FP | **11**, 8 FP |
+| 36 | 9 | 8, 1 FP | 9, 1 FP |
+| 40 | 13 | **2**, 3 FP | **3**, 3 FP |
+| 43 | 0 | 0, 3 FP | 0, 0 FP |
+| 50 | 2 | 0, 3 FP | 1, 3 FP |
+| **total** | **77** | **41 (53%), 37 FP** | **54 (70%), 29 FP** |
+
+The fast path is better on both axes. A recall-leaning alternative sits one
+constant away — `FAST_RAISE_RATIO = 0.55` gives 56/77 at 38 FP, i.e. two more
+serves for nine more false positives.
+
+**The headline number here is not the fast path, it is the baseline.** The far
+detector's reputation rests on Data/23, where it scores 15/15 — and 15 of its
+41 corpus-wide detections are that one clip. On clips 26 and 40 the full pass
+finds 1 of 11 and 2 of 13. Whatever the fast path is doing differently
+(canonicalised crops, a re-encoded band, imgsz 320) recovers most of clip 26
+outright, which says the full pass's keypoints are not the better ones in any
+absolute sense — they are just the ones the current thresholds were fitted to.
+Treat far-serve recall on a new clip as an open question, not a solved one.

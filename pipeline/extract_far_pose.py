@@ -33,6 +33,13 @@ for another full extraction pass.
 First line is a meta header: {"meta": {...}}, carrying the pad/conf values
 used so a consumer can tell how a cache was built.
 
+A cheaper route to the same consumer exists: `anya_far_telemetry.py` produces
+this cache and the far telemetry together in one pass over a band proxy, at
+roughly a fifth of the cost of stage 1 + this module.  Its keypoints are not
+identical to these (its crops are canonicalised and re-encoded), so
+anya_far_serve picks its thresholds from the telemetry's provenance.  This
+module remains the reference and is what the full-telemetry path uses.
+
 Run:
     python -m pipeline.extract_far_pose match_anya_telemetry.jsonl [--force]
 """

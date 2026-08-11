@@ -64,6 +64,20 @@ except ImportError:                         # script import (python pipeline/x.p
 # insensitive to per-frame jitter, fed by a much sharper player track.
 
 
+# Fast-path raise-gate settings, from a sweep over the ground-truthed corpus;
+# see FarServeDetectorConfig.for_fast_path.  Kept as module constants so a
+# re-sweep touches one place.
+#
+# Swept 16 (window, ratio) pairs against the clips where BOTH extractors have
+# been run, which is the only fair comparison — an absolute F1 over the whole
+# corpus rewards whichever setting emits fewer detections on clips the far
+# detector cannot solve at all (see the clip-25 note below).
+FAST_SMOOTH_WINDOW_S:  float = 0.20
+FAST_RAISE_RATIO:      float = 0.65
+FAST_MIN_TRACE_FRAMES: int   = 2       # a 10 fps ball stream rarely lands 3
+                                       # detections inside one serve's flight
+
+
 class SystemState(Enum):
     IDLE = "IDLE"              # Waiting for (armed + hand-raise) to fire
     CONFIRMING = "CONFIRMING"  # Serve already recorded; watching for a ball
@@ -144,6 +158,41 @@ class FarServeDetectorConfig:
     POINT_END_QUIET_S: float = 1.5         # Ball silent this long ends the point
     POINT_MAX_S: float = 30.0              # Hard cap, so a stuck point recovers
 
+    @classmethod
+    def for_fast_path(cls) -> "FarServeDetectorConfig":
+        """Preset for telemetry from anya_far_telemetry rather than the full pass.
+
+        The fast path's pose crops are canonicalised and read out of a
+        re-encoded band, so its raise signal is not the same signal these
+        defaults were swept against: it crosses the 0.35 threshold far more
+        often (67 times against the full pass's 44 on Data/23) while holding
+        on to the true serves much better under a stricter gate.  So the
+        settings move in opposite directions on the two streams — at
+        RAISE_RATIO 0.55 the full pass drops to 12/15 recall, while the fast
+        path is still 15/15.
+
+        Only the raise gate is re-tuned; every other threshold is the shipped
+        one.  Measured over the ten clips where both extractors have run, 77
+        ground-truthed far serves (DESIGN.md 8.5 has the per-clip table):
+
+            full pass, shipped thresholds   41/77 recall, 37 FP
+            fast path, this preset          54/77 recall, 29 FP
+
+        i.e. better on both axes, which is the bar it had to clear.  Raising
+        recall two more serves costs nine more false positives
+        (RAISE_RATIO 0.55 -> 56/77 at 38 FP) if that trade is wanted.
+
+        A caution that applies to both presets: clip 25's 10 far serves are
+        invisible to BOTH extractors (0/10 either way), so any threshold fitted
+        on absolute corpus F1 gets rewarded for simply detecting less.  Fit
+        against the full pass, clip for clip, not against the corpus total.
+        """
+        cfg = cls()
+        cfg.SMOOTH_WINDOW_S = FAST_SMOOTH_WINDOW_S
+        cfg.RAISE_RATIO     = FAST_RAISE_RATIO
+        cfg.MIN_TRACE_FRAMES = FAST_MIN_TRACE_FRAMES
+        return cfg
+
 
 def scale_exclusion_zones(zones, meta) -> List[Tuple[float, float, float, float]]:
     """Rescales meta exclusion zones into analysis coordinates.
@@ -189,13 +238,39 @@ def _probe_source_size(meta) -> Optional[Tuple[int, int]]:
         return None
 
 
-def calibrate_static_blobs(records, cfg: FarServeDetectorConfig):
+def ball_sampling_scales(meta) -> Tuple[float, float]:
+    """(hits_scale, rate_scale) for a telemetry file's ball sampling.
+
+    anya_telemetry runs the ball model on every frame; anya_far_telemetry runs
+    it on a fraction of them (a reduced rate, and only where a point could be
+    live).  The static-blob thresholds are counts of detections, so they mean
+    something different against a sparser stream and have to be scaled or a
+    persistent false positive stops looking persistent — which would leave a
+    scoreboard glint keeping every point alive forever.
+
+    `rate_scale` is the sampling rate (detections per unit time scale with
+    it); `hits_scale` is the share of the clip's frames actually looked at,
+    which is what the absolute STATIC_MIN_HITS floor scales with.  Both are
+    1.0 for a full telemetry file, so its calibration is unchanged.
+    """
+    stride  = max(1, int(meta.get("ball_stride") or 1))
+    total   = int(meta.get("total_frames") or 0)
+    sampled = int(meta.get("ball_frames") or 0)
+    rate_scale = 1.0 / stride
+    hits_scale = (sampled / total) if (sampled and total) else rate_scale
+    return hits_scale, rate_scale
+
+
+def calibrate_static_blobs(records, cfg: FarServeDetectorConfig,
+                           hits_scale: float = 1.0, rate_scale: float = 1.0):
     """Learns persistent false-positive cells from the whole telemetry stream.
 
     A real ball crosses any given cell a handful of times per pass; a static
     false positive fires in most frames it is visible for.  Scoring by
     detections-per-active-bucket separates the two cleanly (observed: static
     cells score 100+, the densest genuine ball cell scores under 4).
+
+    The two scales carry a sub-sampled ball stream; see `ball_sampling_scales`.
     """
     hits = defaultdict(int)
     buckets = defaultdict(set)
@@ -206,9 +281,11 @@ def calibrate_static_blobs(records, cfg: FarServeDetectorConfig):
             key = (int(b[0] // cell), int(b[1] // cell))
             hits[key] += 1
             buckets[key].add(bucket)
+    min_hits = cfg.STATIC_MIN_HITS * hits_scale
+    min_rate = cfg.STATIC_MIN_RATE * rate_scale
     return {
         k for k, n in hits.items()
-        if n >= cfg.STATIC_MIN_HITS and n / len(buckets[k]) >= cfg.STATIC_MIN_RATE
+        if n >= min_hits and n / len(buckets[k]) >= min_rate
     }
 
 
@@ -605,11 +682,24 @@ def load_pose_cache(telemetry_path: str, pose_path: str = None) -> Dict[int, Opt
     return load_far_pose(pose_path)
 
 
+def config_for(meta) -> FarServeDetectorConfig:
+    """The right thresholds for whichever extractor produced this telemetry.
+
+    The two streams want different raise-gate settings (see `for_fast_path`),
+    and getting it wrong is silent — the detector runs happily either way and
+    just scores worse — so the choice is made from the file's own provenance
+    rather than left to the caller.
+    """
+    if meta.get("source") == "anya_far_telemetry":
+        return FarServeDetectorConfig.for_fast_path()
+    return FarServeDetectorConfig()
+
+
 def detect_far_serves(telemetry_path: str,
                       config: FarServeDetectorConfig = None,
                       pose_path: str = None) -> List[Dict[str, Any]]:
-    cfg = config or FarServeDetectorConfig()
     meta, records = load_telemetry(telemetry_path)
+    cfg = config or config_for(meta)
     pose_cache = load_pose_cache(telemetry_path, pose_path)
     return _run_detector(meta, records, cfg, pose_cache).detected_serves
 
@@ -618,7 +708,8 @@ def _run_detector(meta, records, cfg, pose_cache=None) -> "FarServeDetector":
 
     detector = FarServeDetector(cfg)
     detector.set_exclusion_zones(scale_exclusion_zones(meta.get("exclusion_zones", []), meta))
-    detector.set_static_cells(calibrate_static_blobs(records, cfg))
+    detector.set_static_cells(
+        calibrate_static_blobs(records, cfg, *ball_sampling_scales(meta)))
     detector.fp_key = pick_far_player_source(records)
     detector.set_pose_cache(pose_cache or {})
 
@@ -666,13 +757,17 @@ if __name__ == "__main__":
     parser.add_argument("--eval", help="Path to ground_truth.json for scoring")
     parser.add_argument("--conf", type=float, help="Override minimum ball confidence")
     parser.add_argument("--pose", help="Path to a far-pose cache (default: derived from telemetry path)")
+    parser.add_argument("--full-preset", action="store_true",
+                        help="Use the full-telemetry thresholds even on fast-path "
+                             "telemetry (A/B runs; the preset is normally picked "
+                             "from the file's provenance)")
     args = parser.parse_args()
 
-    cfg = FarServeDetectorConfig()
+    meta, records = load_telemetry(args.telemetry_file)
+    cfg = FarServeDetectorConfig() if args.full_preset else config_for(meta)
     if args.conf is not None:
         cfg.BALL_CONF_MIN = args.conf
 
-    meta, records = load_telemetry(args.telemetry_file)
     pose_cache = load_pose_cache(args.telemetry_file, args.pose)
     detector = _run_detector(meta, records, cfg, pose_cache)
     serves = detector.detected_serves

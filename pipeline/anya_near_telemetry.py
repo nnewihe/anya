@@ -56,8 +56,6 @@ import argparse
 import json
 import math
 import os
-import shutil
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,15 +73,18 @@ try:                                        # package import (python -m pipeline
     from .utilities import (Config, init_court, create_auto_exclusion_zones,
                             load_cached_exclusion_zones,
                             save_cached_exclusion_zones, probe_video)
+    from .proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
+    from .proxy import ensure_proxy as _ensure_proxy
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import (Config, init_court, create_auto_exclusion_zones,
                            load_cached_exclusion_zones,
                            save_cached_exclusion_zones, probe_video)
+    from proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
+    from proxy import ensure_proxy as _ensure_proxy
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
 NEAR_TELEMETRY_SUFFIX = "_anya_near_telemetry.jsonl"
-PROXY_SUFFIX          = "_proxy540.mp4"
 NEAR_TELEMETRY_VERSION = 1
 
 
@@ -151,9 +152,9 @@ def near_telemetry_path_for(video_path: str) -> str:
 
 
 def proxy_path_for(video_path: str) -> str:
-    d = os.path.dirname(os.path.abspath(video_path))
-    stem = os.path.splitext(os.path.basename(video_path))[0]
-    return os.path.join(d, f"{stem}{PROXY_SUFFIX}")
+    """The 540p proxy path — shared with anya_far_telemetry's ball pass, so a
+    video analysed by both fast paths is transcoded once."""
+    return _proxy_path_for(video_path, PROXY_SUFFIX)
 
 
 def ensure_proxy(video_path: str, size: Tuple[int, int] = (960, 540),
@@ -161,74 +162,11 @@ def ensure_proxy(video_path: str, size: Tuple[int, int] = (960, 540),
                  force: bool = False) -> str:
     """Transcode `video_path` to a `size` proxy once; return its path.
 
-    Frame indices must map 1:1 to the source, because every record this module
-    writes is keyed by source frame number and the ground truth is too.
-    `-fps_mode passthrough` keeps ffmpeg from dropping or duplicating frames to
-    hit a target rate; the result is verified against the source frame count
-    before the proxy is accepted.
-
-    Returns the SOURCE path unchanged if ffmpeg is unavailable or the
-    transcode does not come back frame-exact — a slow correct run beats a fast
-    wrong one.
+    Thin wrapper over `proxy.ensure_proxy` (which the far fast path shares) —
+    see there for the frame-exactness contract and why CRF matters.
     """
-    out = proxy_path_for(video_path)
-    meta_path = out + ".build.json"
-    src_info = probe_video(video_path)
-    src_n = int(src_info["frame_count"])
-    # Build parameters travel with the proxy.  A frame-count check alone
-    # cannot tell a CRF 20 proxy from a CRF 12 one, so changing the quality
-    # settings would silently reuse the old file and quietly invalidate any
-    # A/B run comparing them.
-    want = {"size": list(size), "crf": int(crf), "preset": str(preset),
-            "frames": src_n}
-
-    if not force and os.path.isfile(out):
-        try:
-            have = json.load(open(meta_path)) if os.path.isfile(meta_path) else None
-            if have == want and int(probe_video(out)["frame_count"]) == src_n:
-                print(f"[NEAR-TELEM] Using cached proxy: {out}")
-                return out
-            print(f"[NEAR-TELEM] Cached proxy was built with {have} but "
-                  f"{want} is wanted — rebuilding.")
-        except Exception:
-            pass
-
-    if shutil.which("ffmpeg") is None:
-        print("[NEAR-TELEM] WARN: ffmpeg not found — decoding the source directly.")
-        return video_path
-
-    w, h = size
-    tmp = out + ".part.mp4"
-    cmd = ["ffmpeg", "-v", "error", "-y", "-i", video_path,
-           "-vf", f"scale={w}:{h}", "-fps_mode", "passthrough",
-           "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
-           "-pix_fmt", "yuv420p", "-an", tmp]
-    print(f"[NEAR-TELEM] Building {w}x{h} proxy (one-time)…")
-    t0 = time.perf_counter()
-    try:
-        subprocess.run(cmd, check=True, capture_output=True)
-    except subprocess.CalledProcessError as ex:
-        print(f"[NEAR-TELEM] WARN: proxy transcode failed ({ex}) — using source.")
-        if os.path.isfile(tmp):
-            os.remove(tmp)
-        return video_path
-
-    try:
-        proxy_n = int(probe_video(tmp)["frame_count"])
-    except Exception:
-        proxy_n = -1
-    if proxy_n != src_n:
-        print(f"[NEAR-TELEM] WARN: proxy has {proxy_n} frames vs source {src_n} "
-              "— discarding it and using the source.")
-        os.remove(tmp)
-        return video_path
-
-    os.replace(tmp, out)
-    with open(meta_path, "w") as fh:
-        json.dump(want, fh)
-    print(f"[NEAR-TELEM] proxy → {out}  ({time.perf_counter() - t0:.1f}s, "
-          f"{proxy_n} frames, crf {crf})")
-    return out
+    return _ensure_proxy(video_path, size=size, crf=crf, preset=preset,
+                         force=force, label="NEAR-TELEM")
 
 
 class NearTelemetryExtractor:
