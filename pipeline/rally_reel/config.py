@@ -117,21 +117,36 @@ class ReelConfig:
     # coverage interval is a guess made across a hole in the input, and its
     # own docs say downstream code should be able to drop those.
 
-    fast_end: bool = True
+    fast_end: bool = False
     # Take BOTH point-end signals from anya_end_telemetry (shared 540p proxy,
     # 15 fps pose, 10 fps whole-court ball) instead of a full-rate walking pose
     # pass plus the shared anya_telemetry ball stream.
     #
-    # This is the stage that decides whether the reel needs the full pass at
-    # all: with fast_near and fast_far already on, ball-quiet was the last
-    # consumer of it, so turning this on is what lets stages 1-2 be skipped.
+    # OFF by default, and the reason is the measurement, not caution.  Over 11
+    # clips and 135 labelled point ends (DESIGN.md 8.6):
+    #
+    #                  baseline   fast
+    #   recall           41%       44%
+    #   precision        52%       55%
+    #   per-point med   +0.98s    +0.23s
+    #   truncations       11        13
+    #   mid-rally FP      11        14
+    #
+    # Cheaper (12.84 ms/frame against ~32.6 attributed), better timed, slightly
+    # better pooled recall and precision — but it cuts live tennis out of the
+    # reel more often, and per clip it is mixed rather than uniformly better:
+    # 21/23/24/25/26/38 improve, 36 and 40 lose an end, 43 goes 3/6 to 1/6.
+    # Truncations were the gate this work set and it did not clear them.
+    #
+    # Turning it on is one flag, and worth it wherever throughput matters more
+    # than the odd short point.  It is also what lets stages 1-2 be skipped
+    # entirely: with fast_near and fast_far already on, ball-quiet was the last
+    # consumer of the full pass.
     #
     # walking.predict was already scoring at 15 Hz — every 2nd frame of a 30
     # fps clip — so the pose beneath it ran at twice the rate anything read.
-    # 15 Hz is also the floor: the features measure a 0.7-4.0 Hz cadence band,
-    # and 7.5 Hz would be below Nyquist for it.
-    #
-    # --no-fast-end reverts.
+    # 15 Hz is the floor: the features measure a 0.7-4.0 Hz cadence band, and
+    # 7.5 Hz would be below Nyquist for it.
 
     walk_model_15hz: bool = True
     # Under fast_end, score walking with the model retrained at the fast path's

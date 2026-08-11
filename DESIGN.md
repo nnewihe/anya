@@ -658,3 +658,32 @@ ends, and 39 of its 107 ends come from `next-serve` — i.e. the segment ran int
 the following serve without either signal ever firing. Both arms are weak in
 absolute terms. Point-end detection was already the loose end of this pipeline;
 the fast path did not make it so, and making it cheap does not make it good.
+
+#### Retuning the walking objective (rejected)
+
+The truncations came from the walking signal, and the 15 Hz model had inherited
+the walking classifier's shipped F2 objective — recall-leaning, which is right
+for finding walks and wrong for ending points. Retuning at F1 on the labelled
+clips only (the sweep picked a plain threshold at 0.25 instead of hysteresis)
+did not move the failing metric:
+
+| arm over 135 ends | recall | precision | truncations | mid-rally FP |
+|---|---|---|---|---|
+| baseline | 41% | 52% | 11 | 11 |
+| fast, F2 model | 44% | 55% | 13 | 14 |
+| fast, F1 model | 43% | 52% | 13 | 14 |
+
+Truncations sat at 13 either way and recall slipped, so the F2 model is kept and
+the objective is not the lever. Whatever is cutting these points short survives
+both operating points; the next place to look is the two 60 fps clips that carry
+most of the regression (40 and 43, where pose decimates 4x rather than 2x), not
+another sweep of the same knob.
+
+`fast_end` therefore ships OFF. The compute is real and the flag is one word,
+but the gate this work set was truncations, and it did not clear them.
+
+One implementation bug worth recording because it hid behind the default:
+`predict.py` assumed the model bundle's post-processing was hysteresis and read
+`post["hi"]`, while `train.py` had a dispatch over all three kinds the sweep can
+pick. Every predict call died the moment a tune chose a threshold. `apply_post`
+now lives in `walking/evaluate.py` and both import it.
