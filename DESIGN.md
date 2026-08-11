@@ -618,3 +618,43 @@ interval recall 0.00 -> 0.89), but `walking.predict` never calls it — it runs
 fast path is also expensive in a way that does not show up in the arithmetic:
 batching sixteen 1920px frames on MPS took a clip whose main pass is ~2.5
 minutes past 20 minutes. Off by default, and small-batched when on.
+
+#### Corpus result: cheaper, better timed, but it fails the truncation gate
+
+11 clips, 135 labelled point ends, both arms run end to end with their flags
+stated explicitly (`--no-fast-end` on the baseline):
+
+| | baseline | fast |
+|---|---|---|
+| recall | 56/135 (41%) | 59/135 (44%) |
+| precision | 52% | 55% |
+| per-point median error | +0.98s | +0.23s |
+| p90 | 1.48s | 1.84s |
+| truncations | 11 | **13** |
+| mid-rally false fires | 11 | **14** |
+
+Recall, precision and timing all move the right way. Truncations and mid-rally
+false fires do not, and the gate was "truncations not above baseline" — so this
+is not shippable as it stands. Per clip it is mixed rather than uniformly
+better: 21/23/24/25/26/38 improve, 36 and 40 lose an end each, 43 goes 3/6 to
+1/6.
+
+Attributing each truncation to the signal that produced it says the rate-aware
+quiet rule worked and the walking model is what regressed:
+
+| producing signal | baseline | fast |
+|---|---|---|
+| ball-quiet | 4 | **2** |
+| walk | 6 | **8** |
+| next-serve | 1 | 3 |
+
+The 15 Hz model was tuned with the walking classifier's shipped F2 objective,
+which leans on recall. That is right for *finding walks* and wrong for *ending
+points*: a late onset wastes footage, an early one cuts live tennis out of the
+reel. The consumer's loss function is asymmetric and the model's was not.
+
+**Read the baseline column before reading the delta.** It recalls 41% of point
+ends, and 39 of its 107 ends come from `next-serve` — i.e. the segment ran into
+the following serve without either signal ever firing. Both arms are weak in
+absolute terms. Point-end detection was already the loose end of this pipeline;
+the fast path did not make it so, and making it cheap does not make it good.
