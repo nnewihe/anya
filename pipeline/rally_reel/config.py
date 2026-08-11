@@ -7,14 +7,36 @@ from dataclasses import dataclass
 class ReelConfig:
     # ---- point starts -------------------------------------------------
     near_threshold: float = 0.8
-    # anya_near_serve's P is documented as an uncalibrated ranking score
-    # ("treat P as a ranking score until it has been tuned against ground
-    # truth"), and earlier evaluation found it saturates toward dwell-only
-    # with precision that does not separate.  Exposed here rather than
-    # buried so it can be raised per clip.
+    # With fast_near this is no longer an uncalibrated guess: 0.80 is the
+    # swept optimum for the additive P over 12 ground-truthed clips (59/59
+    # recall, 59/88 precision, zero events on both far-serve-only controls),
+    # and the threshold curve around it is gentle — 0.775 gives 33 false
+    # positives, 0.800 gives 29, 0.825 trades one serve for 25.  Still
+    # exposed so it can be raised per clip.
+    #
+    # With fast_near=False it reverts to the legacy product-form P, where the
+    # original caveat stands: that score saturates toward dwell-only and no
+    # threshold separates cleanly.
 
     use_near: bool = True
     use_far: bool = True
+
+    fast_near: bool = True
+    # Score near serves from anya_near_telemetry (540p proxy, 5 fps player,
+    # upscaled toss-ROI ball) instead of the shared anya_telemetry pass.
+    #
+    # This is an ACCURACY change first and a compute change only sometimes.
+    # Measured against ground truth: Data/38 went 4/8 -> 8/8, Data/21
+    # 11/13 -> 11/12 precision at unchanged recall, and across 12 clips the
+    # fast path reaches 59/59 recall at 59/88 precision.
+    #
+    # On compute it depends on what else the run needs.  Far serves (stage 3,
+    # via the far-pose pass in stage 2) and ball-quiet dead time (stage 5)
+    # both read the full telemetry, so with those enabled BOTH passes run and
+    # the reel gets ~8% slower (34.4 -> ~37.2 ms/frame) in exchange for the
+    # accuracy above.  With use_far=False and ball_quiet_mode="off" nothing
+    # else needs the full pass, stages 1-2 are skipped entirely, and the run
+    # is ~12x cheaper.
 
     merge_window_s: float = 4.0
     # Near and far detectors can both fire on the same serve, and the far

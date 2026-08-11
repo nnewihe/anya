@@ -26,7 +26,12 @@ def main(argv=None):
     ap.add_argument("--device", default="mps", help="Torch device for the walking pass")
 
     ap.add_argument("--near-threshold", type=float, default=None,
-                    help="Near-serve probability threshold (uncalibrated score)")
+                    help="Near-serve probability threshold (default 0.80, the "
+                         "swept optimum for the fast path)")
+    ap.add_argument("--no-fast-near", action="store_true",
+                    help="Score near serves from the shared full-resolution "
+                         "telemetry using the legacy P, instead of the cheaper "
+                         "and more accurate anya_near_telemetry pass")
     ap.add_argument("--no-near", action="store_true", help="Far-side serves only")
     ap.add_argument("--no-far", action="store_true", help="Near-side serves only")
     ap.add_argument("--pre-roll", type=float, default=None, help="Lead-in seconds")
@@ -69,6 +74,8 @@ def main(argv=None):
         cfg.enforce_service_runs = False
     if args.drop_side_conflicts:
         cfg.drop_side_conflicts = True
+    if args.no_fast_near:
+        cfg.fast_near = False
 
     if not (cfg.use_near or cfg.use_far):
         ap.error("--no-near and --no-far together leave no serve detector")

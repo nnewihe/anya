@@ -7,7 +7,8 @@ config change costs seconds rather than another perception pass):
     1  telemetry          anya_telemetry                <stem>_anya_telemetry.jsonl
     2  far-player pose    extract_far_pose              <stem>_far_pose.jsonl
     3  far serve starts   anya_far_serve                (in memory)
-    4  near serve starts  anya_near_serve               <stem>_near_serve_events.json
+    4  near serve starts  anya_near_telemetry           <stem>_anya_near_telemetry.jsonl
+                          + anya_near_serve             <stem>_near_serve_events.json
     5  walking / deadtime walking.predict               <stem>_walk_pose.npz
     6  segments           rally_reel.points             <stem>_rally_segments.json
     7  cut + concat       utilities.create_highlights   <stem>_rally_reel.mp4
@@ -31,6 +32,7 @@ from ..anya_telemetry import extract_anya_telemetry, telemetry_path_for
 from ..anya_far_serve import detect_far_serves
 from ..extract_far_pose import extract_far_pose
 from ..anya_near_serve import score_telemetry, NearServeConfig
+from ..anya_near_telemetry import extract_near_telemetry
 from ..utilities import Config, init_court, create_highlights_ffmpeg, probe_video
 
 from .config import ReelConfig
@@ -47,7 +49,7 @@ STAGE_LABELS = {
     1: "telemetry",
     2: "far-player pose",
     3: "far serve starts",
-    4: "near serve starts",
+    4: "near serve starts",   # includes its own perception pass under fast_near
     5: "walking (dead time)",
     6: "segment assembly",
     7: "cutting reel",
@@ -206,19 +208,35 @@ def build_reel(video_path: str,
     _emit(on_progress, 0)
     init_court(video_path, analysis_size=ANALYSIS_SIZE)
 
+    # Which stages still need the shared full-resolution pass?  Far serves
+    # read it (through the far-pose pass) and so does ball-quiet dead time;
+    # near serves no longer do when fast_near is on.  When nothing needs it,
+    # stages 1-2 are skipped outright — that is where the ~12x actually lands.
+    needs_full = cfg.use_far or cfg.ball_quiet_mode != "off" or not cfg.fast_near
+
     # ── Stage 1: telemetry ──────────────────────────────────────────────
-    print("[REEL] Stage 1/7  telemetry")
-    _emit(on_progress, 1, 0.0)
-    telemetry = extract_anya_telemetry(
-        video_path, force=force_telemetry,
-        progress_cb=lambda cur, tot: _emit(on_progress, 1, cur / max(1, tot)))
+    telemetry = None
+    if needs_full:
+        print("[REEL] Stage 1/7  telemetry")
+        _emit(on_progress, 1, 0.0)
+        telemetry = extract_anya_telemetry(
+            video_path, force=force_telemetry,
+            progress_cb=lambda cur, tot: _emit(on_progress, 1, cur / max(1, tot)))
+    else:
+        print("[REEL] Stage 1/7  telemetry — skipped (nothing needs the full "
+              "pass: use_far=False, ball_quiet_mode=off, fast_near=True)")
+        _emit(on_progress, 1, 1.0)
 
     # ── Stage 2: far-player pose ────────────────────────────────────────
-    print("[REEL] Stage 2/7  far-player pose")
-    _emit(on_progress, 2, 0.0)
-    extract_far_pose(
-        telemetry,
-        progress_cb=lambda cur, tot: _emit(on_progress, 2, cur / max(1, tot)))
+    if cfg.use_far:
+        print("[REEL] Stage 2/7  far-player pose")
+        _emit(on_progress, 2, 0.0)
+        extract_far_pose(
+            telemetry,
+            progress_cb=lambda cur, tot: _emit(on_progress, 2, cur / max(1, tot)))
+    else:
+        print("[REEL] Stage 2/7  far-player pose — skipped (use_far=False)")
+        _emit(on_progress, 2, 1.0)
 
     # ── Stage 3: far serves ─────────────────────────────────────────────
     far_serves = []
@@ -231,11 +249,27 @@ def build_reel(video_path: str,
     # ── Stage 4: near serves ────────────────────────────────────────────
     near_events = []
     if cfg.use_near:
-        print("[REEL] Stage 4/7  near serve starts")
-        _emit(on_progress, 4)
-        near_cfg = NearServeConfig()
-        near_cfg.threshold = cfg.near_threshold
-        _, events_path = score_telemetry(telemetry, near_cfg)
+        if cfg.fast_near:
+            # Its own cheap perception pass (540p proxy, 5 fps player,
+            # upscaled toss-ROI ball) plus the tuned low-rate scoring profile.
+            print("[REEL] Stage 4/7  near serve starts (fast path)")
+            # Indeterminate rather than 0%: on a video's first run this stage
+            # opens with a one-time proxy transcode that reports no progress,
+            # and a bar parked at 0% for a minute reads as a hang.
+            _emit(on_progress, 4)
+            near_telemetry = extract_near_telemetry(
+                video_path,
+                progress_cb=lambda cur, tot: _emit(on_progress, 4,
+                                                   cur / max(1, tot)))
+            near_cfg = NearServeConfig.for_low_rate(threshold=cfg.near_threshold)
+            source = near_telemetry
+        else:
+            print("[REEL] Stage 4/7  near serve starts")
+            _emit(on_progress, 4)
+            near_cfg = NearServeConfig()
+            near_cfg.threshold = cfg.near_threshold
+            source = telemetry
+        _, events_path = score_telemetry(source, near_cfg)
         with open(events_path) as fh:
             payload = json.load(fh)
         near_events = payload.get("events", payload if isinstance(payload, list) else [])
