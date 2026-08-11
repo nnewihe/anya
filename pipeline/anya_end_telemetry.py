@@ -2,7 +2,7 @@
 anya_end_telemetry.py
 =====================
 The point-END sibling of anya_near_telemetry / anya_far_telemetry: everything
-the dead-time signals need, from one decode of the shared 540p proxy.
+the dead-time signals need, off the shared 540p proxy instead of the 4K source.
 
 Point end has two consumers and they used to pay for two full-rate passes
 between them:
@@ -15,8 +15,8 @@ between them:
 
 Both are read as *time-coarse* evidence — "is the near player walking", "has
 the ball been silent for 1.5 s" — and neither needs 30 fps of 4K.  So this
-module decodes the proxy once and runs both models over that single frame
-stream at their own strides:
+module reads the proxy and runs each model at its own stride, in two sequential
+passes (see `interleave` for why not one):
 
   1. Shared 540p proxy (pipeline/proxy.py, CRF 14).  4K decode is ~6.7 ms of
      which ~4.1 ms is reconstruction that cannot be skipped, so the win is
@@ -156,6 +156,20 @@ class EndExtractorConfig:
     batch_size: int = 16
     prefetch:   bool = True
 
+    interleave: bool = True
+    # Run both models over ONE decode (True) or one after the other over two
+    # (False).  The obvious guess was that alternating models on MPS would cost
+    # more than a second 540p decode; measured on Data/21 it is the other way
+    # round — interleaved 12.84 ms/frame, sequential 14.11 — so the second
+    # decode is the more expensive half and one decode stays the default.
+    #
+    # What that A/B does NOT explain is why each call is ~50% over its
+    # reference cost either way (pose 18-19 ms/sample against 12.0 in the
+    # batched full-rate pass, ball 17.5-19.6 against 11.4).  The two arms ran
+    # against different background load, so treat both absolute numbers as
+    # provisional until they are re-measured on an idle machine — the ranking
+    # is what this flag records, not the magnitudes.
+
 
 def end_telemetry_path_for(video_path: str) -> str:
     d = os.path.dirname(os.path.abspath(video_path))
@@ -290,13 +304,14 @@ class EndTelemetryExtractor:
         return out
 
     # ------------------------------------------------------------------
-    def _frames(self, src: str):
-        """Yield (idx, frame) for frames either pass needs, in order.
+    def _frames(self, src: str, strides: Optional[Tuple[int, ...]] = None):
+        """Yield (idx, frame) for frames any of `strides` wants, in order.
 
         Frames no pass wants are grabbed and dropped: grab() still has to
         reconstruct them (H.264 leaves no choice) but skips the YUV->BGR
         conversion and the copy into numpy, which is the part worth avoiding.
         """
+        strides = strides or (self.pose_stride, self.ball_stride)
         cap = cv2.VideoCapture(src)
         aw, ah = self.cfg.analysis_size
         idx = -1
@@ -305,7 +320,7 @@ class EndTelemetryExtractor:
                 if not cap.grab():
                     break
                 idx += 1
-                if idx % self.pose_stride and idx % self.ball_stride:
+                if all(idx % s for s in strides):
                     continue
                 ok, frame = cap.retrieve()
                 if not ok:
@@ -317,7 +332,8 @@ class EndTelemetryExtractor:
         finally:
             cap.release()
 
-    def _prefetched(self, src: str, depth: int = 4):
+    def _prefetched(self, src: str, strides: Optional[Tuple[int, ...]] = None,
+                    depth: int = 4):
         """`_frames` on a reader thread, so decode overlaps inference.
 
         Measured worth 1.38x on the walking pose pass alone (DESIGN.md 8, the
@@ -330,7 +346,7 @@ class EndTelemetryExtractor:
 
         def _read():
             try:
-                for item in self._frames(src):
+                for item in self._frames(src, strides):
                     q.put(item)
             except BaseException as ex:
                 q.put(ex)
@@ -445,29 +461,57 @@ class EndTelemetryExtractor:
             ball_idx.clear()
             ball_img.clear()
 
-        source = (self._prefetched(src) if cfg.prefetch else self._frames(src))
+        def stream(strides):
+            return (self._prefetched(src, strides) if cfg.prefetch
+                    else self._frames(src, strides))
+
+        def tick(idx):
+            if progress_cb:
+                progress_cb(idx, self.total_frames)
+            el = time.perf_counter() - t0
+            print(f"[END-TELEM]   {idx}/{self.total_frames}  "
+                  f"{idx / max(1e-9, el):.0f} src-fps  "
+                  f"empty {self.n_empty / max(1, len(near) + self.n_empty):.1%}",
+                  flush=True)
+
         t0 = time.perf_counter()
-        for idx, frame in source:
-            if idx % self.pose_stride == 0:
+        if cfg.interleave:
+            for idx, frame in stream((self.pose_stride, self.ball_stride)):
+                if idx % self.pose_stride == 0:
+                    pose_idx.append(idx)
+                    pose_img.append(frame)
+                    if len(pose_img) >= cfg.batch_size:
+                        flush_pose()
+                        if idx // self.pose_stride % 1000 < cfg.batch_size:
+                            tick(idx)
+                if idx % self.ball_stride == 0:
+                    ball_idx.append(idx)
+                    ball_img.append(frame)
+                    if len(ball_img) >= cfg.batch_size:
+                        flush_ball()
+            flush_pose()
+            flush_ball()
+        else:
+            # Two passes, each with one hot model.  Costs a second decode of
+            # the proxy (~1.2 ms/frame) and saves alternating between two
+            # models on MPS, which measured far more than that — see
+            # DESIGN.md 8.6.
+            for idx, frame in stream((self.pose_stride,)):
                 pose_idx.append(idx)
                 pose_img.append(frame)
                 if len(pose_img) >= cfg.batch_size:
                     flush_pose()
-                    if progress_cb:
-                        progress_cb(idx, self.total_frames)
                     if idx // self.pose_stride % 1000 < cfg.batch_size:
-                        el = time.perf_counter() - t0
-                        print(f"[END-TELEM]   {idx}/{self.total_frames}  "
-                              f"{idx / max(1e-9, el):.0f} src-fps  "
-                              f"empty {self.n_empty / max(1, len(near) + self.n_empty):.1%}",
-                              flush=True)
-            if idx % self.ball_stride == 0:
+                        tick(idx)
+            flush_pose()
+            for idx, frame in stream((self.ball_stride,)):
                 ball_idx.append(idx)
                 ball_img.append(frame)
                 if len(ball_img) >= cfg.batch_size:
                     flush_ball()
-        flush_pose()
-        flush_ball()
+                    if idx // self.ball_stride % 2000 < cfg.batch_size:
+                        tick(idx)
+            flush_ball()
         self.timings["pass_s"] = time.perf_counter() - t0
         self.timings["pose_infer_s"] = t_pose
         self.timings["ball_infer_s"] = t_ball
@@ -513,6 +557,7 @@ class EndTelemetryExtractor:
                 "pose_imgsz":    cfg.pose_imgsz,
                 "pose_empty":    self.n_empty,
                 "pose_rescued":  self.n_rescued,
+                "interleave":    cfg.interleave,
                 "dets_npz":      os.path.basename(dets_path),
                 "analysis_size": list(cfg.analysis_size),
                 "source_size":   list(self.source_size),
@@ -591,6 +636,10 @@ if __name__ == "__main__":
     ap.add_argument("--ball-fps", type=float, default=None)
     ap.add_argument("--ball-imgsz", type=int, default=None)
     ap.add_argument("--batch", type=int, default=None)
+    ap.add_argument("--sequential", action="store_true",
+                    help="Run the two models in separate passes over their own "
+                         "decode, instead of interleaved over one (measured "
+                         "slower: 14.11 vs 12.84 ms/frame on Data/21)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -609,4 +658,6 @@ if __name__ == "__main__":
         c.ball_imgsz = args.ball_imgsz
     if args.batch is not None:
         c.batch_size = args.batch
+    if args.sequential:
+        c.interleave = False
     extract_end_telemetry(args.video, force=args.force, cfg=c, out_path=args.out)
