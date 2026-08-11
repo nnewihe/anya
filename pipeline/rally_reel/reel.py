@@ -5,7 +5,8 @@ config change costs seconds rather than another perception pass):
 
     0  court corners      utilities.init_court          <stem>_court_cache.json
     1  telemetry          anya_telemetry                <stem>_anya_telemetry.jsonl
-    2  far-player pose    extract_far_pose              <stem>_far_pose.jsonl
+    2  far-player pose    anya_far_telemetry            <stem>_anya_far_telemetry.jsonl
+                          (or extract_far_pose)         <stem>_far_pose.jsonl
     3  far serve starts   anya_far_serve                (in memory)
     4  near serve starts  anya_near_telemetry           <stem>_anya_near_telemetry.jsonl
                           + anya_near_serve             <stem>_near_serve_events.json
@@ -33,6 +34,7 @@ from ..anya_far_serve import detect_far_serves
 from ..extract_far_pose import extract_far_pose
 from ..anya_near_serve import score_telemetry, NearServeConfig
 from ..anya_near_telemetry import extract_near_telemetry
+from ..anya_far_telemetry import extract_far_telemetry
 from ..utilities import Config, init_court, create_highlights_ffmpeg, probe_video
 
 from .config import ReelConfig
@@ -47,7 +49,7 @@ N_STAGES = 7
 STAGE_LABELS = {
     0: "court calibration",
     1: "telemetry",
-    2: "far-player pose",
+    2: "far-player pose",    # includes its own perception pass under fast_far
     3: "far serve starts",
     4: "near serve starts",   # includes its own perception pass under fast_near
     5: "walking (dead time)",
@@ -208,11 +210,13 @@ def build_reel(video_path: str,
     _emit(on_progress, 0)
     init_court(video_path, analysis_size=ANALYSIS_SIZE)
 
-    # Which stages still need the shared full-resolution pass?  Far serves
-    # read it (through the far-pose pass) and so does ball-quiet dead time;
-    # near serves no longer do when fast_near is on.  When nothing needs it,
-    # stages 1-2 are skipped outright — that is where the ~12x actually lands.
-    needs_full = cfg.use_far or cfg.ball_quiet_mode != "off" or not cfg.fast_near
+    # Which stages still need the shared full-resolution pass?  Ball-quiet dead
+    # time reads it, and so do far serves and near serves whenever their fast
+    # paths are turned off.  When nothing needs it, stages 1-2 are skipped
+    # outright — that is where the speedup actually lands.
+    needs_full = (cfg.ball_quiet_mode != "off"
+                  or (cfg.use_far and not cfg.fast_far)
+                  or not cfg.fast_near)
 
     # ── Stage 1: telemetry ──────────────────────────────────────────────
     telemetry = None
@@ -224,16 +228,32 @@ def build_reel(video_path: str,
             progress_cb=lambda cur, tot: _emit(on_progress, 1, cur / max(1, tot)))
     else:
         print("[REEL] Stage 1/7  telemetry — skipped (nothing needs the full "
-              "pass: use_far=False, ball_quiet_mode=off, fast_near=True)")
+              "pass: fast_near, fast_far, ball_quiet_mode=off)")
         _emit(on_progress, 1, 1.0)
 
     # ── Stage 2: far-player pose ────────────────────────────────────────
+    # `far_source` is whichever telemetry stage 3 should read.  Under fast_far
+    # that is the far-only extractor's own JSONL, which writes its pose cache
+    # at the path far_pose_path_for derives — so detect_far_serves finds it
+    # unmodified, and picks its threshold preset from meta.source.
+    far_source = telemetry
     if cfg.use_far:
-        print("[REEL] Stage 2/7  far-player pose")
-        _emit(on_progress, 2, 0.0)
-        extract_far_pose(
-            telemetry,
-            progress_cb=lambda cur, tot: _emit(on_progress, 2, cur / max(1, tot)))
+        if cfg.fast_far:
+            print("[REEL] Stage 2/7  far telemetry + pose (fast path)")
+            # Indeterminate to start: the first run opens with a one-time band
+            # proxy transcode that reports no progress, and a bar parked at 0%
+            # for a minute reads as a hang.
+            _emit(on_progress, 2)
+            far_source = extract_far_telemetry(
+                video_path, force=force_telemetry,
+                progress_cb=lambda cur, tot: _emit(on_progress, 2,
+                                                   cur / max(1, tot)))
+        else:
+            print("[REEL] Stage 2/7  far-player pose")
+            _emit(on_progress, 2, 0.0)
+            extract_far_pose(
+                telemetry,
+                progress_cb=lambda cur, tot: _emit(on_progress, 2, cur / max(1, tot)))
     else:
         print("[REEL] Stage 2/7  far-player pose — skipped (use_far=False)")
         _emit(on_progress, 2, 1.0)
@@ -243,7 +263,7 @@ def build_reel(video_path: str,
     if cfg.use_far:
         print("[REEL] Stage 3/7  far serve starts")
         _emit(on_progress, 3)
-        far_serves = detect_far_serves(telemetry)
+        far_serves = detect_far_serves(far_source)
     print(f"[REEL]   far serves: {len(far_serves)}")
 
     # ── Stage 4: near serves ────────────────────────────────────────────

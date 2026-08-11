@@ -38,6 +38,26 @@ class ReelConfig:
     # else needs the full pass, stages 1-2 are skipped entirely, and the run
     # is ~12x cheaper.
 
+    fast_far: bool = True
+    # Detect far serves from anya_far_telemetry (native-resolution band proxy,
+    # 5 fps far player, pose while armed at imgsz 320, gated ball) instead of
+    # the shared anya_telemetry pass plus extract_far_pose.
+    #
+    # Like fast_near this is an accuracy change as well as a compute one.  Over
+    # the ten clips where both extractors have run (77 ground-truthed far
+    # serves, DESIGN.md 8.5): full pass 41/77 recall with 37 FP, fast path
+    # 54/77 with 29 FP — better on both axes.  The full pass's 15/15 reputation
+    # was entirely Data/23, the clip its thresholds were fitted to; on clip 26
+    # it finds 1 of 11 where the fast path finds 11.
+    #
+    # detect_far_serves picks the matching threshold preset itself from
+    # meta.source (see anya_far_serve.config_for), so nothing downstream of
+    # stage 3 changes.  --no-fast-far reverts.
+    #
+    # Compute only lands when the OTHER consumers of the full pass are gone
+    # too: 48.7 -> 6.9 ms/frame steady state, but stage 1 keeps running while
+    # ball-quiet dead time still reads it.
+
     merge_window_s: float = 4.0
     # Near and far detectors can both fire on the same serve, and the far
     # gate fires on the toss while the near gate fires on the strike — so
