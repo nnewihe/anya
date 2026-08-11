@@ -40,8 +40,9 @@ from sklearn.inspection import permutation_importance
 from sklearn.model_selection import GroupKFold
 
 from walking.court import load_homography
-from walking.evaluate import (boundary_mask, event_scores, fbeta, hysteresis,
-                              prf, smooth_prob, to_intervals, to_seconds, viterbi)
+from walking.evaluate import (apply_post, boundary_mask, event_scores, fbeta,
+                              hysteresis, prf, smooth_prob, to_intervals,
+                              to_seconds, viterbi)
 from walking.features import frame_signals, window_features
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
@@ -111,27 +112,6 @@ def fit_model(X, y, seed=0):
         early_stopping=False, random_state=seed)
     m.fit(X, y)
     return m
-
-
-def apply_post(prob, fps, cfg):
-    """Turn a probability trace into a boolean mask under a post-proc config."""
-    p = smooth_prob(prob, fps, cfg.get("smooth_s", 0.0))
-    kind = cfg["kind"]
-    if kind == "threshold":
-        mask = p >= cfg["thr"]
-    elif kind == "hysteresis":
-        return hysteresis(p, cfg["hi"], cfg["lo"], fps,
-                          min_dur_s=cfg["min_dur_s"], max_gap_s=0.5)
-    elif kind == "viterbi":
-        mask = viterbi(p, cfg["switch_cost"], cfg.get("bias", 0.0))
-    else:
-        raise ValueError(kind)
-    md = int(round(cfg.get("min_dur_s", 0.0) * fps))
-    if md > 1:
-        for a, b in to_intervals(mask):
-            if (b - a + 1) < md:
-                mask[a:b + 1] = False
-    return mask
 
 
 def post_grid(kind):

@@ -138,6 +138,34 @@ def viterbi(prob, switch_cost, bias=0.0, eps=1e-6):
     return out
 
 
+def apply_post(prob, fps, cfg):
+    """Turn a probability trace into a boolean mask under a post-proc config.
+
+    Lives here rather than in train.py because predict.py needs the same
+    dispatch: a bundle's `post` may be any of the three kinds the sweep can
+    pick, and a consumer that assumes one of them breaks the day the sweep
+    picks another.
+    """
+    p = smooth_prob(prob, fps, cfg.get("smooth_s", 0.0))
+    kind = cfg["kind"]
+    if kind == "threshold":
+        mask = p >= cfg["thr"]
+    elif kind == "hysteresis":
+        return hysteresis(p, cfg["hi"], cfg["lo"], fps,
+                          min_dur_s=cfg["min_dur_s"],
+                          max_gap_s=cfg.get("max_gap_s", 0.5))
+    elif kind == "viterbi":
+        mask = viterbi(p, cfg["switch_cost"], cfg.get("bias", 0.0))
+    else:
+        raise ValueError(kind)
+    md = int(round(cfg.get("min_dur_s", 0.0) * fps))
+    if md > 1:
+        for a, b in to_intervals(mask):
+            if (b - a + 1) < md:
+                mask[a:b + 1] = False
+    return mask
+
+
 def to_seconds(y, fps, n_seconds=None):
     """Majority vote of a frame mask into one label per elapsed second."""
     y = np.asarray(y, bool)

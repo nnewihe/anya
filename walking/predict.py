@@ -4,7 +4,8 @@ predict.py
 Run the trained walking classifier over a tennis video.
 
 Extracts near-player pose if it is not already cached, builds the same window
-features used in training, applies the model plus the tuned hysteresis, and
+features used in training, applies the model plus its tuned post-processing,
+and
 writes per-second JSONL and the walking intervals. ``--overlay`` renders a
 review video with the near-player box, court speed, cadence and the WALKING
 banner burned in.
@@ -21,7 +22,7 @@ import os
 import numpy as np
 
 from walking.court import ANALYSIS_SIZE, load_homography
-from walking.evaluate import hysteresis, to_intervals
+from walking.evaluate import apply_post, to_intervals
 from walking.extract_pose import extract
 from walking.select_near import pose_path, select
 from walking.features import frame_signals, window_features
@@ -61,8 +62,7 @@ def predict_video(video, model_path=MODEL_PATH, pose_npz=None, device="mps",
         raise RuntimeError("feature layout changed since training")
 
     prob_s = model.predict_proba(X)[:, 1]
-    mask_s = hysteresis(prob_s, post["hi"], post["lo"], fps / stride,
-                        min_dur_s=post["min_dur_s"], max_gap_s=post["max_gap_s"])
+    mask_s = apply_post(prob_s, fps / stride, post)
 
     prob = np.zeros(n)
     mask = np.zeros(n, bool)
