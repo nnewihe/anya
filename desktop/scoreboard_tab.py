@@ -1458,10 +1458,19 @@ class ScoreboardTab(QWidget):
         self._render_worker.render_failed.connect(self._on_render_error)
         # QThread's own built-in `finished` — fires only after the OS thread
         # has actually stopped, unlike our render_done/render_failed signals
-        # which we emit manually from inside run(). deleteLater must be tied
-        # to this one so cleanup can never race the real thread teardown.
+        # which we emit manually from inside run(). BOTH the deleteLater and
+        # the drop of our own reference must be tied to this one: whichever
+        # happens first destroys the QThread, and doing that while run() is
+        # still on the stack is a Qt fatal, not an exception.
         self._render_worker.finished.connect(self._render_worker.deleteLater)
+        self._render_worker.finished.connect(self._release_render_worker)
         self._render_worker.start()
+
+    def _release_render_worker(self):
+        # `self._render_worker is None` is also what re-enables the button, so
+        # this has to refresh it — the completion slot no longer can.
+        self._render_worker = None
+        self._refresh_render_btn()
 
     def _on_render_stage(self, i, n, label, frac):
         if frac is None or frac < 0:
@@ -1471,7 +1480,10 @@ class ScoreboardTab(QWidget):
         self._set_status(f"{label} ({i}/{n})")
 
     def _on_render_finished(self, output_path):
-        self._render_worker = None
+        # NOT `self._render_worker = None` — render_done is emitted from inside
+        # run(), so dropping the last reference here calls ~QThread on a still-
+        # running thread, which is a qFatal/SIGABRT rather than an exception.
+        # See _release_render_worker.
         self._sleep_blocker.stop()
         self._progress.setValue(100)
         self._set_status("Done")
@@ -1483,7 +1495,7 @@ class ScoreboardTab(QWidget):
         self._refresh_render_btn()
 
     def _on_render_error(self, msg):
-        self._render_worker = None
+        # See _on_render_finished: released on `finished`, not here.
         self._sleep_blocker.stop()
         self._progress.setValue(0)
         self._set_status(f"Error: {msg}  (details in {log_path()})", error=True)

@@ -275,10 +275,19 @@ class HighlightReelTab(QWidget):
         self._worker.render_failed.connect(self._on_error)
         # QThread's own built-in `finished` — fires only after the OS thread
         # has actually stopped, unlike our render_done/render_failed signals
-        # which we emit manually from inside run(). deleteLater must be tied
-        # to this one so cleanup can never race the real thread teardown.
+        # which we emit manually from inside run(). BOTH the deleteLater and
+        # the drop of our own reference must be tied to this one: whichever
+        # happens first destroys the QThread, and doing that while run() is
+        # still on the stack is a Qt fatal, not an exception.
         self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.finished.connect(self._release_worker)
         self._worker.start()
+
+    def _release_worker(self):
+        # `self._worker is None` is also what re-enables the button, so this
+        # has to refresh it — the completion slot no longer can.
+        self._worker = None
+        self._refresh_detect_btn()
 
     def _on_stage(self, i, n, label, frac):
         # Map (stage, fraction-within-stage) onto one continuous bar, so a
@@ -293,7 +302,12 @@ class HighlightReelTab(QWidget):
             self._set_status(f"Stage {i}/{n} — {label}  {frac:.0%}")
 
     def _on_finished(self, output_path, n_segments):
-        self._worker = None
+        # NOT `self._worker = None` — render_done is emitted from inside run(),
+        # so the OS thread is usually still alive when this slot runs and
+        # dropping the last reference here calls ~QThread on a running thread:
+        # "QThread: Destroyed while thread is still running", qFatal, SIGABRT.
+        # The app died right at the moment the reel completed. See
+        # _release_worker.
         self._sleep_blocker.stop()
         self._estimate.setVisible(False)
         self._progress.setValue(100)
@@ -310,7 +324,7 @@ class HighlightReelTab(QWidget):
         self._result_panel.setVisible(True)
 
     def _on_error(self, msg):
-        self._worker = None
+        # See _on_finished: the handle is released on `finished`, not here.
         self._sleep_blocker.stop()
         self._estimate.setVisible(False)
         self._progress.setValue(0)
