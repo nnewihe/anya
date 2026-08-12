@@ -634,10 +634,19 @@ stated explicitly (`--no-fast-end` on the baseline):
 | mid-rally false fires | 11 | **14** |
 
 Recall, precision and timing all move the right way. Truncations and mid-rally
-false fires do not, and the gate was "truncations not above baseline" — so this
-is not shippable as it stands. Per clip it is mixed rather than uniformly
+false fires do not, and the gate was "truncations not above baseline" — so it
+did not clear the gate this work set. Per clip it is mixed rather than uniformly
 better: 21/23/24/25/26/38 improve, 36 and 40 lose an end each, 43 goes 3/6 to
 1/6.
+
+**Shipped ON anyway as of desktop 0.1.0-beta.2**, on throughput: it is the last
+thing keeping the full-resolution stage-1 pass alive, so its end-to-end value is
+not its own 2.5x but the whole pass it retires. Measured cold, end to end, on
+Data/21 (7.0 min of 4K, M4, only the court corners cached): **11m06s wall, 1.6x
+the clip length**, against ~3x before the three fast paths. Stage split: far
+234.1s (122.4s of it one-time proxy builds), near 39.3s, point end 154.6s. The
+truncation regression above is a known, accepted cost — `--no-fast-end` reverts
+it, and is the arm to score point ends against ground truth with.
 
 Attributing each truncation to the signal that produced it says the rate-aware
 quiet rule worked and the walking model is what regressed:

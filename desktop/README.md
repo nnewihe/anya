@@ -30,18 +30,33 @@ One pipeline, seven stages, all reported live in the progress bar:
 | Stage | Work | Cached as |
 |---|---|---|
 | 0 | Court corners (interactive, first run only) | `<video>_court_cache.json` |
-| 1 | Telemetry — players + raw ball detections | `<video>_anya_telemetry.jsonl` |
-| 2 | Far-player pose | `<video>_far_pose.jsonl` |
+| 1 | Telemetry — players + raw ball detections | *skipped by default* |
+| 2 | Far telemetry + pose (own partial pass) | `<video>_anya_far_telemetry.jsonl` |
 | 3 | Far-side serve starts | — |
-| 4 | Near-side serve starts | `<video>_..._near_serve_events.json` |
-| 5 | Walking → dead time | `<video>_walk_pose.npz` |
+| 4 | Near-side serve starts (own partial pass) | `<video>_..._near_serve_events.json` |
+| 5 | Walking + ball quiet (own partial pass) | `<video>_end_walk_pose.npz` |
 | 6 | Segment assembly | `<video>_rally_segments.json` |
 | 7 | Cut + concatenate | `<video>_rally_reel.mp4` |
 
+**Nothing runs a full-resolution pass over every frame any more.** Stages 2, 4
+and 5 each acquire only the telemetry they actually read — decimated pose and
+ball sampling off a shared 540p proxy (plus a native-resolution band proxy for
+the far baseline), gated to the windows where their signal can occur. Stage 1
+existed to feed all three at full rate; with each of them extracting its own,
+it has no consumer left and is skipped outright. That skip is where most of the
+speedup lands, not in any one stage.
+
 Every stage caches next to the input video, so a second run on the same match
-skips straight to whatever changed. Expect roughly **3x the clip length** on a
-first run (a 7-minute clip takes ~20 minutes on an M-series Mac); later runs are
-seconds plus the ffmpeg cut.
+skips straight to whatever changed. Expect roughly **1.6x the clip length** on a
+first run — a 7-minute 4K clip measured 11 minutes end to end on an M4, against
+~20 minutes (3x) before the partial passes. Later runs are seconds plus the
+ffmpeg cut, and the two proxies are built once per video.
+
+The tradeoff is recorded in `ReelConfig.fast_end` and DESIGN.md 8.6: pooled
+point-end recall, precision and timing all improve, but the cheap path truncates
+a live point slightly more often (13 vs 11 over 135 labelled ends). Run with
+`--no-fast-end` to get the full-rate point-end path back — it also brings
+stages 1-2 back, so it costs far more than the point-end difference alone.
 
 The court click happens on the main thread before analysis starts — `init_court`
 opens an OpenCV window, which is unsafe from a worker thread.
@@ -71,6 +86,17 @@ python -m pipeline.rally_reel match.mp4 --dry-run --ball-quiet-mode off
 
 ## Build a distributable
 
+> **Build with Python >= 3.12.1.** Python 3.12.0 has a CPython bug
+> ([cpython#110543](https://github.com/python/cpython/issues/110543)): `code.replace()`
+> drops the `CO_FAST_HIDDEN` flag that PEP 709 inlined comprehensions depend on.
+> PyInstaller calls `code.replace()` on every collected module, so on 3.12.0 the
+> build *succeeds* and the packaged app then dies at startup with
+> `NameError: name 'name' is not defined` from `torch/_numpy/_ufuncs.py` (scipy
+> breaks identically). Running from source is unaffected — nothing calls
+> `code.replace()` — which is why this only ever shows up in the bundle.
+> `build_macos.sh` refuses to run on 3.12.0. A ready-made env:
+> `pyenv virtualenv 3.12.6 anya-build && pyenv activate anya-build`.
+
 ```bash
 pip install pyinstaller
 cd desktop && pyinstaller rally_app.spec
@@ -87,6 +113,60 @@ excluded. `ffmpeg` is not bundled and must be present on the target machine.
 **Only the macOS path has been exercised.** The spec targets all three platforms,
 but Windows and Linux builds are untested; the likely friction points are torch's
 platform wheels and PyQt6 plugin collection.
+
+### macOS: signing + notarization
+
+A plain `pyinstaller` build (above) is unsigned — Gatekeeper blocks it on any
+Mac that isn't the one that built it, showing a tester "Apple could not
+verify ... is malware". `build_macos.sh` builds, deep-signs, notarizes and
+staples the app in one step, so testers get a clean double-click install.
+
+One-time account setup (already done for this project's Apple ID):
+
+1. A **Developer ID Application** certificate in the login keychain — Xcode
+   → Settings → Accounts → select the paid team → Manage Certificates → **+**
+   → Developer ID Application. (Requires the Program License Agreement to be
+   current — if Xcode reports "PLA Update available", accept it at
+   [developer.apple.com/account](https://developer.apple.com/account) first.)
+2. Notarization credentials stored under a keychain profile:
+   ```bash
+   xcrun notarytool store-credentials "anya-notary" \
+     --apple-id "<email>" --team-id "<TEAMID>"
+   ```
+   (interactive — prompts for an app-specific password from
+   [appleid.apple.com](https://appleid.apple.com) → Sign-In and Security →
+   App-Specific Passwords)
+
+With both in place:
+
+```bash
+cd desktop && ./build_macos.sh
+```
+
+This cleans `build/`/`dist/`, runs PyInstaller, signs every nested binary
+inside-out with the hardened runtime (`entitlements.plist`) plus the app
+bundle itself, submits it to Apple for notarization and waits, then staples
+the ticket so Gatekeeper can verify it offline. Takes several minutes longer
+than a plain build, most of it waiting on Apple's notarization service.
+
+### macOS: DMG for distribution
+
+`build_macos.sh` produces `dist/Anya Tennis.app` — the thing that actually
+runs, useful for local testing, but not what you hand to a beta tester.
+`make_dmg.sh` wraps it into a disk image with the standard drag-to-Applications
+layout, then **separately** signs, notarizes and staples the DMG itself:
+
+```bash
+cd desktop && ./make_dmg.sh
+```
+
+The DMG needs its own notarization pass because Apple's notarization checks
+whatever file actually carries the browser/Finder quarantine flag — that's
+the DMG a tester downloads, not the `.app` buried inside it. Stapling the DMG
+means the *first* Gatekeeper check (opening the downloaded file) resolves
+offline too, instead of requiring a live call to Apple at exactly the moment
+a tester double-clicks it. Output: `dist/Anya Tennis <version>.dmg`, named
+from `version.py` — that's the file to actually distribute.
 
 ## Design
 

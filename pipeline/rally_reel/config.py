@@ -117,13 +117,13 @@ class ReelConfig:
     # coverage interval is a guess made across a hole in the input, and its
     # own docs say downstream code should be able to drop those.
 
-    fast_end: bool = False
+    fast_end: bool = True
     # Take BOTH point-end signals from anya_end_telemetry (shared 540p proxy,
     # 15 fps pose, 10 fps whole-court ball) instead of a full-rate walking pose
     # pass plus the shared anya_telemetry ball stream.
     #
-    # OFF by default, and the reason is the measurement, not caution.  Over 11
-    # clips and 135 labelled point ends (DESIGN.md 8.6):
+    # ON by default as of the desktop 0.1.0-beta.2 build, and the tradeoff is
+    # deliberate.  Over 11 clips and 135 labelled point ends (DESIGN.md 8.6):
     #
     #                  baseline   fast
     #   recall           41%       44%
@@ -136,12 +136,14 @@ class ReelConfig:
     # better pooled recall and precision — but it cuts live tennis out of the
     # reel more often, and per clip it is mixed rather than uniformly better:
     # 21/23/24/25/26/38 improve, 36 and 40 lose an end, 43 goes 3/6 to 1/6.
-    # Truncations were the gate this work set and it did not clear them.
+    # Truncations were the gate this work originally set, and it did NOT clear
+    # them; what changed is the priority, not the measurement.  Throughput won:
+    # this flag is also what lets stages 1-2 be skipped entirely — with
+    # fast_near and fast_far already on, ball-quiet was the last consumer of the
+    # full pass — so it is worth far more end to end than its own 2.5x.
     #
-    # Turning it on is one flag, and worth it wherever throughput matters more
-    # than the odd short point.  It is also what lets stages 1-2 be skipped
-    # entirely: with fast_near and fast_far already on, ball-quiet was the last
-    # consumer of the full pass.
+    # `--no-fast-end` restores the full-rate path, and is the arm to run when
+    # scoring point ends against ground truth.
     #
     # walking.predict was already scoring at 15 Hz — every 2nd frame of a 30
     # fps clip — so the pose beneath it ran at twice the rate anything read.

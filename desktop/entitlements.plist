@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the notarized build (build_macos.sh).
+
+  All four are required because the bundle carries numpy/torch/opencv/
+  ultralytics: their compiled extensions and PyInstaller's own bootloader
+  rely on unsigned-memory JIT paths and dynamically loaded, cross-team-signed
+  dylibs that the hardened runtime blocks by default. Without these, the
+  app either crashes on launch or fails notarization with a "banned API"
+  rejection on one of those libraries.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>

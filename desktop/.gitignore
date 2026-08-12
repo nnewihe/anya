@@ -1,0 +1,10 @@
+# PyInstaller output.  `dist/` holds the ~2 GB app bundle and the ~320 MB DMG,
+# `build/` its intermediates — both are reproducible from rally_app.spec and
+# have no business in the history.
+/dist/
+/build/
+
+# Ultralytics auto-downloads weights into the CWD when a model is named
+# without a path, and the desktop app's CWD is this directory.  The real
+# copies are tracked under pipeline/models/ and walking/outputs/.
+*.pt

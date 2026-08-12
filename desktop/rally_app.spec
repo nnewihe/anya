@@ -23,6 +23,16 @@ from pathlib import Path
 
 block_cipher = None
 
+# Windows/Linux use the .ico (EXE.icon below); macOS uses the .icns (BUNDLE.icon).
+_ICON_ICO = 'assets/icon/AnyaTennis.ico'
+_ICON_ICNS = 'assets/icon/AnyaTennis.icns'
+
+# version.py is the single source of truth for the app version — imported
+# here (rather than duplicating the string) so the bundle's Info.plist can't
+# drift from what's shown in the app header.
+sys.path.insert(0, str(Path('.').resolve()))
+from version import APP_VERSION
+
 # app.py imports the pipeline as a package (`from pipeline.X import …`), so the
 # repo ROOT (parent of desktop/) must be on the analysis path, not just desktop/.
 _REPO_ROOT = str(Path('.').resolve().parent)
@@ -39,7 +49,11 @@ a = Analysis(
         ('../pipeline/models/yolov8n-pose.pt',   'pipeline/models'),
         ('../walking/outputs/walking_model.joblib', 'walking/outputs'),
         # Brand logo (shared with the mobile app) — resolved by app._logo_path()
-        ('../mobile/assets/images/anya_logo_black.svg', 'assets'),
+        ('../mobile/assets/images/anya_logo.png', 'assets'),
+        # Montserrat, burned into the Scoreboard tab's rendered overlay —
+        # resolved by pipeline.scoreboard_reel.render.find_font()
+        ('assets/fonts/Montserrat-SemiBold.ttf', 'assets/fonts'),
+        ('assets/fonts/Montserrat-Bold.ttf', 'assets/fonts'),
     ],
     hiddenimports=[
         # ultralytics dynamic imports
@@ -74,17 +88,19 @@ a = Analysis(
         'pipeline.anya_far_serve',
         'pipeline.anya_near_serve',
         'pipeline.anya_telemetry',
+        # scoreboard_reel (Scoreboard tab: scoring engine + ffmpeg burn-in)
+        'pipeline.scoreboard_reel',
         # PyQt6 plugins (Fusion style)
         'PyQt6.QtCore',
         'PyQt6.QtGui',
         'PyQt6.QtWidgets',
-        # SVG logo rendering in the header
-        'PyQt6.QtSvg',
-        'PyQt6.QtSvgWidgets',
+        # Scoreboard tab: in-app video playback while tagging points
+        'PyQt6.QtMultimedia',
+        'PyQt6.QtMultimediaWidgets',
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['rthook_cv2.py'],
     excludes=[
         # NOTE torch is NOT excluded: anya_telemetry imports it to pick the
         # mps/cuda/cpu device, and ultralytics needs it for every model call.
@@ -120,9 +136,15 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    # Left unsigned here on purpose: PyInstaller's own --deep-equivalent
+    # signing is unreliable on a bundle this size (torch/opencv/ultralytics —
+    # hundreds of nested dylibs) and has been known to sign out of order or
+    # skip binaries, which passes locally but fails notarization. macOS
+    # signing + notarization + stapling happens entirely in build_macos.sh,
+    # run after this spec.
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,              # set to 'icon.icns' / 'icon.ico' if you have one
+    icon=_ICON_ICO,         # used on Windows; PyInstaller ignores it on macOS/Linux
 )
 
 coll = COLLECT(
@@ -141,11 +163,11 @@ if sys.platform == 'darwin':
     app = BUNDLE(
         coll,
         name='Anya Tennis.app',
-        icon=None,           # set to 'icon.icns' if you have one
+        icon=_ICON_ICNS,
         bundle_identifier='com.anyatennis.app',
         info_plist={
             'NSHighResolutionCapable': True,
-            'CFBundleShortVersionString': '1.0.0',
+            'CFBundleShortVersionString': APP_VERSION,
             'CFBundleName': 'Anya Tennis',
         },
     )

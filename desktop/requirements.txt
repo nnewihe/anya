@@ -1,4 +1,14 @@
-# Anya Tennis desktop app — runs pipeline.rally_reel locally.
+# Anya Tennis desktop app — runs pipeline.rally_reel and
+# pipeline.scoreboard_reel locally.
+#
+# REQUIRES PYTHON >= 3.12.1 TO BUILD (running from source is fine on 3.12.0).
+# Python 3.12.0 has a CPython bug — https://github.com/python/cpython/issues/110543
+# — where code.replace() drops the CO_FAST_HIDDEN flag that PEP 709 inlined
+# comprehensions rely on. PyInstaller calls code.replace() on every collected
+# module to anonymize file paths, so on 3.12.0 the packaged app dies at startup
+# with "NameError: name 'name' is not defined" from torch/_numpy/_ufuncs.py
+# (scipy fails the same way). Dev runs never hit it because nothing calls
+# code.replace(). Fixed in 3.12.1; build_macos.sh enforces the minimum.
 
 opencv-python>=4.8
 numpy>=1.24
@@ -8,7 +18,9 @@ filterpy>=1.4
 scikit-learn>=1.3   # exclusion-zone clustering + the walking classifier
 scipy>=1.10
 joblib>=1.3         # loads walking/outputs/walking_model.joblib
-PyQt6>=6.5
+PyQt6>=6.5          # QtMultimedia/QtMultimediaWidgets (Scoreboard tab's video
+                    # playback) ship inside the core PyQt6 wheel from 6.5 on —
+                    # there is no separate PyQt6-Multimedia package on PyPI.
 pyinstaller>=6.0    # only needed to build the distributable app
 
 # ffmpeg is NOT a pip dependency — rally_reel shells out to it for the final
