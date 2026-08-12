@@ -11,9 +11,11 @@
 #   Windows: pyinstaller rally_app.spec   -> dist/AnyaTennis/  (one folder)
 #   Linux  : pyinstaller rally_app.spec   -> dist/AnyaTennis/  (one folder)
 #
-# ffmpeg is NOT bundled: rally_reel shells out to it for the final cut, so it
-# must be on PATH on the target machine (brew install ffmpeg / apt install
-# ffmpeg / winget install ffmpeg).
+# ffmpeg IS bundled on macOS (see fetch_ffmpeg.sh): a static arm64 build lands
+# in Contents/Frameworks alongside everything else, and preflight.repair_path()
+# puts that directory first on PATH so the pipeline's `subprocess.run(["ffmpeg",
+# ...])` calls find it without any of them changing.  Windows/Linux builds still
+# expect ffmpeg on PATH — vendor/ffmpeg is a Mach-O and is skipped there.
 #
 # Expect a large bundle (~2 GB): torch + ultralytics are required by the
 # telemetry and pose stages and cannot be excluded.
@@ -37,23 +39,55 @@ from version import APP_VERSION
 # repo ROOT (parent of desktop/) must be on the analysis path, not just desktop/.
 _REPO_ROOT = str(Path('.').resolve().parent)
 
+# Static ffmpeg, fetched by fetch_ffmpeg.sh.  Declared as a *binary* rather
+# than a data file so PyInstaller keeps the executable bit; on macOS it lands
+# in Contents/Frameworks, which is what sys._MEIPASS points at.  Guarded so a
+# Windows/Linux build (where the vendored Mach-O is useless) still works.
+_FFMPEG = Path('vendor/ffmpeg')
+_binaries = []
+if sys.platform == 'darwin' and _FFMPEG.is_file():
+    _binaries.append((str(_FFMPEG), '.'))
+elif sys.platform == 'darwin':
+    raise SystemExit(
+        "vendor/ffmpeg is missing — run ./fetch_ffmpeg.sh first.\n"
+        "Building without it silently ships an app that dies at the final "
+        "render on any machine without Homebrew ffmpeg."
+    )
+
 a = Analysis(
     ['app.py'],
     pathex=[str(Path('.').resolve()), _REPO_ROOT],
-    binaries=[],
+    binaries=_binaries,
     datas=[
         # Weights, at the paths the pipeline resolves relative to its own
         # __file__ (pipeline/models, walking/outputs).
         ('../pipeline/models/ball_best.pt',      'pipeline/models'),
         ('../pipeline/models/yolo26n.pt',        'pipeline/models'),
         ('../pipeline/models/yolov8n-pose.pt',   'pipeline/models'),
+        # Near-serve trophy-pose detector, lazy-loaded on the first ARMED
+        # window by anya_base.trophy_model.  Missing from this list until
+        # beta.5, which meant the packaged app raised on the first near-side
+        # serve candidate while running from source was fine.
+        ('../pipeline/models/trophy_best.pt',     'pipeline/models'),
         ('../walking/outputs/walking_model.joblib', 'walking/outputs'),
+        # The 15 Hz walking model.  reel._walk_model_15hz() returns None when
+        # this file is absent and the fast point-end path silently falls back
+        # to the 30 Hz model — which reel.py's own docstring measures as
+        # costing a real point end (Data/21 walk onsets 8/12 -> 7/12).  That
+        # fallback has been firing in every packaged build since beta.2, when
+        # fast_end became the default, and only in packaged builds.
+        ('../walking/outputs/walking_model_15hz.joblib', 'walking/outputs'),
         # Brand logo (shared with the mobile app) — resolved by app._logo_path()
         ('../mobile/assets/images/anya_logo.png', 'assets'),
         # Montserrat, burned into the Scoreboard tab's rendered overlay —
         # resolved by pipeline.scoreboard_reel.render.find_font()
         ('assets/fonts/Montserrat-SemiBold.ttf', 'assets/fonts'),
         ('assets/fonts/Montserrat-Bold.ttf', 'assets/fonts'),
+        # ffmpeg is GPL, so its licence has to accompany the binary. It also
+        # goes in the DMG root (make_dmg.sh) where a tester can actually see
+        # it; this copy is so it still travels with a bare .app.
+        ('assets/FFMPEG-LICENSE.txt', 'licenses'),
+        ('assets/COPYING.GPLv2', 'licenses'),
     ],
     hiddenimports=[
         # ultralytics dynamic imports
@@ -154,7 +188,12 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    # UPX rewrites a Mach-O in place. On the vendored ffmpeg that both breaks
+    # the binary and invalidates the signature build_macos.sh applies to it,
+    # and the failure only shows up at the very end of a render. UPX isn't
+    # normally installed on macOS so upx=True is usually a no-op — this makes
+    # sure a build machine that happens to have it doesn't ship a broken app.
+    upx_exclude=['ffmpeg'],
     name='AnyaTennis',
 )
 

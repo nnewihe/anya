@@ -1,19 +1,23 @@
 """
 preflight.py — checks to run before kicking off a (possibly 10+ minute) job.
 
-ffmpeg is not bundled (see rally_app.spec) and both rally_reel and
-scoreboard_reel shell out to it only at their very last stage. Without this
-check, a tester missing ffmpeg would sit through the entire pipeline before
-hitting a raw ``FileNotFoundError`` traceback. Checking up front turns that
-into an immediate, actionable message.
+Both rally_reel and scoreboard_reel shell out to ffmpeg only at their very
+last stage. Without a check up front, a tester missing ffmpeg would sit
+through the entire pipeline before hitting a raw ``FileNotFoundError``
+traceback.
 
-The check itself needs `repair_path()` first, or it reports ffmpeg missing on
-machines that plainly have it — see below.
+The packaged macOS app ships its own static ffmpeg (rally_app.spec /
+fetch_ffmpeg.sh), so `ensure_ffmpeg` should never fire there — it remains the
+path for source runs, and for Windows/Linux builds where nothing is bundled.
+
+Either way the resolution happens in `repair_path()`, which must run before
+anything shells out — see below.
 """
 
 import os
 import shutil
 import sys
+from pathlib import Path
 
 from PyQt6.QtWidgets import QMessageBox
 
@@ -32,8 +36,23 @@ _CANDIDATE_BINDIRS = {
 }.get(sys.platform, ("/usr/local/bin", os.path.expanduser("~/.nix-profile/bin")))
 
 
+def bundled_ffmpeg() -> "Path | None":
+    """The static ffmpeg shipped inside the app bundle, if there is one.
+
+    Only exists in a PyInstaller build: `sys._MEIPASS` is Contents/Frameworks
+    in the macOS .app, which is where rally_app.spec's `binaries` entry puts
+    it. Returns None when running from source, or on a platform whose build
+    doesn't vendor one.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass is None:
+        return None
+    p = Path(meipass) / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+    return p if p.is_file() else None
+
+
 def repair_path() -> None:
-    """Add the standard package-manager bindirs to PATH if they're missing.
+    """Put the bundled ffmpeg, then the standard package-manager bindirs, on PATH.
 
     A GUI app launched from Finder/Dock is spawned by launchd, not by a shell,
     so it inherits launchd's PATH — `/usr/bin:/bin:/usr/sbin:/sbin` unless
@@ -50,13 +69,22 @@ def repair_path() -> None:
     process's environment, so one repair at startup fixes all of them without
     threading a path through the pipeline's call signatures.
 
-    Appends rather than prepends: if a tester has deliberately put an ffmpeg
-    earlier on PATH, theirs still wins.
+    The package-manager bindirs are *appended*: if a tester has deliberately
+    put an ffmpeg earlier on PATH, theirs still wins. The bundled one is
+    *prepended*, which is the deliberate inversion — it is the exact build the
+    release was tested against, and a tester's own ffmpeg is as likely to be a
+    four-year-old one missing an encoder as it is to be newer. Shipping a known
+    ffmpeg is most of the point of shipping one at all.
     """
     parts = os.environ.get("PATH", "").split(os.pathsep)
+
+    bundled = bundled_ffmpeg()
+    prefix = [str(bundled.parent)] if bundled and str(bundled.parent) not in parts else []
+
     missing = [d for d in _CANDIDATE_BINDIRS if d and d not in parts and os.path.isdir(d)]
-    if missing:
-        os.environ["PATH"] = os.pathsep.join(parts + missing)
+
+    if prefix or missing:
+        os.environ["PATH"] = os.pathsep.join(prefix + parts + missing)
 
 
 def ensure_ffmpeg(parent) -> bool:

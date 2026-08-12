@@ -1,0 +1,45 @@
+FFmpeg — licence and source notice
+==================================
+
+Anya Tennis bundles a copy of FFmpeg to cut and encode video. FFmpeg is a
+separate program: Anya Tennis runs it as its own process and does not link
+against it.
+
+Bundled build
+-------------
+
+  FFmpeg 7.1
+  macOS, arm64 (Apple silicon), statically linked
+  Obtained from the imageio-ffmpeg 0.6.0 wheel for macosx_11_0_arm64
+  (https://pypi.org/project/imageio-ffmpeg/0.6.0/)
+
+  Build configuration:
+
+    --prefix=/Volumes/tempdisk/sw --extra-cflags=-fno-stack-check
+    --arch=arm64 --cc=/usr/bin/clang --enable-gpl --enable-libvmaf
+    --enable-libopenjpeg --enable-libopus --enable-libmp3lame
+    --enable-libx264 --enable-libx265 --enable-libvpx --enable-libwebp
+    --enable-libass --enable-libfreetype --enable-fontconfig
+    --enable-libtheora --enable-libvorbis --enable-libsnappy --enable-libaom
+    --enable-libvidstab --enable-libzimg --enable-libsvtav1
+    --enable-libharfbuzz --enable-libkvazaar --pkg-config-flags=--static
+    --enable-ffplay --enable-postproc --enable-neon
+    --enable-runtime-cpudetect --disable-indev=qtkit
+    --disable-indev=x11grab_xcb
+
+Licence
+-------
+
+This build is configured with --enable-gpl, so the resulting binary is covered
+by the GNU General Public License, version 2 or later. The full text of GPL
+version 2 is in COPYING.GPLv2 next to this file.
+
+FFmpeg's own source, including the licence headers of every component, is at
+https://ffmpeg.org and https://github.com/FFmpeg/FFmpeg.
+
+Written offer for source
+------------------------
+
+The bundled binary is unmodified upstream FFmpeg 7.1 built with the
+configuration above. On request we will provide the complete corresponding
+source for it: nnewihe@gmail.com.

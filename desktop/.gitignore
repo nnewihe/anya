@@ -4,6 +4,11 @@
 /dist/
 /build/
 
+# The bundled static ffmpeg (~47 MB) that fetch_ffmpeg.sh downloads. Same
+# argument as dist/: reproducible from a script plus a pinned SHA-256, so it
+# has no business in the history.
+/vendor/
+
 # Ultralytics auto-downloads weights into the CWD when a model is named
 # without a path, and the desktop app's CWD is this directory.  The real
 # copies are tracked under pipeline/models/ and walking/outputs/.

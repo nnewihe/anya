@@ -40,6 +40,11 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
+# The bundled ffmpeg is GPL, so its licence has to travel with what we
+# distribute — and in the DMG root it is somewhere a person can actually find
+# it, unlike the copy inside Contents/Frameworks/licenses.
+mkdir -p "$STAGE/Licenses"
+cp assets/FFMPEG-LICENSE.txt assets/COPYING.GPLv2 "$STAGE/Licenses/"
 
 echo "==> Building $DMG_PATH"
 rm -f "$DMG_PATH"

@@ -39,6 +39,13 @@ if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>
     exit 1
 fi
 
+echo "==> Ensuring the vendored static ffmpeg is present"
+# Idempotent: a no-op once vendor/ffmpeg is in place and verifies. Run here
+# rather than left as a manual step because forgetting it produces an app that
+# builds, signs, notarizes and installs cleanly and then fails at the last
+# stage of a tester's first 10-minute job.
+./fetch_ffmpeg.sh
+
 echo "==> Cleaning previous build"
 # A DMG from a previous run is very likely still mounted — make_dmg.sh's own
 # verify step opens one, and testers double-click them. Its backing file lives
@@ -74,6 +81,17 @@ codesign --force --options runtime --timestamp \
 
 echo "==> Verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP"
+
+# The signing sweep above catches ffmpeg via `-type f -perm +111`, but silently
+# (`|| true`), so confirm the one nested binary a tester's whole first run
+# depends on actually came out signed and runnable.
+FFMPEG_IN_APP="$APP/Contents/Frameworks/ffmpeg"
+if [ ! -x "$FFMPEG_IN_APP" ]; then
+    echo "error: bundled ffmpeg missing from $FFMPEG_IN_APP" >&2
+    exit 1
+fi
+codesign --verify --strict "$FFMPEG_IN_APP"
+"$FFMPEG_IN_APP" -hide_banner -version | head -1
 
 echo "==> Zipping for notarization"
 ditto -c -k --keepParent "$APP" "$ZIP"
