@@ -6,8 +6,12 @@ scoreboard_reel shell out to it only at their very last stage. Without this
 check, a tester missing ffmpeg would sit through the entire pipeline before
 hitting a raw ``FileNotFoundError`` traceback. Checking up front turns that
 into an immediate, actionable message.
+
+The check itself needs `repair_path()` first, or it reports ffmpeg missing on
+machines that plainly have it — see below.
 """
 
+import os
 import shutil
 import sys
 
@@ -18,9 +22,46 @@ _INSTALL_HINT = {
     "win32": "Open a terminal and run:\n\n    winget install Gyan.FFmpeg",
 }.get(sys.platform, "Open a terminal and run:\n\n    sudo apt install ffmpeg")
 
+# Where package managers put ffmpeg, in the order we'd rather find it.
+# Homebrew is /opt/homebrew on Apple silicon and /usr/local on Intel;
+# MacPorts is /opt/local; Linux desktop launchers can miss /usr/local/bin
+# and a Nix profile the same way.
+_CANDIDATE_BINDIRS = {
+    "darwin": ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"),
+    "win32": (),
+}.get(sys.platform, ("/usr/local/bin", os.path.expanduser("~/.nix-profile/bin")))
+
+
+def repair_path() -> None:
+    """Add the standard package-manager bindirs to PATH if they're missing.
+
+    A GUI app launched from Finder/Dock is spawned by launchd, not by a shell,
+    so it inherits launchd's PATH — `/usr/bin:/bin:/usr/sbin:/sbin` unless
+    someone has run `launchctl setenv PATH`. Homebrew's `/opt/homebrew/bin` is
+    not on it. Nothing in the app's own environment reflects the PATH the
+    tester sees in Terminal, so a machine with a perfectly good
+    `brew install ffmpeg` reports ffmpeg missing, and the tester is told to
+    install what they already have. It works when run from source purely
+    because a terminal-launched process inherits the shell's PATH.
+
+    Mutating os.environ here (rather than resolving ffmpeg to an absolute path)
+    is deliberate: every `subprocess.run(["ffmpeg", ...])` in `pipeline/` —
+    the final cut, and `proxy.py`'s one-time transcodes — inherits this
+    process's environment, so one repair at startup fixes all of them without
+    threading a path through the pipeline's call signatures.
+
+    Appends rather than prepends: if a tester has deliberately put an ffmpeg
+    earlier on PATH, theirs still wins.
+    """
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    missing = [d for d in _CANDIDATE_BINDIRS if d and d not in parts and os.path.isdir(d)]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join(parts + missing)
+
 
 def ensure_ffmpeg(parent) -> bool:
     """Return True if ffmpeg is on PATH; otherwise show a dialog and return False."""
+    repair_path()
     if shutil.which("ffmpeg") is not None:
         return True
 

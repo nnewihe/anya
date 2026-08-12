@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from applog import setup_logging
+from preflight import repair_path
 from theme import BLACK, TEXT_DIM, WHITE, YELLOW
 from highlight_tab import HighlightReelTab
 from scoreboard_tab import ScoreboardTab
@@ -194,6 +195,11 @@ def main():
     # even an error during QApplication/window construction gets logged
     # instead of vanishing (the packaged app has no console to print to).
     setup_logging()
+
+    # Launched from Finder, this process inherits launchd's PATH, which has no
+    # /opt/homebrew/bin on it — so ffmpeg looks missing on machines that have
+    # it. Repair once here, before any tab can shell out.
+    repair_path()
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
