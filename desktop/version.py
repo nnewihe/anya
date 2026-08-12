@@ -12,7 +12,10 @@ APP_VERSION = "0.1.0-beta.5"
 # the spec had been omitting — trophy_best.pt, which the near-serve stage
 # loads on its first ARMED window, and walking_model_15hz.joblib, without
 # which the fast point-end path silently ran the 30 Hz model.  Adds a
-# launch-time check for newer releases (update_check.py).
+# launch-time check for newer releases (update_check.py).  First release to
+# ship TWO DMGs: Apple silicon and Intel.  The Intel build is pinned to
+# torch 2.2.2 (its last macOS x86_64 wheel) and has no MPS, so it is roughly
+# 5-6x slower — see desktop/README.md for the measurements.
 # beta.4 — fixes the SIGABRT right as a reel finished: the completion slot
 # dropped the last reference to the still-running QThread.  The reel itself
 # was already written before the crash.  See HighlightReelTab._release_worker.

@@ -9,26 +9,68 @@
 #         --apple-id "<email>" --team-id "<TEAMID>"
 #
 # Usage:
-#   cd desktop && ./build_macos.sh
+#   cd desktop && ./build_macos.sh            # host architecture (arm64)
+#   cd desktop && ./build_macos.sh x86_64     # Intel, needs ./setup_intel_env.sh first
+#
+# Output for both is dist/<arch>/Anya Tennis.app — kept in separate directories
+# because the two builds are otherwise indistinguishable by filename, and
+# handing a tester the wrong one produces an app that either won't launch at
+# all (Intel binary, no Rosetta) or is silently slower.
 set -euo pipefail
 cd "$(dirname "$0")"
 
+ARCH="${1:-$(uname -m)}"
+case "$ARCH" in
+arm64|x86_64) ;;
+*) echo "error: unsupported architecture '$ARCH' (expected arm64 or x86_64)" >&2; exit 1 ;;
+esac
+
 IDENTITY="Developer ID Application: Anderson Nnewihe (696S9GCN96)"
 NOTARY_PROFILE="anya-notary"
-APP="dist/Anya Tennis.app"
-ZIP="dist/AnyaTennis-notarize.zip"
+DIST="dist/$ARCH"
+APP="$DIST/Anya Tennis.app"
+ZIP="$DIST/AnyaTennis-notarize.zip"
+
+# Which interpreter builds this. The Intel build MUST run PyInstaller under an
+# x86_64 interpreter — PyInstaller freezes the environment it is running in, so
+# an arm64 interpreter cannot produce an Intel app no matter what flags it is
+# given. setup_intel_env.sh creates that interpreter.
+if [ "$ARCH" = "x86_64" ] && [ "$(uname -m)" != "x86_64" ]; then
+    RUN=(arch -x86_64)
+    PY=".venv-intel/bin/python"
+    if [ ! -x "$PY" ]; then
+        echo "error: $PY not found — run ./setup_intel_env.sh first" >&2
+        exit 1
+    fi
+elif [ "$ARCH" = "x86_64" ]; then
+    RUN=()
+    PY=".venv-intel/bin/python"
+    [ -x "$PY" ] || { echo "error: $PY not found — run ./setup_intel_env.sh first" >&2; exit 1; }
+else
+    RUN=()
+    PY="$(command -v python3)"
+fi
 
 # Python 3.12.0 ships a CPython bug (cpython#110543) where code.replace()
 # drops the CO_FAST_HIDDEN flag used by PEP 709 inlined comprehensions.
 # PyInstaller calls code.replace() on every module, so on 3.12.0 the build
 # SUCCEEDS and then the app dies at startup with a NameError from
 # torch/_numpy/_ufuncs.py. Fail loudly here instead of shipping that.
-if ! python3 -c 'import sys; sys.exit(0 if sys.version_info[:3] != (3, 12, 0) else 1)'; then
+if ! "${RUN[@]}" "$PY" -c 'import sys; sys.exit(0 if sys.version_info[:3] != (3, 12, 0) else 1)'; then
     echo "error: Python 3.12.0 cannot build this app (cpython#110543 breaks torch/scipy" >&2
     echo "       in the frozen bundle). Use Python >= 3.12.1, e.g.:" >&2
     echo "         pyenv activate anya-build" >&2
     exit 1
 fi
+
+# The interpreter's architecture is what actually determines the output's, so
+# check it rather than trusting the argument.
+BUILD_ARCH="$("${RUN[@]}" "$PY" -c 'import platform; print(platform.machine())')"
+if [ "$BUILD_ARCH" != "$ARCH" ]; then
+    echo "error: asked for $ARCH but $PY runs as $BUILD_ARCH" >&2
+    exit 1
+fi
+echo "==> Building for $ARCH using $PY"
 
 if ! security find-identity -v -p codesigning | grep -qF "$IDENTITY"; then
     echo "error: signing identity not found in keychain: $IDENTITY" >&2
@@ -40,11 +82,11 @@ if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>
 fi
 
 echo "==> Ensuring the vendored static ffmpeg is present"
-# Idempotent: a no-op once vendor/ffmpeg is in place and verifies. Run here
-# rather than left as a manual step because forgetting it produces an app that
-# builds, signs, notarizes and installs cleanly and then fails at the last
+# Idempotent: a no-op once vendor/<arch>/ffmpeg is in place and verifies. Run
+# here rather than left as a manual step because forgetting it produces an app
+# that builds, signs, notarizes and installs cleanly and then fails at the last
 # stage of a tester's first 10-minute job.
-./fetch_ffmpeg.sh
+./fetch_ffmpeg.sh "$ARCH"
 
 echo "==> Cleaning previous build"
 # A DMG from a previous run is very likely still mounted — make_dmg.sh's own
@@ -56,10 +98,16 @@ echo "==> Cleaning previous build"
 for vol in /Volumes/"Anya Tennis"*; do
     [ -d "$vol" ] && hdiutil detach "$vol" -force >/dev/null 2>&1 || true
 done
-rm -rf build dist
+# Only this architecture's output — the other one is a valid artifact that a
+# release needs, and wiping it would silently make release.sh publish a stale
+# DMG for the arch you didn't just build.
+rm -rf "build/$ARCH" "$DIST"
 
 echo "==> Running PyInstaller"
-pyinstaller rally_app.spec
+# --distpath/--workpath keep the two architectures' outputs apart; the spec
+# itself is architecture-agnostic and reads platform.machine() to pick the
+# matching vendored ffmpeg and licence.
+"${RUN[@]}" "$PY" -m PyInstaller --distpath "$DIST" --workpath "build/$ARCH" rally_app.spec
 
 echo "==> Signing nested binaries (inside-out)"
 # codesign --deep on a bundle this large (torch/opencv/ultralytics — hundreds
@@ -91,7 +139,19 @@ if [ ! -x "$FFMPEG_IN_APP" ]; then
     exit 1
 fi
 codesign --verify --strict "$FFMPEG_IN_APP"
-"$FFMPEG_IN_APP" -hide_banner -version | head -1
+
+# The whole point of two builds is that each one runs without Rosetta on its
+# target Mac, and nothing else in the pipeline checks it: a bundle carrying the
+# other architecture's ffmpeg signs, notarizes and installs perfectly, then
+# demands Rosetta at the final render.
+FFMPEG_ARCH="$(lipo -archs "$FFMPEG_IN_APP")"
+APP_ARCH="$(lipo -archs "$APP/Contents/MacOS/AnyaTennis")"
+echo "==> Architectures: app=$APP_ARCH  ffmpeg=$FFMPEG_ARCH  (expected $ARCH)"
+if [ "$FFMPEG_ARCH" != "$ARCH" ] || [ "$APP_ARCH" != "$ARCH" ]; then
+    echo "error: architecture mismatch — refusing to ship this bundle" >&2
+    exit 1
+fi
+arch -"$ARCH" "$FFMPEG_IN_APP" -hide_banner -version | head -1
 
 echo "==> Zipping for notarization"
 ditto -c -k --keepParent "$APP" "$ZIP"

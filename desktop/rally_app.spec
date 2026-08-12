@@ -43,13 +43,21 @@ _REPO_ROOT = str(Path('.').resolve().parent)
 # than a data file so PyInstaller keeps the executable bit; on macOS it lands
 # in Contents/Frameworks, which is what sys._MEIPASS points at.  Guarded so a
 # Windows/Linux build (where the vendored Mach-O is useless) still works.
-_FFMPEG = Path('vendor/ffmpeg')
+#
+# The architecture is the one this Python is running as, NOT the host's:
+# the Intel build runs PyInstaller under an x86_64 interpreter via Rosetta, so
+# platform.machine() is what decides which vendored binary belongs in this
+# bundle.  Getting this wrong ships an app that needs Rosetta on a Mac that
+# has none — the exact prompt bundling ffmpeg exists to avoid.
+import platform
+_ARCH = platform.machine()
+_FFMPEG = Path('vendor') / _ARCH / 'ffmpeg'
 _binaries = []
 if sys.platform == 'darwin' and _FFMPEG.is_file():
     _binaries.append((str(_FFMPEG), '.'))
 elif sys.platform == 'darwin':
     raise SystemExit(
-        "vendor/ffmpeg is missing — run ./fetch_ffmpeg.sh first.\n"
+        f"{_FFMPEG} is missing — run ./fetch_ffmpeg.sh {_ARCH} first.\n"
         "Building without it silently ships an app that dies at the final "
         "render on any machine without Homebrew ffmpeg."
     )
@@ -83,11 +91,15 @@ a = Analysis(
         # resolved by pipeline.scoreboard_reel.render.find_font()
         ('assets/fonts/Montserrat-SemiBold.ttf', 'assets/fonts'),
         ('assets/fonts/Montserrat-Bold.ttf', 'assets/fonts'),
-        # ffmpeg is GPL, so its licence has to accompany the binary. It also
-        # goes in the DMG root (make_dmg.sh) where a tester can actually see
-        # it; this copy is so it still travels with a bare .app.
-        ('assets/FFMPEG-LICENSE.txt', 'licenses'),
-        ('assets/COPYING.GPLv2', 'licenses'),
+        # ffmpeg is GPL, so its licence has to accompany the binary. Taken
+        # from vendor/<arch>/, which fetch_ffmpeg.sh populates with the pair
+        # matching THIS build — the arm64 and Intel binaries come from
+        # different upstreams under GPLv2 and GPLv3 respectively, so shipping
+        # one fixed licence would be wrong for one of the two DMGs. Also
+        # copied to the DMG root (make_dmg.sh) where a tester can see it;
+        # this copy is so it still travels with a bare .app.
+        (f'vendor/{_ARCH}/FFMPEG-LICENSE.txt', 'licenses'),
+        (f'vendor/{_ARCH}/COPYING.txt', 'licenses'),
     ],
     hiddenimports=[
         # ultralytics dynamic imports
@@ -169,7 +181,11 @@ exe = EXE(
     console=False,          # no terminal window on Windows
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    # Pinned to the interpreter's own architecture rather than left None, so
+    # PyInstaller fails loudly if a dependency wheel in the environment is the
+    # wrong arch — on the Intel build that is the difference between a clear
+    # build error and a bundle that dies on a tester's Mac.
+    target_arch=_ARCH if sys.platform == 'darwin' else None,
     # Left unsigned here on purpose: PyInstaller's own --deep-equivalent
     # signing is unreliable on a bundle this size (torch/opencv/ultralytics —
     # hundreds of nested dylibs) and has been known to sign out of order or
@@ -208,5 +224,11 @@ if sys.platform == 'darwin':
             'NSHighResolutionCapable': True,
             'CFBundleShortVersionString': APP_VERSION,
             'CFBundleName': 'Anya Tennis',
+            # Big Sur is the floor for both builds: it's the first release on
+            # Apple silicon, and on Intel it's what the oldest wheels in
+            # requirements-intel.txt (PyQt6 6.5 / Qt 6.5 LTS) support. Declared
+            # so an older Mac refuses to launch it with a clear message rather
+            # than dying on a dyld symbol error.
+            'LSMinimumSystemVersion': '11.0',
         },
     )

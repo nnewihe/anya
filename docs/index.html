@@ -47,6 +47,16 @@
     border-radius: 10px;
   }
   .btn:hover { background: var(--yellow-hover); }
+  /* The second architecture is deliberately quieter, not hidden: the JS below
+     promotes whichever one matches the visitor's Mac, but it must still be
+     possible to grab the other build with JS disabled or detection wrong. */
+  .btn-alt {
+    background: transparent;
+    color: var(--yellow);
+    border: 1px solid var(--outline);
+  }
+  .btn-alt:hover { background: transparent; border-color: var(--yellow); }
+  .cta .btn { margin: 6px; }
   .meta { color: var(--dim); font-size: 13px; margin-top: 12px; }
   .meta strong { color: var(--white); font-weight: 600; }
 
@@ -127,21 +137,34 @@
   never uploaded anywhere.</p>
 
   <div class="cta">
-    <a class="btn" id="download"
+    <a class="btn" id="dl-arm"
        href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis.dmg">
-       DOWNLOAD FOR MAC</a>
+       DOWNLOAD FOR APPLE SILICON</a>
+    <a class="btn btn-alt" id="dl-intel"
+       href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis-Intel.dmg">
+       DOWNLOAD FOR INTEL</a>
     <p class="meta">
       <span id="version"></span>
-      Requires an <strong>Apple silicon Mac (M1 or newer)</strong>, macOS 12 or
-      later. About 320&nbsp;MB.
+      Requires macOS 11 (Big Sur) or later. About 320&nbsp;MB.
     </p>
   </div>
 
-  <div class="note">
-    <strong>Intel Macs aren't supported yet.</strong> If your Mac is from
-    before late 2020, this build won't run on it. Check
-    <span style="white-space:nowrap">Apple&nbsp;menu → About This Mac</span> —
-    it needs to say Apple M1, M2, M3 or M4.
+  <div class="note" id="which">
+    <strong>Which one?</strong> Click
+    <span style="white-space:nowrap">Apple&nbsp;menu → About This Mac</span>.
+    If it says <strong>Apple M1/M2/M3/M4</strong>, take Apple Silicon. If it
+    says <strong>Intel Core i5/i7/i9</strong>, take Intel. Macs sold before
+    late 2020 are Intel.
+  </div>
+
+  <div class="note" id="intel-speed">
+    <strong>If you're on an Intel Mac, expect it to be slow.</strong> Apple
+    silicon Macs have a graphics engine Anya Tennis uses to do the heavy
+    work; Intel Macs don't, so everything runs on the main processor. A
+    7-minute clip takes about 10 minutes on an M-series Mac and roughly
+    <strong>an hour</strong> on a 2018–2019 Intel Mac — longer on older ones.
+    It still works, and you can leave it running, but don't expect to wait
+    for it.
   </div>
 
   <h2>INSTALLING</h2>
@@ -221,6 +244,48 @@
 </div>
 
 <script>
+// Promote the build that matches this Mac. macOS browsers report "Intel Mac
+// OS X" in the user agent on EVERY Mac including Apple silicon, so the user
+// agent is useless here; the WebGL renderer string is the usual workaround,
+// reporting "Apple GPU" / "Apple M1" on Apple silicon.
+//
+// Detection only ever reorders and relabels — both links stay clickable, and
+// if detection fails or is ambiguous the page is left exactly as authored,
+// with the "Which one?" instructions doing the work. Guessing wrong and
+// hiding the right download would be worse than not guessing.
+(function () {
+  function isAppleSilicon() {
+    try {
+      const gl = document.createElement("canvas").getContext("webgl");
+      if (!gl) return null;
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      if (!ext) return null;
+      const r = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || "");
+      if (/apple\s*m\d|apple gpu/i.test(r)) return true;
+      if (/intel|radeon|geforce/i.test(r)) return false;
+      return null;
+    } catch (e) { return null; }
+  }
+  if (!/Mac/i.test(navigator.platform || navigator.userAgent)) return;
+  const silicon = isAppleSilicon();
+  if (silicon === null) return;
+  const arm = document.getElementById("dl-arm");
+  const intel = document.getElementById("dl-intel");
+  const primary = silicon ? arm : intel;
+  const secondary = silicon ? intel : arm;
+  primary.classList.remove("btn-alt");
+  secondary.classList.add("btn-alt");
+  primary.textContent = "DOWNLOAD FOR MAC";
+  secondary.textContent = silicon ? "Intel version" : "Apple Silicon version";
+  primary.parentNode.insertBefore(primary, secondary);
+  // Only nag about speed when it applies to the visitor.
+  if (silicon) document.getElementById("intel-speed").style.display = "none";
+  const which = document.getElementById("which");
+  which.innerHTML = "<strong>Detected " + (silicon ? "Apple silicon" : "an Intel Mac")
+    + ".</strong> The button above is the right build for this computer. If that "
+    + "looks wrong, check Apple menu → About This Mac and use the other link.";
+})();
+
 // Show the version next to the button, so a tester can tell at a glance
 // whether they already have this one. Non-essential: if the request fails,
 // or GitHub rate-limits, the button above still works and this stays empty.

@@ -22,8 +22,17 @@ cd "$(dirname "$0")"
 REPO="nnewihe/anya"
 VERSION="$(python3 -c 'from version import APP_VERSION; print(APP_VERSION)')"
 TAG="desktop-v${VERSION}"
-DMG="dist/Anya Tennis ${VERSION}.dmg"
-ASSET="dist/AnyaTennis.dmg"
+
+# Both architectures ship in one release. The asset names are stable and
+# version-free so the landing page and the in-app update banner can link to
+# /releases/latest/download/<name> forever; the architecture IS in the name
+# because a tester picking wrong gets an app that won't launch.
+ARCHES=(arm64 x86_64)
+declare -A DMG_FOR ASSET_FOR
+DMG_FOR[arm64]="dist/arm64/Anya Tennis ${VERSION} (Apple Silicon).dmg"
+DMG_FOR[x86_64]="dist/x86_64/Anya Tennis ${VERSION} (Intel).dmg"
+ASSET_FOR[arm64]="dist/AnyaTennis.dmg"
+ASSET_FOR[x86_64]="dist/AnyaTennis-Intel.dmg"
 
 echo "==> Releasing ${VERSION} as ${TAG}"
 
@@ -36,16 +45,35 @@ if ! gh auth status >/dev/null 2>&1; then
     exit 1
 fi
 
-# ── The artifact is real and Gatekeeper-clean ──────────────────────────────
-if [ ! -f "$DMG" ]; then
-    echo "error: $DMG not found — run ./make_dmg.sh first" >&2
-    exit 1
-fi
-if ! xcrun stapler validate "$DMG" >/dev/null 2>&1; then
-    echo "error: $DMG has no stapled notarization ticket." >&2
-    echo "       Publishing it means every tester gets a Gatekeeper warning." >&2
-    exit 1
-fi
+# ── Both artifacts are real, Gatekeeper-clean, and the right architecture ──
+# Checked before anything is tagged or uploaded: a release carrying only one
+# architecture, or an Intel DMG that is secretly an arm64 build, is worse than
+# no release — the landing page offers both regardless.
+for a in "${ARCHES[@]}"; do
+    dmg="${DMG_FOR[$a]}"
+    if [ ! -f "$dmg" ]; then
+        echo "error: $dmg not found — run ./build_macos.sh $a && ./make_dmg.sh $a" >&2
+        exit 1
+    fi
+    if ! xcrun stapler validate "$dmg" >/dev/null 2>&1; then
+        echo "error: $dmg has no stapled notarization ticket." >&2
+        echo "       Publishing it means every tester gets a Gatekeeper warning." >&2
+        exit 1
+    fi
+    # Verify the architecture of the app INSIDE the image rather than trusting
+    # the filename, which is just a string this script wrote earlier.
+    mnt="$(mktemp -d)"
+    hdiutil attach "$dmg" -nobrowse -quiet -mountpoint "$mnt"
+    got="$(lipo -archs "$mnt/Anya Tennis.app/Contents/MacOS/AnyaTennis" 2>/dev/null || echo unknown)"
+    ff="$(lipo -archs "$mnt/Anya Tennis.app/Contents/Frameworks/ffmpeg" 2>/dev/null || echo unknown)"
+    hdiutil detach "$mnt" -quiet -force || true
+    rmdir "$mnt" 2>/dev/null || true
+    if [ "$got" != "$a" ] || [ "$ff" != "$a" ]; then
+        echo "error: $dmg contains app=$got ffmpeg=$ff, expected $a" >&2
+        exit 1
+    fi
+    echo "==> $a DMG verified (stapled, app and ffmpeg both $a)"
+done
 
 # ── The source that built it is actually in the repo ───────────────────────
 # pipeline/scoreboard_reel/ was untracked for the whole beta.2-beta.4 run: the
@@ -93,8 +121,16 @@ fi
 cat >> "$NOTES" <<EOF
 
 ---
-Requires an Apple silicon Mac (M1 or newer), macOS 12 or later.
-Install: open the DMG and drag Anya Tennis to Applications.
+**Which download?** Apple menu → About This Mac.
+- **Apple M1/M2/M3/M4** → \`AnyaTennis.dmg\`
+- **Intel Core i5/i7/i9** → \`AnyaTennis-Intel.dmg\`
+
+Requires macOS 11 (Big Sur) or later. Install: open the DMG and drag Anya
+Tennis to Applications.
+
+Intel Macs have no GPU acceleration for this work, so processing takes
+substantially longer than on Apple silicon — expect roughly an hour for a
+7-minute clip on a 2018–2019 Mac, and longer on older ones.
 EOF
 
 # ── Tag ────────────────────────────────────────────────────────────────────
@@ -112,18 +148,23 @@ git tag -a "$TAG" -m "Anya Tennis $VERSION"
 git push origin "$TAG"
 
 # ── Publish ────────────────────────────────────────────────────────────────
-echo "==> Staging asset as $ASSET"
-cp "$DMG" "$ASSET"
+UPLOADS=()
+for a in "${ARCHES[@]}"; do
+    echo "==> Staging ${ASSET_FOR[$a]} ($(du -h "${DMG_FOR[$a]}" | cut -f1))"
+    cp "${DMG_FOR[$a]}" "${ASSET_FOR[$a]}"
+    UPLOADS+=("${ASSET_FOR[$a]}")
+done
 
-echo "==> Creating release (uploading $(du -h "$ASSET" | cut -f1))"
-gh release create "$TAG" "$ASSET" \
+echo "==> Creating release and uploading both architectures"
+gh release create "$TAG" "${UPLOADS[@]}" \
     --repo "$REPO" \
     --title "Anya Tennis $VERSION" \
     --notes-file "$NOTES"
 
-rm -f "$ASSET"
+rm -f "${UPLOADS[@]}"
 
 echo "==> Done."
-echo "    Release:  https://github.com/${REPO}/releases/tag/${TAG}"
-echo "    Download: https://github.com/${REPO}/releases/latest/download/AnyaTennis.dmg"
-echo "    Send testers: https://nnewihe.github.io/anya/"
+echo "    Release:       https://github.com/${REPO}/releases/tag/${TAG}"
+echo "    Apple silicon: https://github.com/${REPO}/releases/latest/download/AnyaTennis.dmg"
+echo "    Intel:         https://github.com/${REPO}/releases/latest/download/AnyaTennis-Intel.dmg"
+echo "    Send testers:  https://nnewihe.github.io/anya/"

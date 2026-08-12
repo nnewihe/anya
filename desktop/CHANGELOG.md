@@ -10,6 +10,12 @@ release a version it can't find a section for.
 
 ## 0.1.0-beta.5
 
+- **Intel Macs are supported.** There are now two downloads — one for Apple
+  silicon (M1 and newer) and one for Intel Macs. The download page picks the
+  right one for you. Note that Intel Macs have no graphics acceleration for
+  this work, so processing takes roughly an hour for a 7-minute clip instead
+  of about ten minutes.
+
 - **No more installing ffmpeg.** Anya Tennis now includes everything it needs.
   If you previously ran `brew install ffmpeg` you can leave it — the app uses
   its own copy either way.

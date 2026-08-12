@@ -135,6 +135,50 @@ in the DMG's `Licenses/` folder.
 Windows/Linux builds still expect ffmpeg on PATH; the spec skips the vendored
 Mach-O there and `preflight.ensure_ffmpeg` keeps showing the install hint.
 
+**The two architectures use different ffmpeg builds under different licences,
+and this is not tidyable.** A bundled ffmpeg must be both statically linked
+and redistributable, and no single project supplies both architectures that
+way. imageio-ffmpeg's arm64 wheel is `--enable-gpl` (fine); its **x86_64 wheel
+is also `--enable-nonfree`**, which cannot be redistributed by anyone at any
+price. eugeneware/ffmpeg-static's arm64 build is nonfree too. evermeet.cx is
+clean but x86_64-only. So arm64 comes from a PyPI wheel under **GPLv2** and
+Intel from evermeet.cx under **GPLv3**, and `assets/` carries both licence
+texts plus a per-architecture notice. `fetch_ffmpeg.sh` re-checks
+`ffmpeg -buildconf` for `--enable-nonfree` on every fetch and refuses the
+binary if it appears — do not "simplify" it to one source.
+
+## The Intel build
+
+`requirements-intel.txt` pins the whole stack back, and every pin follows from
+one fact: **torch's last macOS x86_64 wheel is 2.2.2** (March 2024). Everything
+newer is arm64-only on macOS. That forces `numpy<2` (2.2.2 predates the numpy 2
+C ABI), which forces `opencv-python<4.12`; `PyQt6==6.5.3` is separate, chosen
+because Qt 6.5 is the last LTS supporting macOS 11.
+
+`setup_intel_env.sh` builds the environment. It downloads a **prebuilt
+standalone x86_64 CPython** rather than compiling one, because both obvious
+routes fail: `arch -x86_64 /usr/bin/python3` is Python 3.9 and unwritable, and
+`pyenv install` under Rosetta links the arm64 Homebrew openssl, then — with
+Homebrew skipped — produces a Python with no `_lzma`, which **torchvision
+imports at module load**, breaking the entire stack. Supplying lzma means
+building xz from source first. The standalone build ships a complete stdlib
+and its own OpenSSL, and lives entirely under `desktop/`.
+
+PyInstaller freezes the interpreter it runs in, so the Intel build runs it
+under that x86_64 interpreter via Rosetta; no flag on an arm64 interpreter can
+produce an Intel app. `build_macos.sh` verifies the interpreter's actual
+architecture before starting, and checks the finished bundle's executable and
+ffmpeg are both the requested architecture — a bundle carrying the other
+architecture's ffmpeg signs, notarizes and installs perfectly, then demands
+Rosetta at the final render.
+
+**Intel is much slower, and testers must be told.** Measured on an M4 across
+all four models at 1080p: arm64+MPS 58.5 ms/frame, arm64 CPU 149 ms/frame,
+x86_64 CPU 330 ms/frame. Losing the GPU costs ~2.5x and the x86 path another
+~2.2x, so expect roughly **an hour for a 7-minute clip on a 2018–2019 Intel
+Mac** against ~10 minutes on Apple silicon, and worse on older machines. The
+landing page and the release notes both say so up front.
+
 **Only the macOS path has been exercised.** The spec targets all three platforms,
 but Windows and Linux builds are untested; the likely friction points are torch's
 platform wheels and PyQt6 plugin collection.
@@ -195,13 +239,20 @@ from `version.py` — that's the file to actually distribute.
 
 ## Shipping it to testers
 
+Two DMGs ship per release — Apple silicon and Intel. Build both:
+
 ```bash
 cd desktop
 # 1. bump APP_VERSION in version.py, add a "## <version>" section to CHANGELOG.md
-./build_macos.sh     # fetches ffmpeg, builds, signs, notarizes, staples
-./make_dmg.sh        # wraps it, signs/notarizes/staples the DMG too
-./release.sh         # tags desktop-v<version>, creates the GitHub Release
+./setup_intel_env.sh              # once, and after requirements-intel.txt changes
+./build_macos.sh arm64  && ./make_dmg.sh arm64
+./build_macos.sh x86_64 && ./make_dmg.sh x86_64
+./release.sh                      # tags, creates the release, uploads both
 ```
+
+Output lands in `dist/<arch>/`, kept apart because the two bundles are
+otherwise indistinguishable by filename and handing a tester the wrong one
+gives them an app that won't launch.
 
 `release.sh` refuses to publish rather than shipping something subtly wrong:
 it checks the DMG is stapled (an unstapled one gives every tester a Gatekeeper

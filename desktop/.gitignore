@@ -4,10 +4,16 @@
 /dist/
 /build/
 
-# The bundled static ffmpeg (~47 MB) that fetch_ffmpeg.sh downloads. Same
-# argument as dist/: reproducible from a script plus a pinned SHA-256, so it
-# has no business in the history.
+# The bundled static ffmpeg (~47 MB per architecture) that fetch_ffmpeg.sh
+# downloads. Same argument as dist/: reproducible from a script plus a pinned
+# SHA-256, so it has no business in the history.
 /vendor/
+
+# The x86_64 build environment that setup_intel_env.sh creates: a standalone
+# CPython plus a venv holding torch, ~2 GB together. Reproducible from
+# requirements-intel.txt and the pinned interpreter URL in that script.
+/.toolchain-intel/
+/.venv-intel/
 
 # Ultralytics auto-downloads weights into the CWD when a model is named
 # without a path, and the desktop app's CWD is this directory.  The real

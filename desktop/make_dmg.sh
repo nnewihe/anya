@@ -16,11 +16,26 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+ARCH="${1:-$(uname -m)}"
+case "$ARCH" in
+arm64|x86_64) ;;
+*) echo "error: unsupported architecture '$ARCH' (expected arm64 or x86_64)" >&2; exit 1 ;;
+esac
+
 IDENTITY="Developer ID Application: Anderson Nnewihe (696S9GCN96)"
 NOTARY_PROFILE="anya-notary"
-APP="dist/Anya Tennis.app"
+DIST="dist/$ARCH"
+APP="$DIST/Anya Tennis.app"
 VERSION="$(python3 -c 'from version import APP_VERSION; print(APP_VERSION)')"
-DMG_PATH="dist/Anya Tennis ${VERSION}.dmg"
+
+# The architecture is in the volume name as well as the filename, because the
+# volume name is what a tester sees in Finder after double-clicking — and
+# "which one did I download" is exactly the question two DMGs create.
+case "$ARCH" in
+arm64)  LABEL="Apple Silicon" ;;
+x86_64) LABEL="Intel" ;;
+esac
+DMG_PATH="$DIST/Anya Tennis ${VERSION} (${LABEL}).dmg"
 
 if [ ! -d "$APP" ]; then
     echo "error: $APP not found — run build_macos.sh first" >&2
@@ -42,13 +57,17 @@ cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 # The bundled ffmpeg is GPL, so its licence has to travel with what we
 # distribute — and in the DMG root it is somewhere a person can actually find
-# it, unlike the copy inside Contents/Frameworks/licenses.
+# it, unlike the copy inside Contents/Frameworks/licenses. Taken from
+# vendor/<arch>/ because the two architectures bundle different upstream
+# ffmpeg builds under different licences (arm64 GPLv2, Intel GPLv3) — shipping
+# the wrong one is a licence violation, not a cosmetic slip.
 mkdir -p "$STAGE/Licenses"
-cp assets/FFMPEG-LICENSE.txt assets/COPYING.GPLv2 "$STAGE/Licenses/"
+cp "vendor/$ARCH/FFMPEG-LICENSE.txt" "$STAGE/Licenses/FFMPEG-LICENSE.txt"
+cp "vendor/$ARCH/COPYING.txt" "$STAGE/Licenses/COPYING.txt"
 
 echo "==> Building $DMG_PATH"
 rm -f "$DMG_PATH"
-hdiutil create -volname "Anya Tennis ${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH"
+hdiutil create -volname "Anya Tennis ${VERSION} (${LABEL})" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH"
 
 echo "==> Signing DMG"
 codesign --force --sign "$IDENTITY" "$DMG_PATH"

@@ -1,0 +1,33 @@
+FFmpeg — licence and source notice (Intel build)
+================================================
+
+Anya Tennis bundles a copy of FFmpeg to cut and encode video. FFmpeg is a
+separate program: Anya Tennis runs it as its own process and does not link
+against it.
+
+Bundled build
+-------------
+
+  FFmpeg 9.0.1
+  macOS, x86_64 (Intel), statically linked
+  Obtained from https://evermeet.cx/ffmpeg/ (ffmpeg-9.0.1.zip)
+
+Licence
+-------
+
+This build is configured with --enable-gpl and --enable-version3, so the
+resulting binary is covered by the GNU General Public License, version 3.
+The full text of GPL version 3 is in COPYING.GPLv3 next to this file.
+
+Note this differs from the Apple silicon build of Anya Tennis, which bundles
+a different FFmpeg binary covered by GPL version 2 (see COPYING.GPLv2). The
+two architectures use different upstream builds, so their licences differ.
+
+FFmpeg's own source, including the licence headers of every component, is at
+https://ffmpeg.org and https://github.com/FFmpeg/FFmpeg.
+
+Written offer for source
+------------------------
+
+The bundled binary is unmodified upstream FFmpeg 9.0.1. On request we will
+provide the complete corresponding source for it: nnewihe@gmail.com.
