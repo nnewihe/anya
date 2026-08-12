@@ -179,9 +179,9 @@ x86_64 CPU 330 ms/frame. Losing the GPU costs ~2.5x and the x86 path another
 Mac** against ~10 minutes on Apple silicon, and worse on older machines. The
 landing page and the release notes both say so up front.
 
-**Only the macOS path has been exercised.** The spec targets all three platforms,
-but Windows and Linux builds are untested; the likely friction points are torch's
-platform wheels and PyQt6 plugin collection.
+PyInstaller cannot cross-compile: **each target must be built on its own OS.**
+macOS is built locally with `build_macos.sh`; Windows is built in CI (below).
+Linux has no build script and remains untested.
 
 ### macOS: signing + notarization
 
@@ -294,6 +294,69 @@ The check fails silently on any error, runs off the GUI thread, and sends
 nothing but an HTTP GET — no identifier, no payload. That matters because the
 app header promises *"Runs 100% on this computer — your video is never
 uploaded"*, which stays true. `ANYA_NO_UPDATE_CHECK=1` disables it.
+
+### Windows: installer
+
+The Windows equivalent of the DMG is a single
+`dist/AnyaTennis-Setup-<version>.exe` produced by
+[`installer.iss`](installer.iss) (Inno Setup) on top of the one-folder
+PyInstaller output. Testers get one file to double-click, a Start Menu entry
+and a working uninstaller.
+
+**Normal path — build it in CI.** There is no Windows machine in this project,
+and PyInstaller cannot cross-compile from macOS. Run the
+[Build Windows installer](../.github/workflows/build-windows.yml) workflow from
+the repo's Actions tab (or push a `desktop-v*` tag), then download the
+`AnyaTennis-Setup-<version>` artifact. Takes roughly 20–30 minutes, most of it
+pip-installing torch and compressing ~2 GB.
+
+**If you do have a Windows box**, the same script CI runs works locally:
+
+```powershell
+cd desktop
+.\build_windows.ps1
+```
+
+It guards the Python version, checks the app imports before spending 20 minutes
+on a bundle that can't launch, runs PyInstaller, sanity-checks the output size,
+and compiles the installer. Prerequisites: Python ≥ 3.12.1,
+`pip install -r requirements.txt`, and Inno Setup 6.3+
+(`winget install JRSoftware.InnoSetup`). Pass `-SkipInstaller` to stop at
+`dist\AnyaTennis\`.
+
+Windows-specific notes:
+
+- **The installer is unsigned.** There is no Windows code-signing certificate
+  for this project, so SmartScreen shows *"Windows protected your PC"* on first
+  run. Testers need to click **More info → Run anyway**. Tell them this up
+  front — it looks alarming and it is the most likely reason a beta tester
+  quietly gives up. (An OV/EV certificate is the only real fix; EV clears
+  SmartScreen immediately, OV only after the build accumulates reputation.)
+- **It installs per-user**, into `%LOCALAPPDATA%\Programs\Anya Tennis`, so
+  there is no UAC elevation prompt on top of the SmartScreen one.
+- **ffmpeg is still required** and still not bundled:
+  `winget install Gyan.FFmpeg`. The app probes winget/Chocolatey/Scoop install
+  locations directly, so a fresh install is picked up without signing out
+  first (Windows only hands a running Explorer the PATH it started with).
+- **UPX is disabled on Windows** (`rally_app.spec`) — it corrupts torch and Qt
+  DLLs, producing a build that dies with `DLL load failed while importing _C`.
+- **Logs** land in `%LOCALAPPDATA%\Anya Tennis\logs\app.log` — ask for this
+  file with any bug report.
+- **Pin the dependencies.** `constraints-windows.txt` holds CI to the versions
+  the macOS build is validated against, because `requirements.txt` only sets
+  floors and a runner resolves the newest of everything. Skipping this is not
+  cosmetic: the first Windows build picked up ultralytics 8.4.118 against a Mac
+  on 8.4.36 and died at launch on `No module named 'matplotlib'`, with an
+  opencv 4→5 major bump and an sklearn bump under the pickled
+  `walking_model.joblib` queued up behind it. Update it *after* the macOS side
+  has been bumped and proven, never before.
+
+**Not yet wired into the release flow.** `release.sh` builds and uploads the
+two DMGs only, and <https://nnewihe.github.io/anya/> offers a Mac download; the
+Windows installer is still a CI artifact you fetch and attach by hand. Adding
+it to `release.sh` means uploading `AnyaTennis-Setup.exe` next to
+`AnyaTennis.dmg` on the same `desktop-v*` tag, which is what
+`update_check.py` already watches.
 
 ## Design
 

@@ -1,0 +1,84 @@
+# Builds the Windows installer for the Anya Tennis desktop app.
+#
+# PyInstaller cannot cross-compile, so this is the only way to get a .exe
+# without owning a Windows machine. Run it from the Actions tab
+# ("Run workflow"), or push a desktop-v* tag to cut a release build.
+#
+# The artifact is AnyaTennis-Setup-<version>.exe — a single file to hand to a
+# beta tester. It is NOT code-signed; see desktop/README.md.
+
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'desktop-v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # The default 360 minutes is generous, but a ~2 GB bundle plus installer
+    # compression is slow enough that the default 6-hour hang on a wedged step
+    # would waste a lot of runner time before anyone noticed.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # NOT 3.12.0 — cpython#110543 makes PyInstaller emit a bundle that
+          # dies at startup inside torch. build_windows.ps1 enforces this too;
+          # pinning here means CI never even downloads the bad interpreter.
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: desktop/requirements.txt
+
+      - name: Install Python dependencies
+        working-directory: desktop
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch. The default PyPI wheel on Windows already excludes
+          # CUDA, but being explicit keeps a future default change from
+          # quietly adding ~2 GB of CUDA libraries to a bundle that has no GPU
+          # code path on Windows anyway.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build app and installer
+        working-directory: desktop
+        run: .\build_windows.ps1
+
+      - name: Read app version
+        id: version
+        working-directory: desktop
+        run: |
+          $v = (python -c "import sys; sys.path.insert(0, '.'); from version import APP_VERSION; print(APP_VERSION)").Trim()
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyaTennis-Setup-${{ steps.version.outputs.version }}
+          path: desktop/dist/AnyaTennis-Setup-*.exe
+          # The default 90 days is longer than a beta build stays relevant,
+          # and these are ~1 GB each against the repo's storage quota.
+          retention-days: 14
+          if-no-files-found: error
+
+      # PyInstaller's warning file is the first thing worth reading when the
+      # app builds but won't launch — a missing hidden import shows up there
+      # and nowhere else. Kept separate so it can be downloaded without
+      # pulling the gigabyte installer alongside it.
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-warnings
+          path: desktop/build/AnyaTennis/warn-AnyaTennis.txt
+          retention-days: 14
+          if-no-files-found: ignore
