@@ -39,12 +39,23 @@ jobs:
         working-directory: desktop
         run: |
           python -m pip install --upgrade pip
+          # -c constraints-windows.txt pins the stack to the versions the macOS
+          # build is validated against. requirements.txt only sets floors, so
+          # without this a runner resolves the newest of everything and ships
+          # testers a Windows build made from different software than the Mac
+          # one. That is not hypothetical: the first build resolved ultralytics
+          # 8.4.118 against a Mac on 8.4.36 and died at startup.
+          #
           # CPU-only torch. The default PyPI wheel on Windows already excludes
           # CUDA, but being explicit keeps a future default change from
           # quietly adding ~2 GB of CUDA libraries to a bundle that has no GPU
           # code path on Windows anyway.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
+          pip install -c constraints-windows.txt torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -c constraints-windows.txt -r requirements.txt
+          # Leaves a record in the log of what was actually built against,
+          # which is the first thing worth knowing when a build runs fine and
+          # the app then won't start.
+          pip list
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -74,11 +85,17 @@ jobs:
       # app builds but won't launch — a missing hidden import shows up there
       # and nowhere else. Kept separate so it can be downloaded without
       # pulling the gigabyte installer alongside it.
+      #
+      # The file is named after the SPEC (build/rally_app/warn-rally_app.txt),
+      # not after the app. Globbing rather than hardcoding that, because the
+      # first run pointed at build/AnyaTennis/ and silently uploaded nothing —
+      # `if-no-files-found: ignore` meant the one artifact that would have
+      # diagnosed the startup crash was quietly absent when it was needed.
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-warnings
-          path: desktop/build/AnyaTennis/warn-AnyaTennis.txt
+          path: desktop/build/*/warn-*.txt
           retention-days: 14
-          if-no-files-found: ignore
+          if-no-files-found: warn

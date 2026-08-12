@@ -229,7 +229,14 @@ a = Analysis(
         'torch_geometric',
         'mediapipe',
         'tensorflow',
-        'matplotlib',
+        # NOTE matplotlib is NOT excluded. It is a declared hard dependency of
+        # ultralytics (install_requires: matplotlib>=3.3.0), and excluding a
+        # declared dependency only ever worked by luck. ultralytics 8.4.x added
+        # a `semantic` task whose train.py imports matplotlib.pyplot at module
+        # scope, and models/yolo/__init__.py imports `semantic` eagerly — so
+        # from that release on, `import ultralytics` imports matplotlib
+        # unconditionally and the exclusion turns into an immediate
+        # "No module named 'matplotlib'" at app startup.
         'IPython',
         'notebook',
         'pytest',

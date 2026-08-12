@@ -23,7 +23,11 @@
 [CmdletBinding()]
 param(
     [switch]$SkipInstaller,
-    [switch]$KeepBuild
+    [switch]$KeepBuild,
+    [switch]$SkipSmokeTest,
+    # Long enough for a cold ~2 GB bundle to unpack its imports and build both
+    # tabs on a slow runner; short enough not to pad every build noticeably.
+    [int]$SmokeTestSeconds = 45
 )
 
 # Stop on the first error, and make native-command failures (pyinstaller, iscc)
@@ -96,6 +100,42 @@ $sizeMb = [math]::Round((Get-ChildItem -Recurse -File 'dist\AnyaTennis' | Measur
 Write-Host "==> Bundle size: $sizeMb MB"
 if ($sizeMb -lt 300) {
     throw "dist\AnyaTennis is only $sizeMb MB — torch/ultralytics were not collected. Check the PyInstaller warnings."
+}
+
+# ── Smoke test: does the thing actually start? ─────────────────────────────
+# A PyInstaller build that succeeds proves nothing about whether the app runs.
+# The first Windows build packaged cleanly and then died instantly on
+# "No module named 'matplotlib'" — an exclude in the spec that a newer
+# ultralytics had turned into a hard dependency. That failure happens at
+# import time, before applog installs its excepthook, so there is no log file
+# and no dialog text to go on: the only signal is that the process exits.
+#
+# QT_QPA_PLATFORM=offscreen so this needs no desktop session and still
+# exercises the whole chain — every import, plus building both tabs. If the
+# app is alive after the timeout it got through startup; a process that has
+# already exited failed, and its exit code and stderr say how.
+if (-not $SkipSmokeTest) {
+    Write-Host "==> Smoke-testing the built app (offscreen, ${SmokeTestSeconds}s)"
+    $stdout = Join-Path $env:TEMP 'anya_smoke_out.txt'
+    $stderr = Join-Path $env:TEMP 'anya_smoke_err.txt'
+    $env:QT_QPA_PLATFORM = 'offscreen'
+    try {
+        $proc = Start-Process -FilePath (Resolve-Path $exePath) -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if ($proc.WaitForExit($SmokeTestSeconds * 1000)) {
+            # Exited on its own => it crashed. Nothing here ever exits early.
+            $err = if (Test-Path $stderr) { Get-Content $stderr -Raw } else { '' }
+            $out = if (Test-Path $stdout) { Get-Content $stdout -Raw } else { '' }
+            Write-Host "--- stdout ---`n$out" -ForegroundColor DarkGray
+            Write-Host "--- stderr ---`n$err" -ForegroundColor Red
+            throw "The built app exited during startup (code $($proc.ExitCode)). It does not run — see the output above and build\rally_app\warn-rally_app.txt."
+        }
+        Write-Host "    still running after ${SmokeTestSeconds}s — startup OK"
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    } finally {
+        Remove-Item env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+        Remove-Item $stdout, $stderr -ErrorAction SilentlyContinue
+    }
 }
 
 if ($SkipInstaller) {
