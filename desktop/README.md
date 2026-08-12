@@ -15,13 +15,17 @@ pip install -r desktop/requirements.txt
 python desktop/app.py
 ```
 
-`ffmpeg` must be on PATH — the final cut shells out to it:
+**Running from source**, `ffmpeg` must be on PATH — the final cut shells out
+to it:
 
 ```bash
 brew install ffmpeg          # macOS
 sudo apt install ffmpeg      # Debian/Ubuntu
 winget install Gyan.FFmpeg   # Windows
 ```
+
+The **packaged macOS app bundles its own** (see *Build a distributable*), so
+testers install nothing.
 
 ## What it does
 
@@ -99,7 +103,7 @@ python -m pipeline.rally_reel match.mp4 --dry-run --ball-quiet-mode off
 
 ```bash
 pip install pyinstaller
-cd desktop && pyinstaller rally_app.spec
+cd desktop && ./fetch_ffmpeg.sh && pyinstaller rally_app.spec
 ```
 
 - macOS → `dist/Anya Tennis.app`
@@ -108,7 +112,28 @@ cd desktop && pyinstaller rally_app.spec
 Weights are pulled from the repo automatically (`pipeline/models/`,
 `walking/outputs/`); nothing to copy by hand. Expect a **large bundle (~2 GB)** —
 torch and ultralytics are required by the telemetry and pose stages and cannot be
-excluded. `ffmpeg` is not bundled and must be present on the target machine.
+excluded.
+
+### The bundled ffmpeg
+
+`fetch_ffmpeg.sh` puts a static arm64 ffmpeg in `desktop/vendor/` (gitignored,
+reproducible from a pinned SHA-256), and the spec ships it inside the bundle.
+`preflight.repair_path()` then puts that directory **first** on PATH, so every
+`subprocess.run(["ffmpeg", ...])` under `pipeline/` finds it with no change to
+any of them. `build_macos.sh` runs the fetch itself, so a plain
+`./build_macos.sh` needs no extra step.
+
+Bundling it is what makes the install single-click: telling a coach to install
+Homebrew ends the trial. The binary has to be both **arm64** (Rosetta is not
+installed by default on Apple silicon) and **redistributable** — most prebuilt
+macOS ffmpeg binaries fail one of those, including the popular
+eugeneware/ffmpeg-static arm64 build, which is `--enable-nonfree`. The script's
+header records why this particular source was chosen. It is GPL, so
+`assets/FFMPEG-LICENSE.txt` and `assets/COPYING.GPLv2` ship in the bundle and
+in the DMG's `Licenses/` folder.
+
+Windows/Linux builds still expect ffmpeg on PATH; the spec skips the vendored
+Mach-O there and `preflight.ensure_ffmpeg` keeps showing the install hint.
 
 **Only the macOS path has been exercised.** The spec targets all three platforms,
 but Windows and Linux builds are untested; the likely friction points are torch's
@@ -167,6 +192,57 @@ means the *first* Gatekeeper check (opening the downloaded file) resolves
 offline too, instead of requiring a live call to Apple at exactly the moment
 a tester double-clicks it. Output: `dist/Anya Tennis <version>.dmg`, named
 from `version.py` — that's the file to actually distribute.
+
+## Shipping it to testers
+
+```bash
+cd desktop
+# 1. bump APP_VERSION in version.py, add a "## <version>" section to CHANGELOG.md
+./build_macos.sh     # fetches ffmpeg, builds, signs, notarizes, staples
+./make_dmg.sh        # wraps it, signs/notarizes/staples the DMG too
+./release.sh         # tags desktop-v<version>, creates the GitHub Release
+```
+
+`release.sh` refuses to publish rather than shipping something subtly wrong:
+it checks the DMG is stapled (an unstapled one gives every tester a Gatekeeper
+warning), that `CHANGELOG.md` has a section for this version, that the tag
+doesn't already exist, and that **every package the app imports is tracked in
+git** — `pipeline/scoreboard_reel/` was untracked through the whole
+beta.2–beta.4 run, so the app built here and failed at import from a clean
+clone.
+
+The asset is uploaded as `AnyaTennis.dmg` with no version in the name, which
+makes this a permanent URL:
+
+```
+https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis.dmg
+```
+
+That's what the landing page's Download button and the in-app update banner
+both point at, so neither needs touching per release.
+
+**Testers get one URL:** <https://nnewihe.github.io/anya/> — served by GitHub
+Pages from `docs/` on `main` (Settings → Pages → Deploy from branch → `main`
+/ `docs`). It carries the install steps, the Apple-silicon-only caveat and the
+privacy FAQ, which a raw releases page doesn't.
+
+### Update notices
+
+`update_check.py` asks the GitHub Releases API on launch whether a newer
+`desktop-v*` tag exists and, if so, `app.py` shows a dismissible banner with a
+Download button. Deliberately not a real auto-updater — Sparkle in a
+PyInstaller bundle means an embedded framework, a second signing key and a
+320 MB background download, for roughly the same time-to-new-build as a banner
+and a drag.
+
+It filters on the `desktop-v` prefix because `mobile/` versions independently
+in this same repo; `/releases/latest` would eventually hand the desktop app a
+Flutter version number.
+
+The check fails silently on any error, runs off the GUI thread, and sends
+nothing but an HTTP GET — no identifier, no payload. That matters because the
+app header promises *"Runs 100% on this computer — your video is never
+uploaded"*, which stays true. `ANYA_NO_UPDATE_CHECK=1` disables it.
 
 ## Design
 

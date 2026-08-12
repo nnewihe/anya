@@ -5,7 +5,14 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.4"
+APP_VERSION = "0.1.0-beta.5"
+# beta.5 — first build distributed through GitHub Releases rather than by
+# hand, and the first that installs with nothing else installed: ffmpeg is
+# bundled (fetch_ffmpeg.sh), so no Homebrew step.  Also ships two weight files
+# the spec had been omitting — trophy_best.pt, which the near-serve stage
+# loads on its first ARMED window, and walking_model_15hz.joblib, without
+# which the fast point-end path silently ran the 30 Hz model.  Adds a
+# launch-time check for newer releases (update_check.py).
 # beta.4 — fixes the SIGABRT right as a reel finished: the completion slot
 # dropped the last reference to the still-running QThread.  The reel itself
 # was already written before the crash.  See HighlightReelTab._release_worker.

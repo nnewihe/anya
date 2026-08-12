@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anya Tennis — beta</title>
+<meta name="description" content="Watch your matches in minutes, not hours. Anya Tennis turns a full match video into a reel of just the rallies, entirely on your own Mac.">
+<link rel="icon" href="anya_logo.png">
+<style>
+  :root {
+    --black: #000000;
+    --surface: #141412;
+    --surface-alt: #1F1F1B;
+    --yellow: #E8FF3D;
+    --yellow-hover: #F1FF6B;
+    --outline: #3A3A36;
+    --dim: #A0A099;
+    --white: #FFFFFF;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--black);
+    color: var(--white);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+
+  header { display: flex; align-items: center; gap: 16px; }
+  header img { width: 64px; height: 64px; }
+  h1 { font-size: 30px; margin: 0; letter-spacing: -0.01em; }
+  .tagline { color: var(--dim); font-size: 18px; margin: 4px 0 0; }
+
+  hr { border: none; border-top: 1px solid var(--yellow); margin: 20px 0 36px; }
+
+  .cta { text-align: center; padding: 8px 0 4px; }
+  .btn {
+    display: inline-block;
+    background: var(--yellow);
+    color: var(--black);
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-decoration: none;
+    padding: 16px 40px;
+    border-radius: 10px;
+  }
+  .btn:hover { background: var(--yellow-hover); }
+  .meta { color: var(--dim); font-size: 13px; margin-top: 12px; }
+  .meta strong { color: var(--white); font-weight: 600; }
+
+  h2 {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.10em;
+    color: var(--yellow);
+    margin: 48px 0 14px;
+  }
+
+  ol.steps { counter-reset: s; list-style: none; padding: 0; margin: 0; }
+  ol.steps li {
+    counter-increment: s;
+    position: relative;
+    padding: 14px 0 14px 44px;
+    border-bottom: 1px solid var(--outline);
+  }
+  ol.steps li:last-child { border-bottom: none; }
+  ol.steps li::before {
+    content: counter(s);
+    position: absolute; left: 0; top: 14px;
+    width: 26px; height: 26px;
+    background: var(--surface-alt);
+    color: var(--yellow);
+    border-radius: 50%;
+    font-size: 13px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .note {
+    background: var(--surface);
+    border-left: 2px solid var(--yellow);
+    padding: 14px 18px;
+    margin: 24px 0;
+    font-size: 14px;
+    color: var(--dim);
+  }
+  .note strong { color: var(--white); }
+
+  details {
+    border-bottom: 1px solid var(--outline);
+    padding: 14px 0;
+  }
+  summary { cursor: pointer; font-weight: 600; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "+ "; color: var(--yellow); font-weight: 700; }
+  details[open] summary::before { content: "– "; }
+  details p { color: var(--dim); font-size: 14px; margin: 10px 0 0; }
+
+  code {
+    background: var(--surface-alt);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    color: var(--yellow);
+  }
+  a { color: var(--yellow); }
+  footer { color: var(--dim); font-size: 13px; margin-top: 56px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <img src="anya_logo.png" alt="">
+    <div>
+      <h1>Anya Tennis</h1>
+      <p class="tagline">Watch your matches in minutes, not hours.</p>
+    </div>
+  </header>
+
+  <hr>
+
+  <p>Give it a match video and click the four corners of the court once. It
+  gives you back a reel of just the rallies — no waiting between points, no
+  walking to pick up balls. Everything happens on your own Mac; your video is
+  never uploaded anywhere.</p>
+
+  <div class="cta">
+    <a class="btn" id="download"
+       href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis.dmg">
+       DOWNLOAD FOR MAC</a>
+    <p class="meta">
+      <span id="version"></span>
+      Requires an <strong>Apple silicon Mac (M1 or newer)</strong>, macOS 12 or
+      later. About 320&nbsp;MB.
+    </p>
+  </div>
+
+  <div class="note">
+    <strong>Intel Macs aren't supported yet.</strong> If your Mac is from
+    before late 2020, this build won't run on it. Check
+    <span style="white-space:nowrap">Apple&nbsp;menu → About This Mac</span> —
+    it needs to say Apple M1, M2, M3 or M4.
+  </div>
+
+  <h2>INSTALLING</h2>
+  <ol class="steps">
+    <li>Click <strong>Download for Mac</strong> above and wait for it to
+        finish — it's a big file.</li>
+    <li>Open the downloaded <code>AnyaTennis.dmg</code>. A window appears with
+        the Anya Tennis icon and an Applications folder.</li>
+    <li>Drag <strong>Anya Tennis</strong> onto <strong>Applications</strong>.
+        That's the install.</li>
+    <li>Open it from Applications (or Launchpad). Nothing else to install —
+        no Homebrew, no ffmpeg, no Terminal.</li>
+  </ol>
+
+  <div class="note">
+    You should <strong>not</strong> see any warning about an unidentified
+    developer. The app is signed and notarized with Apple. If macOS does warn
+    you, don't work around it — that means something is wrong with the build.
+    Send a screenshot instead.
+  </div>
+
+  <h2>UPDATING</h2>
+  <p>When a newer version is out, Anya Tennis shows a banner at the top of the
+  window the next time you open it. Click <strong>Download</strong>, quit the
+  app, and drag the new one onto Applications the same way — choose
+  <strong>Replace</strong> when macOS asks. Your videos and everything the app
+  has already worked out about them are untouched.</p>
+
+  <h2>QUESTIONS</h2>
+
+  <details>
+    <summary>Is my video uploaded anywhere?</summary>
+    <p>No. All the processing happens on your Mac, and no video, image or
+    frame ever leaves it. The only thing the app sends over the internet is a
+    request asking GitHub what the latest released version number is — no
+    account, no identifier, nothing about you or your matches. You can turn
+    even that off by setting <code>ANYA_NO_UPDATE_CHECK=1</code>.</p>
+  </details>
+
+  <details>
+    <summary>Why is it so big?</summary>
+    <p>About 320&nbsp;MB to download, around 2&nbsp;GB installed. It carries
+    its own copies of the machine-learning models that find the ball and the
+    players, and of the video tools that cut the reel, so you don't have to
+    install anything separately.</p>
+  </details>
+
+  <details>
+    <summary>How long does it take to process a match?</summary>
+    <p>Roughly 1.6&nbsp;× the length of the clip the first time. A 7-minute 4K
+    clip took about 11 minutes on an M4. Running it again on the same video is
+    much faster — it remembers what it already worked out.</p>
+  </details>
+
+  <details>
+    <summary>Something went wrong. What do you need from me?</summary>
+    <p>Two things: the version number, shown in the top-right corner of the
+    app window, and the log file. You'll find the log in Finder via
+    <strong>Go → Go to Folder…</strong> and pasting
+    <code>~/Library/Logs/Anya Tennis</code>. Send
+    <code>app.log</code> along with what you were doing when it happened.</p>
+  </details>
+
+  <details>
+    <summary>What about Windows?</summary>
+    <p>Not yet. A Windows build is planned but hasn't been tested — this beta
+    is Mac only.</p>
+  </details>
+
+  <footer>
+    Beta software: expect rough edges, and please report them.
+    <a href="https://github.com/nnewihe/anya">Source on GitHub</a>.
+    Includes <a href="https://ffmpeg.org">FFmpeg</a>, licensed under the GPL —
+    see the Licenses folder in the DMG.
+  </footer>
+
+</div>
+
+<script>
+// Show the version next to the button, so a tester can tell at a glance
+// whether they already have this one. Non-essential: if the request fails,
+// or GitHub rate-limits, the button above still works and this stays empty.
+fetch("https://api.github.com/repos/nnewihe/anya/releases")
+  .then(r => r.ok ? r.json() : Promise.reject(r.status))
+  .then(rs => {
+    const rel = rs.find(r => !r.draft && r.tag_name.startsWith("desktop-v"));
+    if (rel) {
+      document.getElementById("version").innerHTML =
+        "<strong>" + rel.tag_name.replace("desktop-v", "") + "</strong> &middot; ";
+    }
+  })
+  .catch(() => {});
+</script>
+</body>
+</html>
