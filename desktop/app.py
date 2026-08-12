@@ -26,10 +26,10 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QTabWidget,
+    QLabel, QFrame, QTabWidget, QPushButton,
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtCore import Qt, QSize, QUrl
+from PyQt6.QtGui import QDesktopServices, QFont, QPixmap
 
 # Import the pipeline as a PACKAGE: its modules use intra-package relative
 # imports (`from .ball_tracker import …`), so the repo root — the parent of
@@ -43,10 +43,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from applog import setup_logging
 from preflight import repair_path
-from theme import BLACK, TEXT_DIM, WHITE, YELLOW
+from theme import BLACK, SURFACE_ALT, TEXT_DIM, WHITE, YELLOW, ghost_btn_css
 from highlight_tab import HighlightReelTab
 from scoreboard_tab import ScoreboardTab
+from update_check import check_for_updates
 from version import APP_VERSION
+
+# Where the Download button sends a tester. The landing page rather than the
+# GitHub release: it carries the install steps and the Apple-silicon-only
+# caveat, and a release page's source-code zips and asset list are noise to
+# someone who just wants the app.
+DOWNLOAD_URL = "https://nnewihe.github.io/anya/"
 
 
 def _logo_path():
@@ -75,6 +82,17 @@ class RallyDetectorApp(QMainWindow):
         self.setMinimumSize(900, 780)
         self.resize(1240, 920)
         self._setup_ui()
+
+        # Held until the thread's `finished` fires — see UpdateChecker's
+        # docstring and HighlightReelTab._release_worker for why dropping the
+        # last reference to a live QThread is fatal rather than merely untidy.
+        self._update_checker = check_for_updates(self, self._on_update_available)
+        if self._update_checker is not None:
+            # Drop our reference once the thread is done. `check_for_updates`
+            # has already scheduled deleteLater, so holding on past that leaves
+            # a Python wrapper around a deleted C++ object — touching it raises
+            # RuntimeError. Nothing does today; this keeps that true.
+            self._update_checker.finished.connect(self._clear_update_checker)
 
     # ── UI construction ────────────────────────────────────────────────────
 
@@ -107,6 +125,13 @@ class RallyDetectorApp(QMainWindow):
         lay.addLayout(self._logo_row())
         lay.addWidget(self._divider())
 
+        # Built hidden and added now so it can appear in place later without
+        # reflowing anything: the check finishes seconds after launch, and a
+        # banner that pushed the tab bar down while a tester was reaching for
+        # it would be worse than no banner.
+        self._update_banner = self._build_update_banner()
+        lay.addWidget(self._update_banner)
+
         tabs = QTabWidget()
         tabs.setStyleSheet(f"""
             QTabWidget::pane {{ border: none; }}
@@ -137,6 +162,69 @@ class RallyDetectorApp(QMainWindow):
 
         tabs.currentChanged.connect(_on_tab_changed)
         _on_tab_changed(tabs.currentIndex())
+
+    # ── Update banner ──────────────────────────────────────────────────────
+
+    def _build_update_banner(self):
+        """A hidden strip that offers the newer build once one is found.
+
+        Deliberately not a QMessageBox: the check lands a few seconds after
+        launch, which is exactly when a tester is picking a video, and a modal
+        dialog there would be an interruption they'd dismiss without reading.
+        Dismissible, because someone mid-way through a 10-minute job should be
+        able to make it go away and update afterwards.
+        """
+        bar = QWidget()
+        bar.setVisible(False)
+        bar.setStyleSheet(
+            f"QWidget {{ background: {SURFACE_ALT}; border-radius: 6px; }}"
+        )
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(14, 8, 10, 8)
+        row.setSpacing(10)
+
+        self._update_label = QLabel()
+        self._update_label.setStyleSheet(f"color: {WHITE}; font-size: 12px; background: transparent;")
+        row.addWidget(self._update_label)
+        row.addStretch()
+
+        download = QPushButton("DOWNLOAD")
+        download.setStyleSheet(ghost_btn_css())
+        download.setCursor(Qt.CursorShape.PointingHandCursor)
+        download.setToolTip(
+            "Opens the download page. To install: quit Anya Tennis, open the "
+            "downloaded file, and drag it onto Applications, replacing the old one."
+        )
+        download.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(DOWNLOAD_URL)))
+        row.addWidget(download)
+
+        # U+00D7, not a heavier ✕/✖: those live in fonts Qt may not fall back
+        # to, and a missing glyph renders as some unrelated character rather
+        # than nothing (offscreen it came out as "«").
+        dismiss = QPushButton("×")
+        dismiss.setStyleSheet(ghost_btn_css())
+        dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
+        dismiss.setFixedWidth(30)
+        dismiss.setToolTip("Hide until next launch")
+        dismiss.clicked.connect(lambda: bar.setVisible(False))
+        row.addWidget(dismiss)
+
+        return bar
+
+    def _clear_update_checker(self):
+        self._update_checker = None
+
+    def _on_update_available(self, version, html_url):
+        # html_url is the GitHub release page. The button goes to DOWNLOAD_URL
+        # instead — same build, but with the install steps around it — so this
+        # is carried for the log and for a future "what changed" link rather
+        # than used here.
+        logging.getLogger("anya_tennis").info("update banner shown for %s (%s)", version, html_url)
+        self._update_label.setText(
+            f"<b style='color:{YELLOW}'>Anya Tennis {version}</b> is available "
+            f"— you're on {APP_VERSION}."
+        )
+        self._update_banner.setVisible(True)
 
     def _logo_row(self):
         row = QHBoxLayout()
