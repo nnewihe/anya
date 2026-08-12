@@ -18,6 +18,7 @@ The pipeline is *imported*, never copied — the repo root goes on sys.path and
 on the next run with no rebuild.
 """
 
+import multiprocessing
 import sys
 from pathlib import Path
 
@@ -191,6 +192,17 @@ class RallyDetectorApp(QMainWindow):
 
 
 def main():
+    # FIRST statement in main(), before logging, Qt, or anything that could
+    # spawn a worker. Windows has no fork(): multiprocessing re-launches the
+    # program and unpickles the child's target, and in a frozen build "the
+    # program" is AnyaTennis.exe, so a child re-runs main() and opens another
+    # window — which spawns another child, without bound. freeze_support()
+    # makes a re-launched child execute its worker payload and exit instead.
+    # Nothing here calls multiprocessing directly, but torch and joblib both
+    # do, and the failure mode is an unkillable cascade of app windows on a
+    # tester's machine. It is a documented no-op on macOS and Linux.
+    multiprocessing.freeze_support()
+
     # Must run before anything else can fail — it installs sys.excepthook so
     # even an error during QApplication/window construction gets logged
     # instead of vanishing (the packaged app has no console to print to).
@@ -198,7 +210,9 @@ def main():
 
     # Launched from Finder, this process inherits launchd's PATH, which has no
     # /opt/homebrew/bin on it — so ffmpeg looks missing on machines that have
-    # it. Repair once here, before any tab can shell out.
+    # it. Windows has the same symptom for a different reason (Explorer hands
+    # down the PATH it started with, so a just-installed ffmpeg is invisible
+    # until the next sign-in). Repair once here, before any tab can shell out.
     repair_path()
 
     app = QApplication(sys.argv)

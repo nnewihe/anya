@@ -43,8 +43,10 @@ from typing import Optional, Sequence, Tuple
 
 try:                                        # package import (python -m pipeline.x)
     from .utilities import probe_video
+    from .subproc import run as _run
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import probe_video
+    from subproc import run as _run
 
 PROXY_SUFFIX      = "_proxy540.mp4"
 FAR_BAND_SUFFIX   = "_farband.mp4"
@@ -91,7 +93,7 @@ def _transcode(video_path: str, out: str, vf: str, want: dict,
     print(f"[{label}] Building proxy ({vf}, crf {crf}, one-time)…")
     t0 = time.perf_counter()
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        _run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as ex:
         print(f"[{label}] WARN: proxy transcode failed ({ex}) — using source.")
         if os.path.isfile(tmp):

@@ -13,11 +13,15 @@ import os
 import json
 import csv
 import re
-import subprocess
 import argparse
 import tempfile
 import shutil
 from pathlib import Path
+
+try:                                        # package import (python -m pipeline.x)
+    from .subproc import run as _run
+except ImportError:                         # script import (python pipeline/x.py)
+    from subproc import run as _run
 
 
     
@@ -650,7 +654,7 @@ def create_highlights_ffmpeg_multisource(
                 "-vsync", "cfr",
                 seg_path,
             ]
-            result = subprocess.run(cmd, capture_output=True)
+            result = _run(cmd, capture_output=True)
             if result.returncode != 0:
                 print(f"[HIGHLIGHT] Warning: segment {i} ({start:.2f}s–{end:.2f}s) from "
                       f"{os.path.basename(src)} failed.")
@@ -665,9 +669,22 @@ def create_highlights_ffmpeg_multisource(
             return
 
         concat_list = os.path.join(tmpdir, "concat.txt")
-        with open(concat_list, "w") as f:
+        # Explicit utf-8: Python's default text encoding on Windows is the
+        # legacy ANSI code page, but the concat demuxer reads this file as
+        # utf-8. The temp path runs through the user's profile directory, so
+        # any account whose name isn't representable in the local code page —
+        # Cyrillic or CJK on a cp1252 box — either raises UnicodeEncodeError
+        # here or writes bytes ffmpeg then fails to resolve. Every segment
+        # encodes fine and only the final concat dies, which makes it a
+        # miserable thing to debug from a bug report.
+        #
+        # Forward slashes are belt-and-braces. ffmpeg accepts them on Windows,
+        # and normalizing keeps the entry from depending on the demuxer's
+        # quoting rules (backslash is literal inside single quotes today, but
+        # nothing in the format guarantees that).
+        with open(concat_list, "w", encoding="utf-8") as f:
             for sf in seg_files:
-                f.write(f"file '{sf}'\n")
+                f.write("file '{}'\n".format(sf.replace("\\", "/")))
 
         cmd = [
             "ffmpeg", "-y",
@@ -676,7 +693,7 @@ def create_highlights_ffmpeg_multisource(
             "-c", "copy",
             output_path,
         ]
-        result = subprocess.run(cmd)
+        result = _run(cmd)
         if result.returncode == 0:
             print(f"[HIGHLIGHT] Saved: {output_path}")
         else:
@@ -743,7 +760,7 @@ def create_highlights_ffmpeg(
                 "-vsync", "cfr",
                 seg_path,
             ]
-            result = subprocess.run(cmd, capture_output=True)
+            result = _run(cmd, capture_output=True)
             if result.returncode != 0:
                 print(f"[HIGHLIGHT] Warning: segment {i} ({start:.2f}s–{end:.2f}s) failed.")
                 print(result.stderr.decode(errors="replace"))
@@ -756,9 +773,22 @@ def create_highlights_ffmpeg(
             return
 
         concat_list = os.path.join(tmpdir, "concat.txt")
-        with open(concat_list, "w") as f:
+        # Explicit utf-8: Python's default text encoding on Windows is the
+        # legacy ANSI code page, but the concat demuxer reads this file as
+        # utf-8. The temp path runs through the user's profile directory, so
+        # any account whose name isn't representable in the local code page —
+        # Cyrillic or CJK on a cp1252 box — either raises UnicodeEncodeError
+        # here or writes bytes ffmpeg then fails to resolve. Every segment
+        # encodes fine and only the final concat dies, which makes it a
+        # miserable thing to debug from a bug report.
+        #
+        # Forward slashes are belt-and-braces. ffmpeg accepts them on Windows,
+        # and normalizing keeps the entry from depending on the demuxer's
+        # quoting rules (backslash is literal inside single quotes today, but
+        # nothing in the format guarantees that).
+        with open(concat_list, "w", encoding="utf-8") as f:
             for sf in seg_files:
-                f.write(f"file '{sf}'\n")
+                f.write("file '{}'\n".format(sf.replace("\\", "/")))
 
         cmd = [
             "ffmpeg", "-y",
@@ -767,7 +797,7 @@ def create_highlights_ffmpeg(
             "-c", "copy",
             output_path,
         ]
-        result = subprocess.run(cmd)
+        result = _run(cmd)
         if result.returncode == 0:
             print(f"[HIGHLIGHT] Saved: {output_path}")
         else:

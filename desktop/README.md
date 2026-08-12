@@ -110,9 +110,9 @@ Weights are pulled from the repo automatically (`pipeline/models/`,
 torch and ultralytics are required by the telemetry and pose stages and cannot be
 excluded. `ffmpeg` is not bundled and must be present on the target machine.
 
-**Only the macOS path has been exercised.** The spec targets all three platforms,
-but Windows and Linux builds are untested; the likely friction points are torch's
-platform wheels and PyQt6 plugin collection.
+PyInstaller cannot cross-compile: **each target must be built on its own OS.**
+macOS is built locally with `build_macos.sh`; Windows is built in CI (below).
+Linux has no build script and remains untested.
 
 ### macOS: signing + notarization
 
@@ -167,6 +167,54 @@ means the *first* Gatekeeper check (opening the downloaded file) resolves
 offline too, instead of requiring a live call to Apple at exactly the moment
 a tester double-clicks it. Output: `dist/Anya Tennis <version>.dmg`, named
 from `version.py` — that's the file to actually distribute.
+
+### Windows: installer
+
+The Windows equivalent of the DMG is a single
+`dist/AnyaTennis-Setup-<version>.exe` produced by
+[`installer.iss`](installer.iss) (Inno Setup) on top of the one-folder
+PyInstaller output. Testers get one file to double-click, a Start Menu entry
+and a working uninstaller.
+
+**Normal path — build it in CI.** There is no Windows machine in this project,
+and PyInstaller cannot cross-compile from macOS. Run the
+[Build Windows installer](../.github/workflows/build-windows.yml) workflow from
+the repo's Actions tab (or push a `desktop-v*` tag), then download the
+`AnyaTennis-Setup-<version>` artifact. Takes roughly 20–30 minutes, most of it
+pip-installing torch and compressing ~2 GB.
+
+**If you do have a Windows box**, the same script CI runs works locally:
+
+```powershell
+cd desktop
+.\build_windows.ps1
+```
+
+It guards the Python version, checks the app imports before spending 20 minutes
+on a bundle that can't launch, runs PyInstaller, sanity-checks the output size,
+and compiles the installer. Prerequisites: Python ≥ 3.12.1,
+`pip install -r requirements.txt`, and Inno Setup 6.3+
+(`winget install JRSoftware.InnoSetup`). Pass `-SkipInstaller` to stop at
+`dist\AnyaTennis\`.
+
+Windows-specific notes:
+
+- **The installer is unsigned.** There is no Windows code-signing certificate
+  for this project, so SmartScreen shows *"Windows protected your PC"* on first
+  run. Testers need to click **More info → Run anyway**. Tell them this up
+  front — it looks alarming and it is the most likely reason a beta tester
+  quietly gives up. (An OV/EV certificate is the only real fix; EV clears
+  SmartScreen immediately, OV only after the build accumulates reputation.)
+- **It installs per-user**, into `%LOCALAPPDATA%\Programs\Anya Tennis`, so
+  there is no UAC elevation prompt on top of the SmartScreen one.
+- **ffmpeg is still required** and still not bundled:
+  `winget install Gyan.FFmpeg`. The app probes winget/Chocolatey/Scoop install
+  locations directly, so a fresh install is picked up without signing out
+  first (Windows only hands a running Explorer the PATH it started with).
+- **UPX is disabled on Windows** (`rally_app.spec`) — it corrupts torch and Qt
+  DLLs, producing a build that dies with `DLL load failed while importing _C`.
+- **Logs** land in `%LOCALAPPDATA%\Anya Tennis\logs\app.log` — ask for this
+  file with any bug report.
 
 ## Design
 
