@@ -18,6 +18,9 @@ The pipeline is *imported*, never copied — the repo root goes on sys.path and
 on the next run with no rebuild.
 """
 
+import logging
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -200,6 +203,16 @@ def main():
     # /opt/homebrew/bin on it — so ffmpeg looks missing on machines that have
     # it. Repair once here, before any tab can shell out.
     repair_path()
+
+    # Logged because it is the one startup fact that cannot be checked from
+    # outside the process: os.environ changes are invisible to `ps` on macOS
+    # (which shows the initial env block), so without this line the only way
+    # to know whether the repair worked on a tester's machine is to make them
+    # start a job and see whether it fails.
+    logging.getLogger("anya_tennis").info(
+        "ffmpeg resolved to: %s  (PATH=%s)",
+        shutil.which("ffmpeg") or "NOT FOUND", os.environ.get("PATH", ""),
+    )
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")

@@ -40,6 +40,15 @@ if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>
 fi
 
 echo "==> Cleaning previous build"
+# A DMG from a previous run is very likely still mounted — make_dmg.sh's own
+# verify step opens one, and testers double-click them. Its backing file lives
+# in dist/, so `rm -rf dist` deletes the image out from under a live mount and
+# leaves a zombie volume; worse, Finder recreates dist/.DS_Store mid-delete and
+# rm then fails with "Directory not empty", aborting the build under `set -e`
+# AFTER it has already destroyed the previous artifacts. Detach first.
+for vol in /Volumes/"Anya Tennis"*; do
+    [ -d "$vol" ] && hdiutil detach "$vol" -force >/dev/null 2>&1 || true
+done
 rm -rf build dist
 
 echo "==> Running PyInstaller"
