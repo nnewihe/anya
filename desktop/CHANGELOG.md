@@ -8,6 +8,14 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.1.0-beta.6
+
+- **Fixed: the app tried to download part of itself on every run.** It was
+  fetching one of its own detection models from the internet at the start of
+  each reel instead of using the copy already installed. If you were online you
+  never noticed; if you weren't, it failed partway through with a download
+  error. It now uses the bundled copy and needs no network at all.
+
 ## 0.1.0-beta.5
 
 - **Intel Macs are supported.** There are now two downloads — one for Apple

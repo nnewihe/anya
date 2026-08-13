@@ -26,6 +26,7 @@ import queue
 import sys
 import threading
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -36,6 +37,23 @@ from walking.court import ANALYSIS_SIZE
 N_KP = 17
 MAX_PERSONS = 8
 POSE_CONF = 0.20
+
+# Absolute path to the pose weights, NOT the bare "yolov8n-pose.pt".
+#
+# Handed a bare name, ultralytics looks in the current working directory and
+# then downloads the weights over the internet. In the packaged app that meant
+# ignoring the bundled copy and fetching one at the start of every reel: it
+# worked silently for anyone online, and failed outright for a tester who was
+# not. It also quietly made a "runs 100% on this computer" app depend on a
+# network call.
+#
+# walking/ is a sibling of pipeline/, and that relative layout is preserved
+# inside the PyInstaller bundle (rally_app.spec ships the weights to
+# pipeline/models), so parents[1] resolves in both the frozen app and a source
+# run. Falls back to the bare name if the file is somehow absent, which keeps
+# a bare checkout of walking/ working the way it always did.
+_POSE_WEIGHTS = Path(__file__).resolve().parents[1] / "pipeline" / "models" / "yolov8n-pose.pt"
+DEFAULT_POSE_MODEL = str(_POSE_WEIGHTS) if _POSE_WEIGHTS.is_file() else "yolov8n-pose.pt"
 
 BATCH = 16
 # One model call per frame pays a fixed per-call cost (Python preprocess, the
@@ -105,7 +123,7 @@ def _prefetched(cap, total, batch, depth=2):
         t.join(timeout=5.0)
 
 
-def extract(video_path, model_path="yolov8n-pose.pt", device="mps",
+def extract(video_path, model_path=DEFAULT_POSE_MODEL, device="mps",
             limit=None, rescan=False, batch=BATCH, prefetch=True):
     out_p = dets_path(video_path)
     if os.path.isfile(out_p) and not rescan:
@@ -159,7 +177,7 @@ def extract(video_path, model_path="yolov8n-pose.pt", device="mps",
     return out_p
 
 
-def rescue(video_path, model_path="yolov8n-pose.pt", device="mps",
+def rescue(video_path, model_path=DEFAULT_POSE_MODEL, device="mps",
            imgsz=1920, work_size=(1920, 1080)):
     """Second pass at high resolution over the frames that came back empty.
 
@@ -223,7 +241,7 @@ def rescue(video_path, model_path="yolov8n-pose.pt", device="mps",
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
-    ap.add_argument("--model", default="yolov8n-pose.pt")
+    ap.add_argument("--model", default=DEFAULT_POSE_MODEL)
     ap.add_argument("--device", default="mps")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--rescan", action="store_true")

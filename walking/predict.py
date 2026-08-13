@@ -23,7 +23,7 @@ import numpy as np
 
 from walking.court import ANALYSIS_SIZE, load_homography
 from walking.evaluate import apply_post, to_intervals
-from walking.extract_pose import extract
+from walking.extract_pose import DEFAULT_POSE_MODEL, extract
 from walking.select_near import pose_path, select
 from walking.features import frame_signals, window_features
 
@@ -32,7 +32,7 @@ MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def predict_video(video, model_path=MODEL_PATH, pose_npz=None, device="mps",
-                  pose_model="yolov8n-pose.pt"):
+                  pose_model=DEFAULT_POSE_MODEL):
     import joblib
     bundle = joblib.load(model_path)
     model, names, post = bundle["model"], bundle["feature_names"], bundle["post"]

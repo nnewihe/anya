@@ -81,6 +81,14 @@ if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>
     exit 1
 fi
 
+echo "==> Checking model defaults won't auto-download"
+# beta.5 shipped with the reel's pose-model default set to a bare filename,
+# which makes ultralytics ignore the bundled weights and download its own at
+# the start of every job. It passed every test here because the download
+# succeeded; a tester whose machine couldn't reach the internet got a download
+# failure mid-run instead.
+"${RUN[@]}" "$PY" check_model_paths.py
+
 echo "==> Ensuring the vendored static ffmpeg is present"
 # Idempotent: a no-op once vendor/<arch>/ffmpeg is in place and verifies. Run
 # here rather than left as a manual step because forgetting it produces an app

@@ -123,7 +123,14 @@ class EndExtractorConfig:
     pose_fps:   float = 15.0
     pose_imgsz: int   = 960
     pose_conf:  float = 0.20     # walking/extract_pose.POSE_CONF
-    pose_model: str   = "yolov8n-pose.pt"
+    # Absolute path, not the bare "yolov8n-pose.pt". Given a bare name
+    # ultralytics looks in the CWD and then DOWNLOADS the weights from the
+    # internet — so the packaged app ignored its own bundled copy and fetched
+    # one at the start of every reel. That silently worked for anyone online
+    # and failed outright for a tester who wasn't. _MODELS_DIR resolves under
+    # sys._MEIPASS in the frozen app and to pipeline/models when run from
+    # source, so both get the copy this build was tested against.
+    pose_model: str   = str(_MODELS_DIR / "yolov8n-pose.pt")
 
     # Empty-frame rescue, OFF by default — matching the shipped path, which is
     # the only honest baseline to measure against.  walking/extract_pose.py has

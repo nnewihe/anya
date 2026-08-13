@@ -5,7 +5,15 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.5"
+APP_VERSION = "0.1.0-beta.6"
+# beta.6 — the packaged app was DOWNLOADING yolov8n-pose.pt at the start of
+# every reel instead of using its own bundled copy: anya_end_telemetry's
+# EndExtractorConfig.pose_model and walking/extract_pose.py's defaults were the
+# bare filename, and ultralytics resolves a bare name by checking the CWD and
+# then fetching from the internet.  Invisible in testing because the download
+# just worked when online; an Intel tester without a reachable network got a
+# download failure mid-run.  Affected every packaged build, both architectures.
+# desktop/check_model_paths.py now fails the build on a non-absolute default.
 # beta.5 — first build distributed through GitHub Releases rather than by
 # hand, and the first that installs with nothing else installed: ffmpeg is
 # bundled (fetch_ffmpeg.sh), so no Homebrew step.  Also ships two weight files
