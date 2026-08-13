@@ -119,6 +119,11 @@ if (-not $SkipSmokeTest) {
     $stdout = Join-Path $env:TEMP 'anya_smoke_out.txt'
     $stderr = Join-Path $env:TEMP 'anya_smoke_err.txt'
     $env:QT_QPA_PLATFORM = 'offscreen'
+    # The launch update check is not what is under test here, and letting it
+    # run makes the result depend on GitHub's API being reachable and
+    # un-rate-limited from a CI runner. It already fails silently, but a build
+    # gate should not have a network dependency it doesn't need.
+    $env:ANYA_NO_UPDATE_CHECK = '1'
     try {
         $proc = Start-Process -FilePath (Resolve-Path $exePath) -PassThru `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -134,6 +139,7 @@ if (-not $SkipSmokeTest) {
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     } finally {
         Remove-Item env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+        Remove-Item env:ANYA_NO_UPDATE_CHECK -ErrorAction SilentlyContinue
         Remove-Item $stdout, $stderr -ErrorAction SilentlyContinue
     }
 }
