@@ -56,8 +56,25 @@ import platform
 _ARCH = platform.machine()
 _FFMPEG = Path('vendor') / _ARCH / 'ffmpeg'
 _binaries = []
+# ffmpeg is GPL, so its licence has to accompany the binary. Taken from
+# vendor/<arch>/, which fetch_ffmpeg.sh populates with the pair matching THIS
+# build — the arm64 and Intel binaries come from different upstreams under
+# GPLv2 and GPLv3 respectively, so shipping one fixed licence would be wrong
+# for one of the two DMGs. Also copied to the DMG root (make_dmg.sh) where a
+# tester can see it; this copy is so it still travels with a bare .app.
+#
+# Conditional for the same reason _binaries is: these files only exist once
+# fetch_ffmpeg.sh has run, and it only runs for macOS builds. Listing them
+# unconditionally fails the Windows build outright ("Unable to find
+# vendor\AMD64\FFMPEG-LICENSE.txt") — and there is nothing to license there,
+# because that build bundles no ffmpeg and the tester installs their own.
+_license_datas = []
 if sys.platform == 'darwin' and _FFMPEG.is_file():
     _binaries.append((str(_FFMPEG), '.'))
+    _license_datas = [
+        (f'vendor/{_ARCH}/FFMPEG-LICENSE.txt', 'licenses'),
+        (f'vendor/{_ARCH}/COPYING.txt', 'licenses'),
+    ]
 elif sys.platform == 'darwin':
     raise SystemExit(
         f"{_FFMPEG} is missing — run ./fetch_ffmpeg.sh {_ARCH} first.\n"
@@ -160,15 +177,8 @@ a = Analysis(
         # resolved by pipeline.scoreboard_reel.render.find_font()
         ('assets/fonts/Montserrat-SemiBold.ttf', 'assets/fonts'),
         ('assets/fonts/Montserrat-Bold.ttf', 'assets/fonts'),
-        # ffmpeg is GPL, so its licence has to accompany the binary. Taken
-        # from vendor/<arch>/, which fetch_ffmpeg.sh populates with the pair
-        # matching THIS build — the arm64 and Intel binaries come from
-        # different upstreams under GPLv2 and GPLv3 respectively, so shipping
-        # one fixed licence would be wrong for one of the two DMGs. Also
-        # copied to the DMG root (make_dmg.sh) where a tester can see it;
-        # this copy is so it still travels with a bare .app.
-        (f'vendor/{_ARCH}/FFMPEG-LICENSE.txt', 'licenses'),
-        (f'vendor/{_ARCH}/COPYING.txt', 'licenses'),
+        # ffmpeg licences — macOS only; see _license_datas above.
+        *_license_datas,
     ],
     hiddenimports=[
         # ultralytics dynamic imports
