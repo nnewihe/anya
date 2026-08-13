@@ -35,6 +35,13 @@ ZIP="$DIST/AnyaTennis-notarize.zip"
 # x86_64 interpreter — PyInstaller freezes the environment it is running in, so
 # an arm64 interpreter cannot produce an Intel app no matter what flags it is
 # given. setup_intel_env.sh creates that interpreter.
+#
+# RUN is a command PREFIX, and it is `env` rather than empty in the native
+# case on purpose: macOS ships bash 3.2, where expanding an empty array as
+# "${RUN[@]}" under `set -u` aborts with "unbound variable". That is not
+# theoretical — it broke the arm64 build while the Intel one worked, precisely
+# because only the Intel branch set a non-empty array. `env` is a harmless
+# no-op prefix that keeps the array non-empty on every path.
 if [ "$ARCH" = "x86_64" ] && [ "$(uname -m)" != "x86_64" ]; then
     RUN=(arch -x86_64)
     PY=".venv-intel/bin/python"
@@ -43,11 +50,11 @@ if [ "$ARCH" = "x86_64" ] && [ "$(uname -m)" != "x86_64" ]; then
         exit 1
     fi
 elif [ "$ARCH" = "x86_64" ]; then
-    RUN=()
+    RUN=(env)
     PY=".venv-intel/bin/python"
     [ -x "$PY" ] || { echo "error: $PY not found — run ./setup_intel_env.sh first" >&2; exit 1; }
 else
-    RUN=()
+    RUN=(env)
     PY="$(command -v python3)"
 fi
 

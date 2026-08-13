@@ -27,12 +27,24 @@ TAG="desktop-v${VERSION}"
 # version-free so the landing page and the in-app update banner can link to
 # /releases/latest/download/<name> forever; the architecture IS in the name
 # because a tester picking wrong gets an app that won't launch.
-ARCHES=(arm64 x86_64)
-declare -A DMG_FOR ASSET_FOR
-DMG_FOR[arm64]="dist/arm64/Anya Tennis ${VERSION} (Apple Silicon).dmg"
-DMG_FOR[x86_64]="dist/x86_64/Anya Tennis ${VERSION} (Intel).dmg"
-ASSET_FOR[arm64]="dist/AnyaTennis.dmg"
-ASSET_FOR[x86_64]="dist/AnyaTennis-Intel.dmg"
+# Plain functions rather than associative arrays: `declare -A` needs bash 4,
+# and macOS ships bash 3.2, so an associative array aborts this script on the
+# very machine that builds the release.
+ARCHES="arm64 x86_64"
+
+dmg_for() {
+    case "$1" in
+    arm64)  echo "dist/arm64/Anya Tennis ${VERSION} (Apple Silicon).dmg" ;;
+    x86_64) echo "dist/x86_64/Anya Tennis ${VERSION} (Intel).dmg" ;;
+    esac
+}
+
+asset_for() {
+    case "$1" in
+    arm64)  echo "dist/AnyaTennis.dmg" ;;
+    x86_64) echo "dist/AnyaTennis-Intel.dmg" ;;
+    esac
+}
 
 echo "==> Releasing ${VERSION} as ${TAG}"
 
@@ -49,8 +61,8 @@ fi
 # Checked before anything is tagged or uploaded: a release carrying only one
 # architecture, or an Intel DMG that is secretly an arm64 build, is worse than
 # no release — the landing page offers both regardless.
-for a in "${ARCHES[@]}"; do
-    dmg="${DMG_FOR[$a]}"
+for a in $ARCHES; do
+    dmg="$(dmg_for "$a")"
     if [ ! -f "$dmg" ]; then
         echo "error: $dmg not found — run ./build_macos.sh $a && ./make_dmg.sh $a" >&2
         exit 1
@@ -149,10 +161,12 @@ git push origin "$TAG"
 
 # ── Publish ────────────────────────────────────────────────────────────────
 UPLOADS=()
-for a in "${ARCHES[@]}"; do
-    echo "==> Staging ${ASSET_FOR[$a]} ($(du -h "${DMG_FOR[$a]}" | cut -f1))"
-    cp "${DMG_FOR[$a]}" "${ASSET_FOR[$a]}"
-    UPLOADS+=("${ASSET_FOR[$a]}")
+for a in $ARCHES; do
+    src="$(dmg_for "$a")"
+    dst="$(asset_for "$a")"
+    echo "==> Staging $dst ($(du -h "$src" | cut -f1))"
+    cp "$src" "$dst"
+    UPLOADS[${#UPLOADS[@]}]="$dst"
 done
 
 echo "==> Creating release and uploading both architectures"
