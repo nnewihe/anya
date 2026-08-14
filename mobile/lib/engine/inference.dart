@@ -60,27 +60,41 @@ class OnnxDetector {
 
   static Future<OnnxDetector> fromAsset(String assetPath) async {
     OrtEnv.instance.init();
-    final opts = OrtSessionOptions()
-      ..setSessionGraphOptimizationLevel(GraphOptimizationLevel.ortEnableAll)
-      ..setIntraOpNumThreads(2);
-    // Native-ML execution providers: the Dart code stays cross-platform and
-    // ONNX Runtime delegates inference to the OS's native ML stack —
-    //   • Apple (iOS/macOS): CoreML EP → Apple Neural Engine / GPU
-    //   • Android: NNAPI EP → vendor NPU / GPU / DSP
-    // Anything the native EP can't run (or non-Apple/Android desktops) falls
-    // back to ORT's CPU kernels automatically.
-    try {
-      if (Platform.isIOS || Platform.isMacOS) {
-        opts.appendCoreMLProvider(CoreMLFlags.useNone);
-      } else if (Platform.isAndroid) {
-        opts.appendNnapiProvider(NnapiFlags.useNone);
-      }
-    } catch (_) {
-      // Native EP unavailable — CPU fallback.
-    }
     final bytes = (await rootBundle.load(assetPath)).buffer.asUint8List();
-    final session = OrtSession.fromBuffer(bytes, opts);
-    return OnnxDetector._(session, session.inputNames.first);
+
+    OrtSessionOptions makeOpts({required bool nativeEp}) {
+      final opts = OrtSessionOptions()
+        ..setSessionGraphOptimizationLevel(GraphOptimizationLevel.ortEnableAll)
+        ..setIntraOpNumThreads(2);
+      // Native-ML execution providers: the Dart code stays cross-platform and
+      // ONNX Runtime delegates inference to the OS's native ML stack —
+      //   • Apple (iOS/macOS): CoreML EP → Apple Neural Engine / GPU
+      //   • Android: NNAPI EP → vendor NPU / GPU / DSP
+      // Anything the native EP can't run (or non-Apple/Android desktops) falls
+      // back to ORT's CPU kernels automatically.
+      if (nativeEp) {
+        try {
+          if (Platform.isIOS || Platform.isMacOS) {
+            opts.appendCoreMLProvider(CoreMLFlags.useNone);
+          } else if (Platform.isAndroid) {
+            opts.appendNnapiProvider(NnapiFlags.useNone);
+          }
+        } catch (_) {
+          // Native EP unavailable — CPU fallback.
+        }
+      }
+      return opts;
+    }
+
+    try {
+      final session = OrtSession.fromBuffer(bytes, makeOpts(nativeEp: true));
+      return OnnxDetector._(session, session.inputNames.first);
+    } catch (_) {
+      // Some vendor NNAPI/CoreML drivers reject this model's operands at
+      // compile time (not just per-op fallback) — retry CPU-only.
+      final session = OrtSession.fromBuffer(bytes, makeOpts(nativeEp: false));
+      return OnnxDetector._(session, session.inputNames.first);
+    }
   }
 
   /// Run detection on a preprocessed tensor; keep boxes with conf >= [conf]
