@@ -5,7 +5,16 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.7"
+APP_VERSION = "0.1.0-beta.8"
+# beta.8 — widens the walk-ball veto (see beta.7) from 4.0s to 5.0s, matching
+# no_walk_quiet_s. Measured on Data/75: 4.0 vs 5.0 differed on only 16 of 180
+# serve starts, and on every one of those 16 the wider window was the correct
+# call — 4.0 cut a live point short, 5.0 correctly held on. No case went the
+# other way. Also evaluated raising the ball detector's inference resolution
+# (ball_imgsz 960 -> 1920) to improve the 12.1% raw recall behind this whole
+# feature; rejected after measurement showed the recall gain was 98%
+# background noise (tree-canopy gaps misread as a ball at the higher
+# resolution) at 3.75x the per-frame cost. ball_imgsz stays 960.
 # beta.7 — point ends now use the "walk-ball" policy instead of the old union
 # of a walking classifier and a ball-quiet fallback. Walking is primary; a
 # ball seen while the player walks vetoes the end (the point continues) and

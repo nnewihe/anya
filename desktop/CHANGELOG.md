@@ -8,6 +8,14 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.1.0-beta.8
+
+- **Point endings are a bit more patient.** Following up on beta.7's fix,
+  testing showed the app could still occasionally end a point a little too
+  early right after a player started walking. It now waits slightly longer
+  before deciding the ball is really gone, which should mean even less live
+  tennis gets trimmed from the reel.
+
 ## 0.1.0-beta.7
 
 - **Better point endings.** The app used to end a point as soon as it saw a

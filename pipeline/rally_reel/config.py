@@ -191,7 +191,7 @@ class ReelConfig:
     # expressed directly by which rule owns which moment.  ball_quiet_mode,
     # ball_quiet_s and the near_* windows apply to "legacy" only.
 
-    walk_ball_veto_s: float = 4.0
+    walk_ball_veto_s: float = 5.0
     # "walk-ball" rule A.  How long the ball must have been unseen before an
     # active walk counts as the end of the point.
     #
@@ -203,6 +203,7 @@ class ReelConfig:
     #
     #   in-rally gap >= 1.0s   299 occurrences, in 95 of 114 rallies
     #                >= 2.5s   123               in 62
+    #                >= 4.0s    35               in 29
     #                >= 5.0s    17               in 14
     #
     # At 1.0 s the veto asks "was the ball seen in the last second" and gets a
@@ -210,16 +211,25 @@ class ReelConfig:
     # the tracker blinks ends the point with the ball still in play.  The ball
     # was present; we just did not see it.
     #
-    # At 4.0 s the veto sits just under no_walk_quiet_s (5.0), so a corroborated
-    # walk can still end a point a beat before the no-walk rule would — walking
-    # keeps a real say in the trigger rather than becoming pure stamping — while
-    # staying above the bulk of the dropout distribution.  The two rules
-    # otherwise differ in where the end is STAMPED: at the walk onset where
-    # walking corroborates (tight and well timed), at last_ball +
-    # no_walk_stamp_s where it does not.
+    # 4.0 s was tried as a middle ground (walking keeping a real say in the
+    # trigger rather than becoming pure stamping) but only differed from 5.0 on
+    # 16 of 180 starts on Data/75, and every one of those 16 was a case where
+    # 5.0 correctly held on and 4.0 cut early (never the other direction).  At
+    # 5.0 s this matches no_walk_quiet_s, so both rules share one trigger — five
+    # seconds of ball silence — and differ only in where the end is STAMPED: at
+    # the walk onset where walking corroborates (tight and well timed), at
+    # last_ball + no_walk_stamp_s where it does not.
     #
-    # Raise toward no_walk_quiet_s to weight safety over tightness; lower only
-    # for a clip with better ball recall than this one.
+    # 12.1% raw per-frame ball recall is a raw-detector limit, not a filter
+    # problem: raising ball_imgsz 960 -> 1920 was measured (2026-08-14) to trade
+    # a 3.75x per-frame cost for a recall number that is 98% background noise
+    # (tree canopy / gaps of sky misread as a ball at the higher resolution) —
+    # confirmed by inspecting sampled frame crops, not just the aggregate rate.
+    # A real gain exists when gated to the court's own pixel band (verified by
+    # eye: 5 of 6 sampled hits were genuine balls) but that needs a court-region
+    # gate built and measured before it ships — ball_imgsz stays at 960 until
+    # then.  Lower this only once that lands, or for a clip with better ball
+    # recall than this one.
 
     no_walk_quiet_s: float = 5.0
     # "walk-ball" rule B.  With no walking detected, this much ball silence ends
