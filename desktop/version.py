@@ -5,7 +5,16 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.6"
+APP_VERSION = "0.1.0-beta.7"
+# beta.7 — point ends now use the "walk-ball" policy instead of the old union
+# of a walking classifier and a ball-quiet fallback. Walking is primary; a
+# ball seen while the player walks vetoes the end (the point continues) and
+# only 4.0s of continuous ball silence during a walk lets it end. Where no
+# walk is detected, 5.0s of ball silence alone ends the point. Both
+# thresholds were widened from an initial 1.0s/1.5s after measuring how often
+# the ball tracker drops out mid-rally (12.1% per-frame recall on a test
+# clip) — the short window was ending live points whenever the tracker
+# blinked, e.g. a player walking into a backhand. See ReelConfig.end_policy.
 # beta.6 — the packaged app was DOWNLOADING yolov8n-pose.pt at the start of
 # every reel instead of using its own bundled copy: anya_end_telemetry's
 # EndExtractorConfig.pose_model and walking/extract_pose.py's defaults were the
