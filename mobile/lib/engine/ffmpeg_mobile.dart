@@ -15,10 +15,59 @@ const int _w = EngineConfig.analysisWidth;
 const int _h = EngineConfig.analysisHeight;
 const int _frameBytes = _w * _h * 3;
 
-/// Video encoder for the reel. `ffmpeg_kit_flutter_new` ships a GPL build that
-/// includes libx264; if you swap to an LGPL variant, change this to a hardware
-/// encoder (e.g. `h264_videotoolbox` on Apple, `h264_mediacodec` on Android).
-const String _reelVideoCodec = 'libx264';
+/// Reel encoding: prefer the platform hardware encoder (VideoToolbox on
+/// Apple, MediaCodec on Android — both confirmed bundled in every
+/// ffmpeg_kit_flutter_new package variant, including this GPL build, per its
+/// README's platform-library table) and fall back to software libx264 if the
+/// hardware path fails (some devices reject specific profile/bitrate combos).
+/// Hardware encoders are typically 5-10x faster and far cheaper on battery
+/// than software x264 for the same 1080p-ish reel segments.
+String _preferredHwCodec() {
+  if (Platform.isIOS || Platform.isMacOS) return 'h264_videotoolbox';
+  if (Platform.isAndroid) return 'h264_mediacodec';
+  return 'libx264';
+}
+
+List<String> _encoderArgs(String codec) {
+  switch (codec) {
+    case 'h264_videotoolbox':
+    case 'h264_mediacodec':
+      return ['-c:v', codec, '-b:v', '10M', '-maxrate', '12M', '-bufsize', '20M'];
+    default:
+      return ['-c:v', 'libx264', '-crf', '18', '-preset', 'fast'];
+  }
+}
+
+/// Cut one segment with the preferred codec, retrying with software libx264
+/// if the hardware encoder rejects the request.
+Future<bool> _encodeSegment(
+    String videoPath, double start, double end, String outPath) async {
+  final hw = _preferredHwCodec();
+  if (hw != 'libx264') {
+    final s = await FFmpegKit.executeWithArguments([
+      '-y',
+      '-ss', start.toStringAsFixed(3),
+      '-to', end.toStringAsFixed(3),
+      '-i', videoPath,
+      ..._encoderArgs(hw),
+      '-c:a', 'aac', '-b:a', '192k',
+      '-vsync', 'cfr',
+      outPath,
+    ]);
+    if (ReturnCode.isSuccess(await s.getReturnCode())) return true;
+  }
+  final s2 = await FFmpegKit.executeWithArguments([
+    '-y',
+    '-ss', start.toStringAsFixed(3),
+    '-to', end.toStringAsFixed(3),
+    '-i', videoPath,
+    ..._encoderArgs('libx264'),
+    '-c:a', 'aac', '-b:a', '192k',
+    '-vsync', 'cfr',
+    outPath,
+  ]);
+  return ReturnCode.isSuccess(await s2.getReturnCode());
+}
 
 Future<VideoInfo> probeMobile(String path) async {
   final session = await FFprobeKit.getMediaInformation(path);
@@ -62,7 +111,15 @@ Future<VideoInfo> probeMobile(String path) async {
 /// Mobile [FrameSource] backed by ffmpeg_kit. Decodes the video in bounded
 /// windows to a temporary rawvideo file (kept small — [maxFramesPerWindow]
 /// frames), streams each frame out, then deletes the window and advances.
-/// Decode is not the bottleneck (inference is), so windowing costs little.
+///
+/// Window N+1's decode is kicked off (fire-and-forget) as soon as window N's
+/// decode finishes, so it runs concurrently with the caller consuming window
+/// N's frames (letterbox + inference, on whichever isolate this FrameSource
+/// runs in — see engine_isolate.dart). Previously decode and consumption
+/// were fully sequential: window N+1 didn't start until every frame of
+/// window N had been read AND processed by the caller, so the ffmpeg_kit
+/// plugin call (an async platform-channel round trip, not Dart CPU) sat idle
+/// during the entire inference pass over the previous window.
 class FfmpegKitFrameSource implements FrameSource {
   final String videoPath;
   @override
@@ -77,6 +134,30 @@ class FfmpegKitFrameSource implements FrameSource {
     return FfmpegKitFrameSource._(path, await probeMobile(path), maxFramesPerWindow);
   }
 
+  Future<File?> _decodeWindow(Directory tmp, int win, double t, double winSec) async {
+    final raw = '${tmp.path}/anya_win_$win.rgb';
+    final session = await FFmpegKit.executeWithArguments([
+      '-y',
+      '-ss', t.toStringAsFixed(3),
+      '-t', winSec.toStringAsFixed(3),
+      '-i', videoPath,
+      '-vf', 'scale=$_w:$_h',
+      '-sws_flags', 'bilinear',
+      '-pix_fmt', 'rgb24',
+      '-f', 'rawvideo',
+      raw,
+    ]);
+    final f = File(raw);
+    if (!ReturnCode.isSuccess(await session.getReturnCode()) || !f.existsSync()) {
+      return null;
+    }
+    if (await f.length() < _frameBytes) {
+      await _tryDelete(f);
+      return null;
+    }
+    return f;
+  }
+
   @override
   Stream<Uint8List> frames() async* {
     final tmp = await getTemporaryDirectory();
@@ -86,28 +167,22 @@ class FfmpegKitFrameSource implements FrameSource {
         : double.infinity;
     var t = 0.0;
     var win = 0;
-    while (t < duration && !_cancelled) {
-      final raw = '${tmp.path}/anya_win_$win.rgb';
-      final session = await FFmpegKit.executeWithArguments([
-        '-y',
-        '-ss', t.toStringAsFixed(3),
-        '-t', winSec.toStringAsFixed(3),
-        '-i', videoPath,
-        '-vf', 'scale=$_w:$_h',
-        '-sws_flags', 'bilinear',
-        '-pix_fmt', 'rgb24',
-        '-f', 'rawvideo',
-        raw,
-      ]);
-      final f = File(raw);
-      if (!ReturnCode.isSuccess(await session.getReturnCode()) || !f.existsSync()) {
-        break;
-      }
+    Future<File?>? pending =
+        (t < duration && !_cancelled) ? _decodeWindow(tmp, win, t, winSec) : null;
+
+    while (pending != null && !_cancelled) {
+      final f = await pending;
+      if (f == null) break;
+
+      // Start decoding the NEXT window now, before consuming this one, so
+      // the plugin call overlaps with this window's yield/inference below.
+      t += winSec;
+      win += 1;
+      pending = (t < duration && !_cancelled)
+          ? _decodeWindow(tmp, win, t, winSec)
+          : null;
+
       final len = await f.length();
-      if (len < _frameBytes) {
-        await _tryDelete(f);
-        break;
-      }
       final raf = await f.open();
       var off = 0;
       var produced = 0;
@@ -121,8 +196,6 @@ class FfmpegKitFrameSource implements FrameSource {
       await raf.close();
       await _tryDelete(f);
       if (produced == 0) break;
-      win++;
-      t += winSec;
     }
   }
 
@@ -148,17 +221,7 @@ Future<bool> reelCutMobile({
     for (var i = 0; i < valid.length; i++) {
       final (start, end) = valid[i];
       final seg = '${dir.path}/seg_${i.toString().padLeft(4, '0')}.mp4';
-      final s = await FFmpegKit.executeWithArguments([
-        '-y',
-        '-ss', start.toStringAsFixed(3),
-        '-to', end.toStringAsFixed(3),
-        '-i', videoPath,
-        '-c:v', _reelVideoCodec, '-crf', '18', '-preset', 'fast',
-        '-c:a', 'aac', '-b:a', '192k',
-        '-vsync', 'cfr',
-        seg,
-      ]);
-      if (ReturnCode.isSuccess(await s.getReturnCode())) segFiles.add(seg);
+      if (await _encodeSegment(videoPath, start, end, seg)) segFiles.add(seg);
     }
     if (segFiles.isEmpty) return false;
 

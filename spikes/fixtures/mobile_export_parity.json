@@ -1,0 +1,65 @@
+{
+  "yolo26n_rect": {
+    "n_pt": 1,
+    "n_onnx": 1,
+    "matched": 1,
+    "worst_iou": 1.0,
+    "worst_conf_delta": 0.0,
+    "pass": true,
+    "input_shape": [
+      1,
+      3,
+      544,
+      960
+    ],
+    "output_shape": [
+      1,
+      300,
+      6
+    ],
+    "has_nms": false,
+    "node_count": 384
+  },
+  "ball_best_rect": {
+    "n_pt": 1,
+    "n_onnx": 1,
+    "matched": 1,
+    "worst_iou": 1.0,
+    "worst_conf_delta": 0.0,
+    "pass": true,
+    "input_shape": [
+      1,
+      3,
+      544,
+      960
+    ],
+    "output_shape": [
+      1,
+      5,
+      10710
+    ],
+    "has_nms": false,
+    "node_count": 321
+  },
+  "ball_best_square": {
+    "n_pt": 1,
+    "n_onnx": 1,
+    "matched": 1,
+    "worst_iou": 0.9737,
+    "worst_conf_delta": 0.0074,
+    "pass": false,
+    "input_shape": [
+      1,
+      3,
+      960,
+      960
+    ],
+    "output_shape": [
+      1,
+      5,
+      18900
+    ],
+    "has_nms": false,
+    "node_count": 321
+  }
+}

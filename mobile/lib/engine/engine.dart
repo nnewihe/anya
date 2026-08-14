@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'ball_tracker.dart';
 import 'config.dart';
@@ -32,8 +33,46 @@ class Engine {
   Engine._(this.playerDetector, this.ballDetector);
 
   static Future<Engine> load() async {
-    final player = await OnnxDetector.fromAsset('assets/models/yolo26n.onnx');
-    final ball = await OnnxDetector.fromAsset('assets/models/ball_best.onnx');
+    // Shared cache: DeadTimeEngine loads the same two assets at the same
+    // shape/config, so if both engines are ever alive in one process they
+    // reuse ONNX sessions instead of loading/compiling duplicates.
+    final player = await OnnxDetector.fromAssetShared(
+      'assets/models/yolo26n.onnx',
+      inputW: EngineConfig.modelWidth,
+      inputH: EngineConfig.modelHeight,
+      kind: DetectorKind.end2end,
+    );
+    final ball = await OnnxDetector.fromAssetShared(
+      'assets/models/ball_best.onnx',
+      inputW: EngineConfig.modelWidth,
+      inputH: EngineConfig.modelHeight,
+      kind: DetectorKind.raw,
+      rawN: EngineConfig.ballRectOutputN,
+    );
+    return Engine._(player, ball);
+  }
+
+  /// Like [load] but from already-loaded model bytes instead of asset paths
+  /// — required in a background isolate, where `rootBundle.load` doesn't
+  /// work (see OnnxDetector.fromBytes). Used by engine_isolate.dart, which
+  /// reads the asset bytes on the main isolate and hands them over.
+  static Future<Engine> loadFromBytes({
+    required Uint8List playerBytes,
+    required Uint8List ballBytes,
+  }) async {
+    final player = await OnnxDetector.fromBytes(
+      playerBytes,
+      inputW: EngineConfig.modelWidth,
+      inputH: EngineConfig.modelHeight,
+      kind: DetectorKind.end2end,
+    );
+    final ball = await OnnxDetector.fromBytes(
+      ballBytes,
+      inputW: EngineConfig.modelWidth,
+      inputH: EngineConfig.modelHeight,
+      kind: DetectorKind.raw,
+      rawN: EngineConfig.ballRectOutputN,
+    );
     return Engine._(player, ball);
   }
 

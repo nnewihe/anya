@@ -3,7 +3,28 @@
 class EngineConfig {
   static const int analysisWidth = 960;
   static const int analysisHeight = 540;
+
+  // Rectangular model input for the whole-frame yolo26n/ball_best detectors
+  // (spikes/export_mobile_models.py): the 960x540 analysis frame letterboxed
+  // to the stride-32-rounded 960x544, instead of padding all the way to a
+  // square 960x960 — ~1.77x fewer pixels per inference, same weights/accuracy
+  // (see spikes/fixtures/rect_letterbox_meta.json for the derivation).
+  static const int modelWidth = 960;
+  static const int modelHeight = 544;
+  static const int modelPadTop = 2; // r=1.0, dw=0, dh=2 top / 2 bottom
+
+  // Square far-crop model input (unchanged from the original spike): used
+  // ONLY by DeadTimeEngine's native far-region crop (FixedFarCropSource),
+  // which pads an arbitrary-aspect crop into a square tensor. Keeping this
+  // geometry unchanged preserves the tuned crop-based far-serve detection
+  // (CutterConfig.farCropTopExtendFrac) independent of the rect optimization.
   static const int imgsz = 960; // model input (letterboxed square)
+
+  // Output grid lengths (N in the raw [1,5,N] ball layout) for the two ball
+  // model variants — fixed since both graphs export at a static input shape.
+  static const int ballRectOutputN = 10710; // ball_best.onnx (960x544)
+  static const int ballSquareOutputN = 18900; // ball_best_far_crop.onnx (960x960)
+  static const int playerOutputRows = 300; // end2end max detections, both models
 
   static const double playerConf = 0.5;
   static const double activeBallConf = 0.10; // ACTIVE_BALL_CONF

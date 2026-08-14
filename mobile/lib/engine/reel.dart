@@ -48,17 +48,10 @@ Future<bool> createHighlightReel({
     for (var i = 0; i < valid.length; i++) {
       final seg = valid[i];
       final segPath = '${tmpDir.path}/seg_${i.toString().padLeft(4, '0')}.mp4';
-      final r = await Process.run('ffmpeg', [
-        '-y',
-        '-ss', seg.start.toStringAsFixed(3),
-        '-to', seg.end.toStringAsFixed(3),
-        '-i', videoPath,
-        '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
-        '-c:a', 'aac', '-b:a', '192k',
-        '-vsync', 'cfr',
-        segPath,
-      ]);
-      if (r.exitCode == 0) segFiles.add(segPath);
+      if (await _encodeSegmentDesktop(
+          videoPath, seg.start, seg.end, segPath)) {
+        segFiles.add(segPath);
+      }
     }
     if (segFiles.isEmpty) return false;
 
@@ -77,4 +70,39 @@ Future<bool> createHighlightReel({
   } finally {
     await tmpDir.delete(recursive: true);
   }
+}
+
+/// Desktop (system-ffmpeg) segment encode: prefer VideoToolbox hardware
+/// encoding on macOS, falling back to libx264 if the hardware encoder
+/// rejects the request or isn't available. Mirrors ffmpeg_mobile.dart's
+/// _encodeSegment (VideoToolbox/MediaCodec) for the mobile path.
+Future<bool> _encodeSegmentDesktop(
+    String videoPath, double start, double end, String outPath) async {
+  final hwArgs = Platform.isMacOS
+      ? ['-c:v', 'h264_videotoolbox', '-b:v', '10M', '-maxrate', '12M', '-bufsize', '20M']
+      : null;
+  if (hwArgs != null) {
+    final r = await Process.run('ffmpeg', [
+      '-y',
+      '-ss', start.toStringAsFixed(3),
+      '-to', end.toStringAsFixed(3),
+      '-i', videoPath,
+      ...hwArgs,
+      '-c:a', 'aac', '-b:a', '192k',
+      '-vsync', 'cfr',
+      outPath,
+    ]);
+    if (r.exitCode == 0) return true;
+  }
+  final r2 = await Process.run('ffmpeg', [
+    '-y',
+    '-ss', start.toStringAsFixed(3),
+    '-to', end.toStringAsFixed(3),
+    '-i', videoPath,
+    '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
+    '-c:a', 'aac', '-b:a', '192k',
+    '-vsync', 'cfr',
+    outPath,
+  ]);
+  return r2.exitCode == 0;
 }

@@ -62,17 +62,24 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-	<!-- Background match analysis (flutter_foreground_task): allow the engine a
-	     background window and register the plugin's refresh task identifier.
-	     iOS caps background CPU, so this is best-effort — a long match may pause
-	     and resume when the app returns to the foreground. -->
+	<!-- Background match analysis (flutter_foreground_task + a custom
+	     BGProcessingTask registered in AppDelegate.swift): allow the engine a
+	     background window and register both task identifiers. iOS caps
+	     background CPU, so this is best-effort — a long match may pause and
+	     resume when the app returns to the foreground. The BGProcessingTask
+	     lets the system schedule a resume attempt under favorable conditions
+	     (charging / idle) for jobs too long for the short background-task
+	     assertion window (UIApplication.beginBackgroundTask, taken while
+	     analysis is in flight — see background_analysis.dart). -->
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.pravera.flutter_foreground_task.refresh</string>
+		<string>com.build2launch.anya_tennis.analysis-processing</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
+		<string>processing</string>
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>

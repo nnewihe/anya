@@ -52,10 +52,17 @@ Future<PreScanResult> preScanVideo({
   var estimated = false;
   if ((needBall || needFeet) && info.totalFrames >= numFrames && info.fps > 0) {
     final rng = math.Random();
-    final picked = <int>{};
-    while (picked.length < numFrames) {
-      picked.add(rng.nextInt(info.totalFrames));
+    final pickedSet = <int>{};
+    while (pickedSet.length < numFrames) {
+      pickedSet.add(rng.nextInt(info.totalFrames));
     }
+    // Ascending order, not pick order: each grabAnalysisFrame call seeks
+    // (`-ss` before `-i`) and re-decodes from the nearest keyframe
+    // independently, so sample order doesn't affect per-call decode cost —
+    // but a monotonically increasing seek pattern is friendlier to the OS
+    // page cache (the source file's already-read byte range keeps growing
+    // forward instead of jumping backward and re-reading cold regions).
+    final picked = pickedSet.toList()..sort();
 
     final centers = <List<double>>[];
     final feet = <FeetSample>[];

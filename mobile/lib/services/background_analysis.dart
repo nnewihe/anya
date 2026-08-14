@@ -1,7 +1,16 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+
+/// iOS-only native channel (see ios/Runner/AppDelegate.swift): takes a
+/// UIApplication.beginBackgroundTask assertion while analysis is in flight
+/// (extends the grace window iOS grants right after backgrounding — best
+/// effort, no time guarantee) and nudges the OS to schedule the
+/// BGProcessingTask for jobs too long for that window (DESIGN.md §6.2).
+const _bgTaskChannel = MethodChannel('anya_tennis/background_task');
 
 /// Keeps on-device analysis alive when the app is not in the foreground, and
 /// surfaces progress + a completion notification.
@@ -64,10 +73,18 @@ class BackgroundAnalysis {
     }
   }
 
-  /// Start the foreground service with an initial "analysing" notification.
+  /// Start the foreground service with an initial "analysing" notification,
+  /// and (iOS only) take the background-task assertion + arm the
+  /// BGProcessingTask fallback.
   static Future<void> start() async {
     if (!_supported) return;
     _ensureInit();
+    if (Platform.isIOS) {
+      // Fire-and-forget: a missing/failed native channel call shouldn't block
+      // analysis from starting.
+      unawaited(_bgTaskChannel.invokeMethod('beginBackgroundTask').catchError((_) {}));
+      unawaited(_bgTaskChannel.invokeMethod('scheduleProcessingTask').catchError((_) {}));
+    }
     if (await FlutterForegroundTask.isRunningService) return;
     await FlutterForegroundTask.startService(
       serviceId: 4287,
@@ -103,6 +120,9 @@ class BackgroundAnalysis {
   /// Stop the foreground service and clear its notification.
   static Future<void> stop() async {
     if (!_supported) return;
+    if (Platform.isIOS) {
+      unawaited(_bgTaskChannel.invokeMethod('endBackgroundTask').catchError((_) {}));
+    }
     if (!await FlutterForegroundTask.isRunningService) return;
     await FlutterForegroundTask.stopService();
   }

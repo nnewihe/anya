@@ -32,12 +32,41 @@ class DeadTimeEngine {
   final OnnxDetector playerDetector;
   final OnnxDetector ballDetector;
 
-  DeadTimeEngine._(this.playerDetector, this.ballDetector);
+  /// Square-input ball detector used ONLY for the native far-region crop
+  /// (FixedFarCropSource). The whole-frame [ballDetector] is now the
+  /// rectangular 960x544 model (see spikes/export_mobile_models.py); the
+  /// far crop still needs the square 960x960 geometry the toolchain was
+  /// tuned against (CutterConfig.farCropTopExtendFrac), so it gets its own
+  /// model asset (ball_best_far_crop.onnx) and detector instance.
+  final OnnxDetector farCropBallDetector;
+
+  DeadTimeEngine._(
+      this.playerDetector, this.ballDetector, this.farCropBallDetector);
 
   static Future<DeadTimeEngine> load() async {
-    final player = await OnnxDetector.fromAsset('assets/models/yolo26n.onnx');
-    final ball = await OnnxDetector.fromAsset('assets/models/ball_best.onnx');
-    return DeadTimeEngine._(player, ball);
+    // Shared cache: reuses Engine's sessions if both are alive in one
+    // process (see OnnxDetector.fromAssetShared).
+    final player = await OnnxDetector.fromAssetShared(
+      'assets/models/yolo26n.onnx',
+      inputW: EngineConfig.modelWidth,
+      inputH: EngineConfig.modelHeight,
+      kind: DetectorKind.end2end,
+    );
+    final ball = await OnnxDetector.fromAssetShared(
+      'assets/models/ball_best.onnx',
+      inputW: EngineConfig.modelWidth,
+      inputH: EngineConfig.modelHeight,
+      kind: DetectorKind.raw,
+      rawN: EngineConfig.ballRectOutputN,
+    );
+    final farCropBall = await OnnxDetector.fromAsset(
+      'assets/models/ball_best_far_crop.onnx',
+      inputW: EngineConfig.imgsz,
+      inputH: EngineConfig.imgsz,
+      kind: DetectorKind.raw,
+      rawN: EngineConfig.ballSquareOutputN,
+    );
+    return DeadTimeEngine._(player, ball, farCropBall);
   }
 
   static Future<DeadTimeEngine>? _shared;
@@ -81,7 +110,7 @@ class DeadTimeEngine {
     final farBallSource = nativeCropProvider == null
         ? const NoFarBalls()
         : FixedFarCropSource(
-            farCourtCropRect(corners), nativeCropProvider, ballDetector);
+            farCourtCropRect(corners), nativeCropProvider, farCropBallDetector);
 
     final extractor = MatchTelemetryExtractor(
       playerDetector: playerDetector,
@@ -161,5 +190,6 @@ class DeadTimeEngine {
   void dispose() {
     playerDetector.dispose();
     ballDetector.dispose();
+    farCropBallDetector.dispose();
   }
 }

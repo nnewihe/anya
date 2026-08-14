@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
 import '../engine/engine.dart';
+import '../engine/engine_isolate.dart';
 import '../services/background_analysis.dart';
 import '../services/gallery_export.dart';
 import '../services/youtube_config.dart';
@@ -156,8 +157,7 @@ class _MatchSetupScreenState extends State<MatchSetupScreen>
     await BackgroundAnalysis.requestPermissions();
     await BackgroundAnalysis.start();
     try {
-      final engine = await Engine.shared();
-      final result = await engine.analyze(
+      final result = await analyzeInBackground(
         videoPath: widget.videoPath,
         onProgress: (frac, msg) {
           if (mounted) {

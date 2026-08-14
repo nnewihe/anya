@@ -1,0 +1,11 @@
+{
+  "note": "Letterbox params for the rectangular 960x544 mobile export (yolo26n.onnx, ball_best.onnx). Empirically verified against ultralytics.data.augment.LetterBox(new_shape=(544,960), stride=32) on a 540x960 input.",
+  "native_w": 960,
+  "native_h": 540,
+  "target_w": 960,
+  "target_h": 544,
+  "r": 1.0,
+  "dw": 0,
+  "dh_top": 2,
+  "dh_bottom": 2
+}

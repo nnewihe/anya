@@ -20,6 +20,7 @@ dependencies:
 
   # On-device engine
   onnxruntime: ^1.4.1          # YOLO inference (CoreML/NNAPI/CPU) across platforms
+  ffi: ^2.1.0                  # raw ORT output tensor reads (ort_fast_output.dart)
   ffmpeg_kit_flutter_new: ^4.3.2  # mobile (android/ios) video decode + reel cut
 
   # Export / sharing
@@ -47,4 +48,5 @@ flutter:
   assets:
     - assets/models/yolo26n.onnx
     - assets/models/ball_best.onnx
+    - assets/models/ball_best_far_crop.onnx
     - assets/images/
