@@ -30,6 +30,13 @@ Raw keypoints are stored rather than a pre-collapsed margin so the metric
 can be redefined — normalisation, which joints, smoothing — without paying
 for another full extraction pass.
 
+The pass is GATED (v3): pose runs only inside the windows where anya_far_serve
+is armed, widened by a lead-in so the trailing median has a settled baseline.
+A serve is reported only on a frame that is both armed and carries a raise
+edge, so pose on an unarmed frame was always computed and then discarded.
+See `_candidate_frames`, which drives the detector's own arming code rather
+than reimplementing the condition.
+
 First line is a meta header: {"meta": {...}}, carrying the pad/conf values
 used so a consumer can tell how a cache was built.
 
@@ -54,10 +61,15 @@ except ImportError:                         # script import (python pipeline/x.p
 _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
 FAR_POSE_SUFFIX = "_far_pose.jsonl"
-FAR_POSE_VERSION = 2   # v2 stores all 17 keypoints; v1 stored a single
+FAR_POSE_VERSION = 3   # v2 stores all 17 keypoints; v1 stored a single
                        # pre-collapsed pixel margin, which pinned the metric
                        # definition to extraction time and forced a full
-                       # re-run to change it.
+                       # re-run to change it.  v3 runs the model only on
+                       # armed windows (see _candidate_frames); the record
+                       # schema is unchanged, so a consumer cannot tell a
+                       # skipped frame from an undetected one — which is
+                       # exactly right, since neither can trigger a serve.
+                       # Verified serve-list-identical to a dense v2 pass.
 
 N_KP = 17
 # COCO-17 keypoint indices.
@@ -72,6 +84,42 @@ L_HIP, R_HIP = 11, 12
 class FarPoseConfig:
     pad_px:        int   = 25     # padding added around the fpr box before crop
     pose_conf:     float = 0.05   # detection floor — crop is tiny, keep permissive
+    pose_imgsz:    int   = 640    # Explicitly the ultralytics default this pass
+                                  # used to get implicitly.  DO NOT lower it
+                                  # without re-sweeping the gate.
+                                  #
+                                  # It looks like free compute — the crop is an
+                                  # fpr box a few hundred px tall, so 640
+                                  # letterboxes it up and 256 costs half as much
+                                  # (measured 18.3 -> 8.8 ms/call).  It is not
+                                  # free.  Scored end-to-end on Data/21, 256
+                                  # keeps recall (all 7 serves still cross
+                                  # RAISE_RATIO, with HIGHER peaks — less
+                                  # interpolation blur) but moves the operating
+                                  # point: 72 vs 58 frames above threshold, and
+                                  # the reported serve list went from
+                                  # [29.8, 74.6, 238.0, 241.2, 250.5, 322.3, 375.5]
+                                  # to only 4 of those 7 plus 3 new ones.
+                                  #
+                                  # RAISE_RATIO=0.35 is the F1 peak of a 72-point
+                                  # sweep taken against 640-upscaled keypoints,
+                                  # so the input scale is effectively a tuned
+                                  # hyperparameter of the gate, not a knob that
+                                  # can be turned on its own.  Lowering it is a
+                                  # real speedup available for the taking, but
+                                  # only jointly with a fresh RAISE_RATIO sweep.
+
+    # Armed-window gating.  The hand-raise gate can only produce a serve on a
+    # frame where anya_far_serve is ARMED (see FarServeDetector.process_frame:
+    # `if armed and raised`), and arming is decided entirely by the far
+    # player's world-x track, which telemetry already holds.  Pose on any other
+    # frame is computed, stored, and then provably discarded.
+    gate_armed:    bool  = True
+    gate_lead_s:   float = 1.0    # pose this long BEFORE each armed window, so
+                                  # the trailing median (SMOOTH_WINDOW_S) and
+                                  # the rising-edge test both have a settled
+                                  # resting baseline before the window opens
+    gate_tail_s:   float = 0.5
 
 
 def _load_telemetry(telemetry_path: str):
@@ -120,6 +168,73 @@ def load_far_pose(path: str) -> dict:
     return out
 
 
+def _candidate_frames(meta, records, cfg: FarPoseConfig) -> Optional[set]:
+    """Frame indices where a pose sample could still change the outcome.
+
+    anya_far_serve reports a serve only on a frame that is both ARMED and
+    carries a hand-raise rising edge.  Arming depends only on the far player's
+    world-x track (`fprw`), which is already in telemetry, so the armed set is
+    computable here with no model at all — and pose outside it cannot trigger
+    anything.
+
+    The detector's own `_update_arming` is driven directly rather than
+    reimplemented, so the gate cannot drift away from the thing it is gating.
+    Each armed run is then widened by gate_lead_s / gate_tail_s: the raise test
+    is a rising edge on a trailing median, so it needs a settled below-threshold
+    baseline in hand before the window opens or a serve at the very start of a
+    window could be missed.
+
+    Returns None to mean "no gate — do every frame", which is what a telemetry
+    file with no usable far-player track gets.
+    """
+    if not cfg.gate_armed or not records:
+        return None
+
+    # Imported inside the function: anya_far_serve imports THIS module at
+    # module level, so a top-level import here would be a cycle.
+    from .anya_far_serve import (FarServeDetector, FarServeDetectorConfig,
+                                 pick_far_player_source)
+
+    fcfg = FarServeDetectorConfig()
+    det = FarServeDetector(fcfg)
+    det.fp_key = pick_far_player_source(records)
+    if not any(r.get(det.fp_key) for r in records):
+        print("[FAR-POSE] no far-player track in telemetry — gating disabled, "
+              "running every frame")
+        return None
+
+    armed_idx = []
+    for i, r in enumerate(records):
+        t = r["t"]
+        det._update_arming(r, t)
+        if (t - det.last_armed_t) <= fcfg.ARM_TO_TRACE_S:
+            armed_idx.append(i)
+    if not armed_idx:
+        print("[FAR-POSE] far player never armed — gating disabled, "
+              "running every frame")
+        return None
+
+    fps = float(meta.get("fps") or 30.0)
+    lead = max(1, int(round(cfg.gate_lead_s * fps)))
+    tail = max(1, int(round(cfg.gate_tail_s * fps)))
+
+    # Expand each contiguous armed run, then merge the overlaps.
+    runs, start, prev = [], armed_idx[0], armed_idx[0]
+    for i in armed_idx[1:]:
+        if i != prev + 1:
+            runs.append((start, prev))
+            start = i
+        prev = i
+    runs.append((start, prev))
+
+    keep = set()
+    n = len(records)
+    for a, b in runs:
+        for i in range(max(0, a - lead), min(n, b + tail + 1)):
+            keep.add(records[i]["f"])
+    return keep
+
+
 def _keypoints(result) -> Optional[list]:
     """Flat [x,y,conf] * 17 for the highest-confidence detection."""
     if result.keypoints is None or len(result.boxes) == 0:
@@ -158,6 +273,11 @@ def extract_far_pose(telemetry_path: str, force: bool = False,
     by_frame = {r["f"]: r for r in records}
     max_f = max(by_frame) if by_frame else -1
 
+    candidates = _candidate_frames(meta, records, cfg)
+    if candidates is not None:
+        print(f"[FAR-POSE] armed-window gate: {len(candidates)}/{len(records)} "
+              f"frame(s) ({len(candidates) / max(1, len(records)):.1%}) need pose")
+
     tmp_path = out_path + ".part"
     n_written = 0
     with open(tmp_path, "w") as fh:
@@ -170,14 +290,20 @@ def extract_far_pose(telemetry_path: str, force: bool = False,
                 "pose_conf": cfg.pose_conf,
                 "n_kp": N_KP,
                 "coords": "crop pixels (native resolution, fpr box + pad_px)",
+                "pose_imgsz": cfg.pose_imgsz,
+                "gated": candidates is not None,
+                "n_gated_frames": len(candidates) if candidates is not None else None,
             }
         }
         fh.write(json.dumps(header) + "\n")
 
         frame_idx = -1
+        n_inferred = 0
         while cap.isOpened() and frame_idx < max_f:
-            ok, frame = cap.read()
-            if not ok:
+            # grab() advances the decoder without converting the frame into a
+            # numpy array; retrieve() pays that cost only for frames we keep.
+            # On a gated run that is most of the decode saved outright.
+            if not cap.grab():
                 break
             frame_idx += 1
             rec = by_frame.get(frame_idx)
@@ -185,8 +311,13 @@ def extract_far_pose(telemetry_path: str, force: bool = False,
                 continue  # source telemetry skipped this frame (stride > 1)
 
             box = rec.get("fpr")
+            wanted = box and (candidates is None or frame_idx in candidates)
+
             kpts, box_h = None, None
-            if box:
+            if wanted:
+                ok, frame = cap.retrieve()
+                if not ok:
+                    break
                 x1, y1, x2, y2 = box
                 box_h = y2 - y1
                 h, w = frame.shape[:2]
@@ -195,8 +326,9 @@ def extract_far_pose(telemetry_path: str, force: bool = False,
                 crop = frame[cy1:cy2, cx1:cx2]
                 if crop.size > 0:
                     result = pose_model(crop, verbose=False, conf=cfg.pose_conf,
-                                        device=_DEVICE)[0]
+                                        imgsz=cfg.pose_imgsz, device=_DEVICE)[0]
                     kpts = _keypoints(result)
+                    n_inferred += 1
 
             out = {"f": frame_idx, "t": rec["t"]}
             if kpts:
@@ -205,14 +337,16 @@ def extract_far_pose(telemetry_path: str, force: bool = False,
             fh.write(json.dumps(out) + "\n")
             n_written += 1
             if n_written % 1000 == 0:
-                print(f"[FAR-POSE] frame {frame_idx}/{max_f} ({n_written} written)")
+                print(f"[FAR-POSE] frame {frame_idx}/{max_f} "
+                      f"({n_written} written, {n_inferred} inferred)")
             if progress_cb is not None and n_written % 30 == 0:
                 progress_cb(frame_idx, max_f)
 
         cap.release()
 
     os.replace(tmp_path, out_path)
-    print(f"[FAR-POSE] Wrote {n_written} records → {out_path}")
+    print(f"[FAR-POSE] Wrote {n_written} records ({n_inferred} pose calls) "
+          f"→ {out_path}")
     return out_path
 
 

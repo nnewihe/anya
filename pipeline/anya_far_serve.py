@@ -583,9 +583,17 @@ def pick_far_player_source(records) -> str:
     """
     if any(r.get("fprw") for r in records):
         return "fprw"
-    print("[FAR-SERVE] WARN: telemetry has no `fprw` (pre-v2 file) — arming "
-          "against the noisier smoothed `fpw` track. Re-extract for v2.")
-    return "fpw"
+    if any(r.get("fpw") for r in records):
+        print("[FAR-SERVE] WARN: telemetry has no `fprw` (pre-v2 file) — arming "
+              "against the noisier smoothed `fpw` track. Re-extract for v3.")
+        return "fpw"
+    # v3 dropped `fpw` outright, so an empty `fprw` here is a real extraction
+    # failure (no far player found all match), not an old file. Returning
+    # "fpw" would arm against a key that cannot exist and fail silently.
+    print("[FAR-SERVE] WARN: telemetry carries no far-player track at all "
+          "(`fprw` empty, no legacy `fpw`) — the detector can never arm, so "
+          "no far serves will be reported. Check the far-player ROI.")
+    return "fprw"
 
 
 def load_pose_cache(telemetry_path: str, pose_path: str = None) -> Dict[int, Optional[float]]:

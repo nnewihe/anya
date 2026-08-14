@@ -38,6 +38,13 @@ def predict_video(video, model_path=MODEL_PATH, pose_npz=None, device="mps",
 
     pose_npz = pose_npz or pose_path(video)
     if not os.path.isfile(pose_npz):
+        # This is the normal path. pipeline.anya_telemetry can emit the sidecar
+        # from its own decode pass (ExtractorConfig.walk_pose), but that is off
+        # by default because it costs ~4 pp of F1 here for ~6 ms/frame — see the
+        # note on that flag. Printed so a run that DOES expect the sidecar
+        # (walk_pose enabled, cache deleted) does not silently spend the pass.
+        print(f"[walk] no pose sidecar at {pose_npz} — running the standalone "
+              f"full-frame extractor")
         extract(video, pose_model, device)
         select(video, out=pose_npz)
     z = np.load(pose_npz)

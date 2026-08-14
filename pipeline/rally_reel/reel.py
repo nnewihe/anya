@@ -5,16 +5,23 @@ config change costs seconds rather than another perception pass):
 
     0  court corners      utilities.init_court          <stem>_court_cache.json
     1  telemetry          anya_telemetry                <stem>_anya_telemetry.jsonl
+                                                        <stem>_walk_pose.npz
     2  far-player pose    extract_far_pose              <stem>_far_pose.jsonl
     3  far serve starts   anya_far_serve                (in memory)
     4  near serve starts  anya_near_serve               <stem>_near_serve_events.json
-    5  walking / deadtime walking.predict               <stem>_walk_pose.npz
+    5  walking / deadtime walking.predict               (reads stage 1's npz)
     6  segments           rally_reel.points             <stem>_rally_segments.json
     7  cut + concat       utilities.create_highlights   <stem>_rally_reel.mp4
 
 Stage 0 is the only interactive step: the user clicks the four court corners
 once (bottom-left, bottom-right, top-right, top-left).  Both `pipeline/` and
 `walking/` read that same cache, so one calibration serves the whole run.
+
+Decode passes: stage 1 walks the video once and now produces the walking
+classifier's pose track from that same pass, so stage 5 is pure inference on
+cached arrays.  Stage 2 is the only other pass over the file and it is sparse
+— it decodes fully only inside anya_far_serve's armed windows.  The pipeline
+used to decode the whole video three times.
 """
 
 import json
