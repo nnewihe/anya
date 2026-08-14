@@ -53,7 +53,7 @@ celery_app.conf.update(
 _CACHE_STEMS = ("_court_cache.json", "_exclusion_cache.json")
 
 
-def _restore_caches(store: storage.Storage, job_id: str, workdir: Path, stem: str) -> None:
+def _restore_caches(store: storage.LocalStorage, job_id: str, workdir: Path, stem: str) -> None:
     """Download any cached calibration files from storage into the work dir."""
     for sfx in _CACHE_STEMS:
         key = storage.cache_key(job_id, sfx)
@@ -64,7 +64,7 @@ def _restore_caches(store: storage.Storage, job_id: str, workdir: Path, stem: st
                 pass  # missing cache is fine — pipeline will recompute
 
 
-def _save_caches(store: storage.Storage, job_id: str, workdir: Path, stem: str) -> None:
+def _save_caches(store: storage.LocalStorage, job_id: str, workdir: Path, stem: str) -> None:
     """Upload freshly computed calibration files back to storage."""
     for sfx in _CACHE_STEMS:
         src = workdir / f"{stem}{sfx}"
@@ -142,7 +142,7 @@ def process_rally_job(self, job_id: str) -> dict:
 
         # ── Upload result ────────────────────────────────────────────────
         store.upload_from(local_out, out_key, content_type="video/mp4")
-        result_url = store.presigned_get(out_key)
+        result_url = store.download_url(out_key)
 
         jobs.update(
             job_id,

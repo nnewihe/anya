@@ -1,86 +1,77 @@
-# Rally Predictor — Flutter app
+# Anya Tennis — Flutter app
 
-Cross-platform (Android + iOS) front end for the `rally_detector.py` pipeline.
-Upload a match (or capture live), watch analysis progress, and play back the
-detected rally reel.
+Cross-platform (Android + iOS + macOS) front end for the rally detector. Pick a
+match video and the whole analysis runs **on-device** — no upload, no server,
+and no network calls.
 
 ## What's here
 
 ```
 lib/
-  main.dart              app entry
-  config.dart            backend URL (override with --dart-define)
-  api/api_client.dart    REST + WebSocket client
-  models/job.dart        mirrors backend/app/schemas.py
+  main.dart                    app entry
   screens/
-    home_screen.dart     pick a video / go live
-    job_screen.dart      upload → progress → segments + reel playback
-    live_screen.dart     camera capture → stream to backend
+    home_screen.dart           pick a match video
+    match_setup_screen.dart    progress → segments + reel playback + share
+  engine/                      the on-device pipeline (Dart port of pipeline/)
+    engine.dart                model loading + per-frame orchestration
+    inference.dart             ONNX Runtime sessions (CoreML / NNAPI / CPU)
+    ball_tracker.dart          IMM Kalman ball tracking
+    rally_detector.dart        rally segmentation
+    deadtime_engine.dart       dead-time cutter
+    point_segmenter.dart       serve-anchored point starts / ends
+    reel.dart                  segment merge + reel cut
+    frame_source.dart          ffmpeg_kit (mobile) / system ffmpeg (desktop)
+  services/
+    background_analysis.dart   foreground-service wrapper so long runs survive
+    gallery_export.dart        save the reel to Photos / Gallery
+    youtube_upload.dart        optional, user-initiated share to YouTube
+assets/models/
+  ball_best.onnx               ball detector
+  yolo26n.onnx                 player detector
 ```
 
-Only the Dart source lives in the repo. The native `android/` and `ios/`
-projects are generated locally (they're large and machine-specific).
-
-## First-time setup
+## Setup
 
 ```bash
 cd mobile
-flutter create .          # generates android/ + ios/ around the existing lib/
 flutter pub get
 ```
 
-`flutter create .` will NOT overwrite `lib/`, `pubspec.yaml`, or this README.
-
-### Permissions to add after `flutter create`
-
-**iOS — `ios/Runner/Info.plist`** (camera, mic, and—for dev over http—ATS):
-
-```xml
-<key>NSCameraUsageDescription</key>
-<string>Capture matches for rally detection.</string>
-<key>NSMicrophoneUsageDescription</key>
-<string>Record match audio.</string>
-<key>NSPhotoLibraryUsageDescription</key>
-<string>Pick a match video to analyze.</string>
-<!-- DEV ONLY: allow plain http to your local backend -->
-<key>NSAppTransportSecurity</key>
-<dict><key>NSAllowsArbitraryLoads</key><true/></dict>
-```
-
-**Android — `android/app/src/main/AndroidManifest.xml`**:
-
-```xml
-<uses-permission android:name="android.permission.INTERNET"/>
-<uses-permission android:name="android.permission.CAMERA"/>
-<uses-permission android:name="android.permission.RECORD_AUDIO"/>
-```
-Add `android:usesCleartextTraffic="true"` to the `<application>` tag for dev
-(plain http to a local server).
-
 ## Running
 
-Point the app at your backend. Defaults to `http://10.0.2.2:8000` (the Android
-emulator's alias for the host machine).
+```bash
+flutter run                              # attached device or simulator
+flutter run -d <your-iphone-device-id>   # specific iOS device
+```
+
+Release builds:
 
 ```bash
-# Android emulator → host backend on :8000
-flutter run
-
-# iOS simulator
-flutter run --dart-define=API_BASE_URL=http://localhost:8000
-
-# Against a deployed backend
-flutter run --dart-define=API_BASE_URL=https://api.yourdomain.com
+flutter build apk       # Android
+flutter build ios       # iOS
 ```
+
+## How it runs on-device
+
+The two ONNX models ship as bundled assets and are loaded once per process via
+`OrtSession.fromBuffer` ([`engine/inference.dart`](lib/engine/inference.dart)),
+with the CoreML execution provider on iOS, NNAPI on Android, and a CPU fallback
+everywhere. Video decode and the final reel cut go through the bundled
+`ffmpeg_kit_flutter_new` on mobile; on desktop the same code path shells out to
+the system `ffmpeg` (see [`engine/platform.dart`](lib/engine/platform.dart)).
+
+Analysis of a long match can outlive the foreground, so it runs under
+`flutter_foreground_task` ([`services/background_analysis.dart`](lib/services/background_analysis.dart)).
+iOS caps background CPU, so this is best-effort there — a long match may pause
+and resume when the app returns to the foreground.
 
 ## Flow
 
-1. **Upload** — `home_screen` picks a video, creates a job (`POST /jobs`),
-   then `job_screen` PUTs the file to the returned upload URL, calls
-   `POST /jobs/{id}/start`, and streams progress over
-   `WS /jobs/{id}/events` (with a 5 s polling fallback).
-2. **Live** — `live_screen` records with the device camera and streams the
-   recording to `WS /live/{id}` in chunks; the backend assembles it and runs
-   the same pipeline.
-3. **Result** — on completion the job carries `result_url` (a presigned S3
-   link) and the segment list; the reel plays inline via `video_player`.
+1. **Pick** — `home_screen` picks a video from the device library.
+2. **Analyze** — `match_setup_screen` runs the engine locally, streaming
+   progress into the UI. Nothing leaves the device.
+3. **Result** — the reel plays inline via `video_player`, alongside the detected
+   segment list.
+4. **Share** — save the reel to Photos/Gallery (local), or optionally upload it
+   to YouTube. The YouTube upload is the app's only network call and only fires
+   when the user taps it; see [`docs/sharing_setup.md`](docs/sharing_setup.md).

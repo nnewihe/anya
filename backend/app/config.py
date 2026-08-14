@@ -2,8 +2,8 @@
 config.py
 =========
 Central settings, read from environment variables (12-factor).  Defaults are
-geared for local docker-compose dev; production overrides them via the
-environment / ECS task definition.
+geared for local docker-compose dev; a deployment overrides them via the
+environment.
 """
 
 from __future__ import annotations
@@ -26,15 +26,7 @@ class Settings:
     REDIS_URL: str = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
     # ── Storage ────────────────────────────────────────────────────────────
-    # STORAGE_BACKEND = "s3" (production) or "local" (dev without AWS).
-    STORAGE_BACKEND: str = os.environ.get("STORAGE_BACKEND", "local")
-    S3_BUCKET: str = os.environ.get("S3_BUCKET", "rally-predictor-media")
-    S3_REGION: str = os.environ.get("AWS_REGION", "us-east-1")
-    # When using a local-stack / MinIO endpoint for testing.
-    S3_ENDPOINT_URL: str | None = os.environ.get("S3_ENDPOINT_URL") or None
-    PRESIGN_EXPIRY_SEC: int = int(os.environ.get("PRESIGN_EXPIRY_SEC", "3600"))
-
-    # Local-storage root (only used when STORAGE_BACKEND=local).
+    # Uploads and finished reels live on the local filesystem.
     LOCAL_STORAGE_DIR: Path = Path(
         os.environ.get("LOCAL_STORAGE_DIR", "/data/rally-media")
     )

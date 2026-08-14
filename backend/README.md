@@ -8,15 +8,15 @@ progress, and download the detected rally reel.
 
 ```
  Flutter app
-    │  POST /jobs            (create job, get presigned upload URL)
-    │  PUT  <presigned>  ───────────────►  S3  (raw match.mp4)
+    │  POST /jobs            (create job, get upload URL)
+    │  PUT  <upload_url> ───────────────►  media volume  (raw match.mp4)
     │  POST /jobs/{id}/start ──┐
     │                          ▼
     │                      Redis  ◄──► Celery worker  (rally_detector.py + YOLO)
-    │                          │              │ downloads input from S3
+    │                          │              │ reads input from the volume
     │  WS /jobs/{id}/events ◄──┘              │ runs collect_rally_segments()
     │                                         │ create_highlights_ffmpeg()
-    │  GET result_url  ◄──────────────────────┘ uploads reel to S3
+    │  GET result_url  ◄──────────────────────┘ writes reel to the volume
 ```
 
 | Concern        | Choice                              | Why |
@@ -24,7 +24,7 @@ progress, and download the detected rally reel.
 | API            | FastAPI + Uvicorn                   | async, native WebSocket, imports the pipeline directly |
 | Job queue      | Celery + Redis                      | analysis takes minutes; never block a request |
 | Job state      | Redis JSON + pub/sub                | one store the API and worker share; pub/sub drives WS |
-| Storage        | S3 (presigned PUT/GET)              | multi-GB videos skip the API process entirely |
+| Storage        | Local filesystem volume             | no third-party service in the media path |
 | Inference      | Ultralytics YOLO (`models/*.pt`)    | GPU strongly recommended |
 
 ### Files
@@ -36,12 +36,12 @@ backend/
     tasks.py           Celery app + process_rally_job
     pipeline_runner.py adapter → rally_detector.collect_rally_segments
     jobs.py            Redis job store + pub/sub
-    storage.py         S3 / local storage with presigned URLs
+    storage.py         local filesystem storage
     live.py            WS live-ingest → same pipeline
     schemas.py         wire contract (mirrored by mobile/lib/models/job.dart)
     config.py          env-driven settings
   Dockerfile           bundles pipeline files + models/
-  docker-compose.yml   api + worker + redis (local, no AWS needed)
+  docker-compose.yml   api + worker + redis
   requirements.txt
 ```
 
@@ -49,7 +49,7 @@ The pipeline source (`rally_detector.py`, `anya_base.py`, `ball_tracker.py`,
 `utilities.py`) and `models/` stay at the repo root; the Dockerfile copies them
 into the image and `pipeline_runner.py` imports them.
 
-## Local development (no AWS)
+## Local development
 
 From the **repo root**:
 
@@ -57,8 +57,8 @@ From the **repo root**:
 docker compose -f backend/docker-compose.yml up --build
 ```
 
-This runs the API, a Celery worker, and Redis with `STORAGE_BACKEND=local`
-(files under a shared volume, served by the API). Then:
+This runs the API, a Celery worker, and Redis, with media files on a shared
+volume served by the API. Then:
 
 - API docs:   http://localhost:8000/docs
 - Health:     http://localhost:8000/health
@@ -92,59 +92,30 @@ celery -A app.tasks.celery_app worker --loglevel=info
 ```
 (`PIPELINE_DIR` defaults to the repo root, so the import just works.)
 
-## AWS deployment
+## Deployment
 
-### 1. S3 — media bucket
-```bash
-aws s3 mb s3://rally-predictor-media
-```
-Add a CORS policy so the Flutter app can PUT/GET directly:
-```json
-[{"AllowedMethods":["PUT","GET"],"AllowedOrigins":["*"],
-  "AllowedHeaders":["*"],"ExposeHeaders":["ETag"]}]
-```
+The service is deployed as the same two containers you run locally: the API and
+a Celery worker, backed by a Redis instance and a filesystem volume for media.
 
-### 2. ElastiCache — Redis
-Create a Redis (single node is fine to start). Note the primary endpoint →
-`REDIS_URL=redis://<endpoint>:6379/0`.
-
-### 3. ECR — image
-```bash
-aws ecr create-repository --repository-name rally-predictor-backend
-docker build -f backend/Dockerfile -t rally-predictor-backend .   # context = repo root
-# tag + push to the ECR URI (see `aws ecr get-login-password`)
-```
-
-### 4. Compute — GPU for the worker
-YOLO inference wants a GPU. Recommended: **`g4dn.xlarge`** (T4) for the worker.
-
-- **Simplest:** one GPU EC2 instance running both containers via the same
-  compose file, with `STORAGE_BACKEND=s3`. Build the image from the **GPU
-  Dockerfile variant** (swap the base to `nvidia/cuda:12.4.1-runtime-ubuntu22.04`,
-  install `python3`/`pip`, keep the rest) and add the `deploy.resources` GPU
-  block (already stubbed, commented, in `docker-compose.yml`). Run the host with
-  the NVIDIA Container Toolkit.
-- **Scalable:** ECS — API task on Fargate (CPU), worker task on a GPU-backed
-  ECS/EC2 capacity provider. Both pull the same image; the worker overrides the
-  command to `celery -A app.tasks.celery_app worker`.
-
-Give the task/instance an **IAM role** with `s3:GetObject`/`s3:PutObject` on the
-bucket — no static keys.
-
-### 5. Environment (production)
-```
-ENV=prod
-STORAGE_BACKEND=s3
-S3_BUCKET=rally-predictor-media
-AWS_REGION=us-east-1
-REDIS_URL=redis://<elasticache-endpoint>:6379/0
-CORS_ORIGINS=*
-```
-
-### 6. API exposure
-Put the API behind an ALB (TLS via ACM). WebSockets (`/jobs/{id}/events`,
-`/live/{id}`) work through ALB — no special config beyond an idle-timeout long
-enough for analysis (e.g. 300 s; the WS also emits keepalives).
+- **Storage** — uploads and finished reels live under `LOCAL_STORAGE_DIR`.
+  Point it at a persistent volume that both the API and the worker mount, and
+  size it for the largest match videos you expect.
+- **Redis** — set `REDIS_URL` to your Redis host.
+- **Compute** — YOLO inference wants a GPU for the worker. Build the image from
+  the GPU Dockerfile variant (swap the base to
+  `nvidia/cuda:12.4.1-runtime-ubuntu22.04`, install `python3`/`pip`, keep the
+  rest) and add the `deploy.resources` GPU block (already stubbed, commented, in
+  `docker-compose.yml`). Run the host with the NVIDIA Container Toolkit.
+- **Environment (production)**
+  ```
+  ENV=prod
+  LOCAL_STORAGE_DIR=/data/rally-media
+  REDIS_URL=redis://<redis-host>:6379/0
+  CORS_ORIGINS=*
+  ```
+- **API exposure** — terminate TLS at a reverse proxy in front of the API.
+  WebSockets (`/jobs/{id}/events`, `/live/{id}`) need an idle timeout long
+  enough for analysis (e.g. 300 s; the WS also emits keepalives).
 
 ## Live streaming
 

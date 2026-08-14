@@ -5,8 +5,8 @@ FastAPI surface for the rally-predictor service.
 
 Flow (upload):
   1. POST /jobs                → {job_id, upload_url}
-  2. PUT  <upload_url>         → client uploads raw video (S3 presigned, or the
-                                 /local-storage passthrough in dev)
+  2. PUT  <upload_url>         → client uploads raw video (via the
+                                 /local-storage passthrough route)
   3. POST /jobs/{id}/start     → enqueues the Celery analysis task
   4. GET  /jobs/{id}           → poll status / segments / result_url
      WS  /jobs/{id}/events     → live progress push (preferred)
@@ -46,7 +46,7 @@ app.add_middleware(
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "env": settings.ENV, "storage": settings.STORAGE_BACKEND}
+    return {"status": "ok", "env": settings.ENV, "storage": "local"}
 
 
 # ── Job lifecycle ───────────────────────────────────────────────────────────
@@ -57,14 +57,14 @@ def create_job(req: CreateJobRequest) -> CreateJobResponse:
 
     store = storage.get_storage()
     key = storage.input_key(job_id, req.filename)
-    upload_url = store.presigned_put(key, req.content_type)
+    upload_url = store.upload_url(key, req.content_type)
 
     return CreateJobResponse(job_id=job_id, upload_url=upload_url)
 
 
 @app.post("/jobs/{job_id}/clips", response_model=AddClipResponse)
 def add_clip(job_id: str, req: AddClipRequest) -> AddClipResponse:
-    """Register one clip for a multi-clip job and return its presigned upload URL.
+    """Register one clip for a multi-clip job and return its upload URL.
 
     Call once per GoPro clip, in any order (clip_index controls concatenation
     order).  After all clips are uploaded, call POST /jobs/{id}/start.
@@ -75,7 +75,7 @@ def add_clip(job_id: str, req: AddClipRequest) -> AddClipResponse:
 
     store = storage.get_storage()
     clip_key = f"inputs/{job_id}_clip{req.clip_index:03d}.mp4"
-    upload_url = store.presigned_put(clip_key, req.content_type)
+    upload_url = store.upload_url(clip_key, req.content_type)
 
     # Record the clip key on the job so the worker knows what to concatenate.
     existing = list(job.clip_keys)
@@ -155,12 +155,10 @@ async def job_events(ws: WebSocket, job_id: str) -> None:
             pass
 
 
-# ── Local-storage passthrough (dev only; S3 presigned URLs replace this) ─────
+# ── Local-storage passthrough ────────────────────────────────────────────────
 @app.put("/local-storage/{key:path}")
 async def local_put(key: str, request: Request) -> Response:
     store = storage.get_storage()
-    if not isinstance(store, storage.LocalStorage):
-        raise HTTPException(404, "not using local storage")
     dest = store.local_path(key)
     dest.parent.mkdir(parents=True, exist_ok=True)
     with open(dest, "wb") as f:
@@ -172,8 +170,6 @@ async def local_put(key: str, request: Request) -> Response:
 @app.get("/local-storage/{key:path}")
 def local_get(key: str) -> FileResponse:
     store = storage.get_storage()
-    if not isinstance(store, storage.LocalStorage):
-        raise HTTPException(404, "not using local storage")
     path = store.local_path(key)
     if not path.exists():
         raise HTTPException(404, "not found")

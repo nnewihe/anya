@@ -37,7 +37,7 @@ class CreateJobRequest(BaseModel):
 
 class CreateJobResponse(BaseModel):
     job_id: str
-    # Presigned PUT URL (S3) the client uploads the raw video to directly.
+    # URL the client PUTs the raw video to.
     # For local-storage dev this is a relative API path instead.
     upload_url: str
     # Storage key/path the server will read from once the upload completes.
@@ -45,7 +45,7 @@ class CreateJobResponse(BaseModel):
 
 
 class AddClipRequest(BaseModel):
-    """Add one clip to a multi-clip job. Returns a presigned URL for that clip."""
+    """Add one clip to a multi-clip job. Returns an upload URL for that clip."""
     filename: str
     content_type: str = "video/mp4"
     clip_index: int  # ordering index so the worker concatenates in the right order
@@ -67,7 +67,7 @@ class Job(BaseModel):
     progress: float = 0.0          # 0.0 – 1.0
     message: Optional[str] = None
     segments: list[Segment] = []
-    # Presigned GET URL for the finished rally reel (None until completed).
+    # Download URL for the finished rally reel (None until completed).
     result_url: Optional[str] = None
     created_at: float
     updated_at: float

@@ -8,7 +8,7 @@ Three ways to use it:
 |---|---|
 | **Pipeline (CLI)** | Batch processing, scripting, server use |
 | **Desktop app** | Quick analysis on a local Mac/Windows machine |
-| **Mobile app** | Upload from phone or stream live; results on the cloud |
+| **Mobile app** | Analyzing a match on your phone; runs entirely on-device |
 
 ---
 
@@ -128,35 +128,27 @@ The `.app` bundles Python and all dependencies; no separate install needed on th
 
 ## 3. Mobile app (Flutter)
 
-Upload a match video from your phone, upload GoPro clips, or stream live from the camera. Results are processed on the backend server and the rally reel is played back in-app.
+Pick a match video from the phone's library and the whole analysis runs
+on-device — detection, tracking, segmentation, and the reel cut. No upload, no
+server, and no network calls.
 
 ### Prerequisites
 
 - [Flutter SDK](https://docs.flutter.dev/get-started/install) ≥ 3.19
 - Android Studio or Xcode (for device builds)
 
-### Run locally (against local backend)
-
-Start the backend first (see section 4), then:
+### Run
 
 ```bash
 cd mobile
-flutter run --dart-define=API_BASE_URL=http://<your-mac-ip>:8000
+flutter run
 ```
-
-Use `10.0.2.2` as the IP for an Android emulator pointing at your Mac host.
 
 ### Deploy to Android phone
 
 ```bash
 cd mobile
-flutter run --dart-define=API_BASE_URL=http://44.203.32.208:8000
-```
-
-Or build a release APK:
-
-```bash
-flutter build apk --dart-define=API_BASE_URL=http://44.203.32.208:8000
+flutter build apk
 adb install build/app/outputs/flutter-apk/app-release.apk
 ```
 
@@ -164,23 +156,20 @@ adb install build/app/outputs/flutter-apk/app-release.apk
 
 ```bash
 cd mobile
-flutter run -d <your-iphone-device-id> \
-  --dart-define=API_BASE_URL=http://44.203.32.208:8000
+flutter run -d <your-iphone-device-id>
 ```
 
-### Three upload modes
+### On-device engine
 
-| Mode | How to use |
-|---|---|
-| **Upload a match** | Pick a single video from the phone's library; upload, then tap Analyze |
-| **Upload GoPro clips** | Pick multiple clips (sorted by filename); they are concatenated server-side before analysis |
-| **Go live** | Records from the phone camera and streams to the server in real time; analysis runs when you stop recording |
+The ONNX models ship as bundled assets (`mobile/assets/models/`) and run through
+`onnxruntime` — CoreML on iOS, NNAPI on Android, CPU fallback. Video decode and
+the reel cut go through the bundled `ffmpeg_kit`. See `mobile/README.md`.
 
 ---
 
 ## 4. Backend server
 
-### Local development (no AWS)
+### Local development
 
 Requires Docker Desktop.
 
@@ -191,23 +180,11 @@ docker compose -f backend/docker-compose.yml up --build
 
 API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-### AWS deployment
+### Deployment
 
-The backend is running on:
-
-```
-http://44.203.32.208:8000
-```
-
-SSH access:
-
-```bash
-ssh -i ~/Documents/rally-predictor-key.pem ubuntu@44.203.32.208
-# Check setup progress:
-tail -f /var/log/rally-setup.log
-```
-
-Full AWS deployment guide (S3, ECR, EC2, ALB): [`backend/README.md`](backend/README.md)
+The backend runs as the same API + worker + Redis containers, with media on a
+filesystem volume — no third-party storage service. See
+[`backend/README.md`](backend/README.md).
 
 ---
 
