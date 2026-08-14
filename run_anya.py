@@ -25,7 +25,7 @@ GAP_THRESHOLD_SEC   = 240.0   # 4 minutes — spans short changeovers within a r
 
 def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
                        provider_factory=None, engine_factory=None, pass_label="NEAR",
-                       telemetry_provider=None):
+                       telemetry_provider=None, max_frames=0):
     """
     Run the Anya pipeline on a single video and return the detected active segments.
 
@@ -109,6 +109,9 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
 
     try:
         while cap.isOpened():
+            if max_frames > 0 and telemetry_provider.frame_counter >= max_frames:
+                interrupted = True
+                break
             success, orig_frame = cap.read()
             if not success:
                 break
@@ -215,7 +218,7 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=0,
-                       far_side_first=False):
+                       far_side_first=False, max_frames=0):
     """
     Run the near-side and far-side serve detectors as two completely separate
     full-video passes over the same source file, then merge their active
@@ -252,7 +255,8 @@ def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=
         print("\n[PASS] Near-side serve detection …")
         return _collect_segments(video_path, headless, start_frame,
                                   csv_path=near_csv, pass_label="NEAR",
-                                  telemetry_provider=_near_provider)
+                                  telemetry_provider=_near_provider,
+                                  max_frames=max_frames)
 
     def _run_far_pass():
         print("\n[PASS] Far-side serve detection …")
@@ -261,6 +265,7 @@ def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=
             engine_factory=lambda p: FarSideTransitionEngine(fps=p.fps),
             pass_label="FAR",
             telemetry_provider=_far_provider,
+            max_frames=max_frames,
         )
 
     if headless:
@@ -841,11 +846,18 @@ Examples:
             "this only controls processing order — the merged output is unaffected."
         ),
     )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Stop each pass after processing N frames from --start-frame (0 = full video).",
+    )
     args = parser.parse_args()
 
     if len(args.input) == 1:
         run_anya_pipeline(args.input[0], args.output, args.headless, args.start_frame,
-                           far_side_first=args.far_side_first)
+                           far_side_first=args.far_side_first, max_frames=args.max_frames)
     elif len(args.input) == 2:
         run_anya_pipeline_dual(
             args.input[0], args.input[1],

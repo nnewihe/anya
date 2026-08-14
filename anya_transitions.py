@@ -74,12 +74,17 @@ class SignalPriorityConfig:
     toss_weight:   float = 0.8          # ball toss (serve-specific anchor)
     serve_score_threshold: float = 0.55
     serve_event_window_s:  float = 1.2  # window over which trophy/toss scores persist
-    trophy_conf_floor:     float = 0.0  # ignore trophy scores below this (0 = keep all)
+    trophy_conf_floor:     float = 0.3  # hard gate: trophy must reach this to allow ACTIVE
+    trophy_required:       bool  = True # if True, max_trophy must meet floor before firing
 
     # Ball-toss gating (Phase 2 — occlusion-tolerant, far-side friendly)
     toss_conf_floor:     float = 0.5    # drop toss-ball detections below this YOLO conf
     toss_gap_tolerance:  int   = 1      # dropped frames allowed before a toss run resets (was 3)
     toss_confirm_frames: int   = 2      # consecutive good frames to confirm a toss (was 3)
+    # Ball direction gate: on sequence start the ball must be within this fraction of
+    # player height above the head. Rejects incoming serve bounces that enter the ROI
+    # from high up in the frame rather than originating from the player's hand.
+    toss_max_launch_above_head_frac: float = 0.4
 
     # ---- Tier 1: POINT END (ACTIVE -> WAITING) — ball-trace authority ----
     min_point_duration_s: float = 2.0   # earliest a point may end           (was 3.0)
@@ -102,6 +107,11 @@ class SignalPriorityConfig:
     player_walking_ft_s:     float = 2.5    # >= this  -> chasing/walking  -> lengthen timeout
     stationary_timeout_mult: float = 0.8
     walking_timeout_mult:    float = 1.2
+
+    # ---- Far-side overrides ----
+    # Tuned on match.mp4 frames 36500–50500 (9 GT far serves): threshold=0.65
+    # gives 9/9 recall with TRACE-CONFIRM as the FP backstop.
+    far_serve_score_threshold: float = 0.65
 
     # ---- Cycle ----
     fast_rearm: bool = True             # ACTIVE -> ARMED directly if player already at baseline
@@ -310,7 +320,7 @@ class TransitionEngine:
             self._trophy_scores.append((trophy_score, now))
 
         # --- Ball toss (Tier-1 anchor, high weight) ---
-        toss_score = self._update_toss_detection(frame, ny1, now)
+        toss_score = self._update_toss_detection(frame, ny1, ny2, now)
         if toss_score > 0:
             self._toss_scores.append((toss_score, now))
 
@@ -329,6 +339,15 @@ class TransitionEngine:
         }
 
         if serve_score >= self.cfg.serve_score_threshold:
+            # Hard trophy gate: toss alone is not sufficient — the trophy classifier
+            # must have seen at least one frame above the floor within the window.
+            if self.cfg.trophy_required and max_trophy < self.cfg.trophy_conf_floor:
+                if max_toss >= 0.5:
+                    print(f"[GATE] Trophy gate blocked{self._log_suffix}: "
+                          f"trophy={max_trophy:.2f} < {self.cfg.trophy_conf_floor:.2f}  "
+                          f"toss={max_toss:.2f}  serve_score={serve_score:.2f}")
+                return "ARMED"
+
             # Sanity: the toss must have peaked above the player's head.
             if self.toss_min_y_px is not None and self.toss_min_y_px >= ny1:
                 print(f"[DEBUG] Toss height invalid: min_y={self.toss_min_y_px:.1f} "
@@ -352,7 +371,7 @@ class TransitionEngine:
     # ------------------------------------------------------------------
     # Ball-toss detector (occlusion-tolerant — Phase 2 refinements)
     # ------------------------------------------------------------------
-    def _update_toss_detection(self, frame, ny1: float, now: float) -> float:
+    def _update_toss_detection(self, frame, ny1: float, ny2: float, now: float) -> float:
         # Confidence floor: drop low-confidence toss-ball detections (shadows,
         # crowd glints, far-side noise) before any motion reasoning.
         candidates = [
@@ -388,6 +407,19 @@ class TransitionEngine:
         self.last_toss_ball = {"y": cy, "time": now}
 
         if is_moving_upward and is_ball_above_head:
+            # Direction gate: on the first frame of a new toss sequence, verify
+            # the ball is originating near the player's head level. An incoming
+            # serve bounce rises from well above ny1 in image space (the service
+            # box appears high in the frame due to perspective); a genuine toss
+            # first crosses ny1 from below, so its initial above-head distance
+            # is small. Reject sequences that start too far above the head.
+            if self.toss_consecutive_frames == 0:
+                player_h       = ny2 - ny1
+                above_head_px  = ny1 - cy
+                max_launch_px  = self.cfg.toss_max_launch_above_head_frac * player_h
+                if above_head_px > max_launch_px:
+                    return 0.0
+
             self.toss_gap_frames               = 0
             self.toss_consecutive_frames      += 1
             self.toss_ball_above_head_detected = True
@@ -685,12 +717,18 @@ class FarSideTransitionEngine(TransitionEngine):
             baseline_y_ft=Config.COURT_LENGTH_FT,
             direction=1.0,
         )
-        # Wider ready band than the near side: far-court world-position
-        # estimates are noisier (homography amplifies feet-pixel jitter more
-        # at this distance), so a tight +/-baseline window misses real
-        # ready-position dwells.
-        self.READY_MIN_DIST_FT = -6.0
-        self.READY_MAX_DIST_FT = 6.0
+        # Far-court world-position estimates are noisier (homography amplifies
+        # pixel jitter at distance). Tuned on match.mp4 frames 36500–50500:
+        # far player sits at world_y≈65ft with baseline at 78ft → signed_dist
+        # ≈ -13ft.  ±14ft gives 9/9 recall; ±12ft gives 7/9 (F1=0.70).
+        # Use ±14ft — TRACE-CONFIRM filters the extra FPs in production.
+        self.READY_MIN_DIST_FT = -14.0
+        self.READY_MAX_DIST_FT = 14.0
+
+        # Far-player position estimates drift in/out of band more than the near
+        # side. Allow up to 50% out-of-band time (vs 25% for near) before
+        # dropping back to WAITING — the ST-GCN score is the real discriminator.
+        self.ARMED_OUT_RATIO_THRESHOLD = 0.50
 
     # ==================================================================
     # ARMED -> ACTIVE  or  ARMED -> WAITING  (ST-GCN-only serve decision)
@@ -733,7 +771,7 @@ class FarSideTransitionEngine(TransitionEngine):
         stgcn_score = getattr(frame, "far_serve_score", 0.0) or 0.0
         self.last_serve_scores = {"stgcn_score": stgcn_score, "serve_score": stgcn_score}
 
-        if stgcn_score >= self.cfg.serve_score_threshold:
+        if stgcn_score >= self.cfg.far_serve_score_threshold:
             print(f"[TRANSITION] ARMED -> ACTIVE{self._log_suffix}. "
                   f"Serve detected! ST-GCN score: {stgcn_score:.2f}")
             self._reset_armed_state()

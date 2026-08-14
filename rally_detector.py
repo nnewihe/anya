@@ -225,7 +225,7 @@ def collect_rally_segments(video_path, headless=False, start_frame=0):
             if not success:
                 break
 
-            frame    = cv2.resize(orig_frame, (960, 540), interpolation=cv2.INTER_LINEAR)
+            frame    = cv2.resize(orig_frame, (960,540), interpolation=cv2.INTER_LINEAR)
             telemetry = telemetry_provider.process_frame(frame)
             last_ts   = telemetry.timestamp
 

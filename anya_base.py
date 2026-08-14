@@ -270,7 +270,7 @@ class AnyaTelemetryProvider:
         """
         Create zone box for ARMED phase toss detection.
         Bottom line bisects player box vertically (at player center Y).
-        Width 2x player width, height 1.5x player height.
+        Width 1.2x player width, height 1.5x player height.
         """
         if player_box is None:
             return None
@@ -280,7 +280,7 @@ class AnyaTelemetryProvider:
         player_cx = (x1 + x2) / 2.0
         player_cy = (y1 + y2) / 2.0
 
-        z_width = player_width * 2.0
+        z_width = player_width * 1.2   # was 2.0; tighter to exclude service-box bounces
         z_height = player_height * 1.5
 
         # Bottom of z_box at player center Y (bisects vertically)
