@@ -42,7 +42,7 @@ from ..utilities import Config, init_court, create_highlights_ffmpeg, probe_vide
 
 from .config import ReelConfig
 from .points import (build_segments, enforce_service_runs,
-                     merge_serve_starts, walk_onsets)
+                     merge_serve_starts, usable_walk_intervals, walk_onsets)
 
 ANALYSIS_SIZE = (960, 540)
 SEGMENTS_SUFFIX = "_rally_segments.json"
@@ -197,15 +197,7 @@ def _ball_quiet_onsets(telemetry_path: str, cfg: ReelConfig) -> List[tuple]:
     or stationary at that moment: a silent ball while the walking classifier
     is watching a visible, moving player is not evidence the point ended.
     """
-    from ..anya_far_serve import (FarServeDetector, FarServeDetectorConfig,
-                                  calibrate_static_blobs, load_telemetry,
-                                  scale_exclusion_zones)
-
-    meta, records = load_telemetry(telemetry_path)
-    fcfg = FarServeDetectorConfig()
-    det = FarServeDetector(fcfg)
-    det.set_exclusion_zones(scale_exclusion_zones(meta.get("exclusion_zones", []), meta))
-    det.set_static_cells(calibrate_static_blobs(records, fcfg))
+    meta, records, is_ball = _ball_stream(telemetry_path)
 
     gated = cfg.ball_quiet_mode == "gated"
     blind = _near_blind_mask(records, meta.get("fps", 30.0), cfg) if gated else None
@@ -228,7 +220,7 @@ def _ball_quiet_onsets(telemetry_path: str, cfg: ReelConfig) -> List[tuple]:
         t = r["t"]
         if r.get("bn", True):
             looks.append(t)
-        if det._filter_balls(r.get("all_balls", [])):
+        if is_ball(r):
             last_ball, pending = t, False
         elif last_ball is not None and not pending and t - last_ball >= cfg.ball_quiet_s:
             while lo < len(looks) and looks[lo] < t - cfg.ball_quiet_s:
@@ -248,6 +240,113 @@ def _ball_quiet_onsets(telemetry_path: str, cfg: ReelConfig) -> List[tuple]:
         print(f"[REEL]   ball-quiet: {len(onsets)}/{n_raw} onset(s) passed the "
               f"near-blind gate")
     return onsets
+
+
+def _ball_stream(telemetry_path: str):
+    """(meta, records, is_ball) with the same ball filtering ball-quiet uses.
+
+    Factored out of `_ball_quiet_onsets` so both policies see an identical
+    ball stream — confidence floor, rescaled exclusion zones, self-calibrated
+    static blobs — and a difference between them is never a difference in what
+    counts as a ball.
+    """
+    from ..anya_far_serve import (FarServeDetector, FarServeDetectorConfig,
+                                  calibrate_static_blobs, load_telemetry,
+                                  scale_exclusion_zones)
+
+    meta, records = load_telemetry(telemetry_path)
+    fcfg = FarServeDetectorConfig()
+    det = FarServeDetector(fcfg)
+    det.set_exclusion_zones(scale_exclusion_zones(meta.get("exclusion_zones", []), meta))
+    det.set_static_cells(calibrate_static_blobs(records, fcfg))
+    return meta, records, lambda r: bool(det._filter_balls(r.get("all_balls", [])))
+
+
+def _walk_ball_onsets(telemetry_path: str, walks: List[Dict],
+                      cfg: ReelConfig) -> List[tuple]:
+    """Point ends under end_policy="walk-ball".  Returns [(t, source)].
+
+    Two rules, evaluated per telemetry record, and which one owns a moment is
+    decided by whether the walking classifier is saying anything there:
+
+      A  "walk"        the near player is inside a usable walk interval AND no
+                       ball has been seen for walk_ball_veto_s.  A ball seen
+                       while the player walks vetoes the end and the point runs
+                       on — mid-rally walking is common and is exactly what the
+                       old union-of-onsets scheme could not survive.
+      B  "ball-quiet"  no walk interval covers this moment and the ball has been
+                       silent for no_walk_quiet_s.
+
+    Rule A stamps the end at max(walk start, last ball) rather than at the
+    moment the veto clears: the rally stopped when the ball did or when the
+    walk began, and the veto window is confirmation, not duration.  Rule B
+    stamps at last_ball + no_walk_stamp_s for the same reason.
+
+    Both rules keep the `ball_quiet_min_looks` floor from the legacy path.  A
+    window that was barely sampled is silent from sampling noise rather than
+    from evidence, and per-frame ball recall runs 7%-92% across the corpus.
+    """
+    meta, records, is_ball = _ball_stream(telemetry_path)
+
+    usable = usable_walk_intervals(walks, cfg)
+    spans = sorted((float(w["start_second"]), float(w["end_second"]))
+                   for w in usable)
+
+    onsets: List[tuple] = []
+    last_ball: Optional[float] = None
+    pending_a = pending_b = False
+    n_veto = n_thin = 0
+    looks: List[float] = []
+    lo_look = 0
+    si = 0                      # walk span cursor; records are time-ordered
+
+    def enough_looks(t: float, window: float) -> bool:
+        nonlocal lo_look
+        while lo_look < len(looks) and looks[lo_look] < t - window:
+            lo_look += 1
+        return len(looks) - lo_look >= cfg.ball_quiet_min_looks
+
+    for r in records:
+        t = float(r["t"])
+        if r.get("bn", True):
+            looks.append(t)
+
+        while si < len(spans) and spans[si][1] < t:
+            si += 1
+        span = spans[si] if si < len(spans) and spans[si][0] <= t else None
+
+        if is_ball(r):
+            if span is not None:
+                n_veto += 1     # a ball while walking: the point continues
+            last_ball, pending_a, pending_b = t, False, False
+            continue
+        if last_ball is None:
+            continue
+
+        quiet = t - last_ball
+        if span is not None:
+            pending_b = False
+            if quiet >= cfg.walk_ball_veto_s and not pending_a:
+                if not enough_looks(t, cfg.walk_ball_veto_s):
+                    n_thin += 1
+                    continue
+                pending_a = True
+                onsets.append((max(span[0], last_ball), "walk"))
+        else:
+            pending_a = False
+            if quiet >= cfg.no_walk_quiet_s and not pending_b:
+                if not enough_looks(t, cfg.no_walk_quiet_s):
+                    n_thin += 1
+                    continue
+                pending_b = True
+                onsets.append((last_ball + cfg.no_walk_stamp_s, "ball-quiet"))
+
+    n_a = sum(1 for _, s in onsets if s == "walk")
+    print(f"[REEL]   walk-ball: {n_a} walk end(s), {len(onsets) - n_a} "
+          f"ball-quiet end(s); {n_veto} frame(s) of walking vetoed by a visible "
+          f"ball; {n_thin} window(s) dropped for fewer than "
+          f"{cfg.ball_quiet_min_looks} looks")
+    return sorted(onsets, key=lambda x: x[0])
 
 
 def build_reel(video_path: str,
@@ -282,7 +381,9 @@ def build_reel(video_path: str,
     # time reads it, and so do far serves and near serves whenever their fast
     # paths are turned off.  When nothing needs it, stages 1-2 are skipped
     # outright — that is where the speedup actually lands.
-    needs_full = ((cfg.ball_quiet_mode != "off" and not cfg.fast_end)
+    wants_ball_end = (cfg.end_policy == "walk-ball"
+                      or cfg.ball_quiet_mode != "off")
+    needs_full = ((wants_ball_end and not cfg.fast_end)
                   or (cfg.use_far and not cfg.fast_far)
                   or not cfg.fast_near)
 
@@ -384,14 +485,19 @@ def build_reel(video_path: str,
         print("[REEL] Stage 5/7  walking (dead-time proxy)")
         _emit(on_progress, 5)   # predict_video returns only when done
         walks = _walk_intervals(video_path, device=device)
-    dead_onsets = walk_onsets(walks, cfg)
-    n_walk = len(dead_onsets)
-    print(f"[REEL]   walk intervals: {len(walks)} -> {n_walk} usable onset(s)")
-    if cfg.ball_quiet_mode != "off":
-        dead_onsets += _ball_quiet_onsets(end_telemetry, cfg)
-        print(f"[REEL]   dead-time onsets: {n_walk} walk + "
-              f"{len(dead_onsets) - n_walk} ball-quiet "
-              f"(mode={cfg.ball_quiet_mode})")
+    if cfg.end_policy == "walk-ball":
+        print(f"[REEL]   walk intervals: {len(walks)} -> "
+              f"{len(usable_walk_intervals(walks, cfg))} usable")
+        dead_onsets = _walk_ball_onsets(end_telemetry, walks, cfg)
+    else:
+        dead_onsets = walk_onsets(walks, cfg)
+        n_walk = len(dead_onsets)
+        print(f"[REEL]   walk intervals: {len(walks)} -> {n_walk} usable onset(s)")
+        if cfg.ball_quiet_mode != "off":
+            dead_onsets += _ball_quiet_onsets(end_telemetry, cfg)
+            print(f"[REEL]   dead-time onsets: {n_walk} walk + "
+                  f"{len(dead_onsets) - n_walk} ball-quiet "
+                  f"(mode={cfg.ball_quiet_mode})")
 
     # ── Stage 6: assemble segments ──────────────────────────────────────
     print("[REEL] Stage 6/7  segment assembly")

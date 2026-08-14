@@ -170,6 +170,47 @@ class ReelConfig:
     # False on a 30 Hz pose pass (pose_fps 30 costs 20.28 ms/frame against
     # 12.84), where the shipped model is the matched one.
 
+    end_policy: str = "walk-ball"      # "walk-ball" | "legacy"
+    # How the two dead-time signals combine into point ends.
+    #
+    #   "legacy"     walk onsets UNION gated ball-quiet onsets, first one after
+    #                the serve wins.  The two signals never talk to each other:
+    #                a walk onset ends the point even with the ball plainly in
+    #                flight, and ball-quiet is kept out of that mistake only by
+    #                the near-blind gate (which rejects 76% of its onsets).
+    #
+    #   "walk-ball"  walking is primary and the ball VETOES it: a walk only ends
+    #                the point once the ball has also been quiet for
+    #                walk_ball_veto_s.  See a ball while the player walks and
+    #                the point continues — players walk mid-rally all the time.
+    #                Where walking is silent, no_walk_quiet_s of ball silence
+    #                ends the point on its own.
+    #
+    # "walk-ball" makes the near-blind gate redundant: the gate existed to keep
+    # ball-quiet from speaking where walking was informative, and that is now
+    # expressed directly by which rule owns which moment.  ball_quiet_mode,
+    # ball_quiet_s and the near_* windows apply to "legacy" only.
+
+    walk_ball_veto_s: float = 1.0
+    # "walk-ball" rule A.  How long the ball must have been unseen before an
+    # active walk counts as the end of the point.  This is a VETO window, not a
+    # quiet requirement: it is short because walking is already the evidence,
+    # and the ball is only here to catch the case where the player is walking
+    # while the rally demonstrably continues.
+
+    no_walk_quiet_s: float = 5.0
+    # "walk-ball" rule B.  With no walking detected, this much ball silence ends
+    # the point by itself.  Long on purpose — this is the branch with no
+    # corroborating signal at all, and it covers far-serve rallies where the
+    # near player is never tracked, so it carries the full truncation risk.
+
+    no_walk_stamp_s: float = 1.5
+    # Where rule B puts the end, measured from the last ball sighting.  The
+    # point is CONFIRMED at no_walk_quiet_s but STAMPED here, because the rally
+    # visibly stopped when the ball did, not five seconds later.  Setting this
+    # equal to no_walk_quiet_s ends the clip at the moment of confirmation
+    # instead, which appends the full window as dead time but cannot truncate.
+
     ball_quiet_min_looks: int = 6
     # How many frames the quiet window must actually have LOOKED at the ball
     # before its silence counts.  Per-frame ball recall varies from 7% to 92%
@@ -181,6 +222,10 @@ class ReelConfig:
 
     ball_quiet_mode: str = "gated"      # "off" | "gated" | "always"
     ball_quiet_s: float = 1.5
+    # LEGACY POLICY ONLY (end_policy="legacy") — under "walk-ball" the ball is a
+    # veto on walking and a standalone rule where walking is silent, so none of
+    # the mode/gate machinery below is consulted.
+    #
     # Walking stays the primary point-end signal.  Ball-quiet is a scoped
     # fallback for the one blind spot walking cannot cover: the near player
     # is off camera 59% of the time on Data/23, and the classifier has

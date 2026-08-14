@@ -233,6 +233,12 @@ def _merge_overlaps(segments: List[RallySegment],
     for seg in segments[1:]:
         prev = out[-1]
         if seg.start - prev.end <= cfg.merge_gap_s:
+            # end_method has to follow end_t.  Keeping the first member's
+            # method while taking the last member's end time describes an end
+            # that was discarded — on Data/75 that reported 39 segments ending
+            # on the next-serve guard when the true number was zero.
+            if seg.end_t > prev.end_t:
+                prev.end_method = seg.end_method
             prev.end = max(prev.end, seg.end)
             prev.end_t = max(prev.end_t, seg.end_t)
             if prev.side != seg.side:

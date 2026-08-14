@@ -51,6 +51,22 @@ def main(argv=None):
     ap.add_argument("--post-roll", type=float, default=None, help="Tail seconds")
     ap.add_argument("--point-max", type=float, default=None,
                     help="Cap on point length when no walk interval is found")
+    ap.add_argument("--end-policy", choices=("walk-ball", "legacy"), default=None,
+                    help="How point ends combine the two dead-time signals: "
+                         "'walk-ball' (default) makes walking primary and lets "
+                         "a visible ball veto it, with ball silence alone "
+                         "ending the point where walking is silent; 'legacy' "
+                         "is the old union of walk onsets and gated ball-quiet")
+    ap.add_argument("--walk-ball-veto", type=float, default=None,
+                    help="walk-ball rule A: seconds the ball must be unseen "
+                         "before an active walk ends the point (default 1.0)")
+    ap.add_argument("--no-walk-quiet", type=float, default=None,
+                    help="walk-ball rule B: seconds of ball silence that end "
+                         "the point where no walking is detected (default 5.0)")
+    ap.add_argument("--no-walk-stamp", type=float, default=None,
+                    help="walk-ball rule B: where the end is placed, measured "
+                         "from the last ball sighting (default 1.5; set equal "
+                         "to --no-walk-quiet to end at the confirmation)")
     ap.add_argument("--ball-quiet-mode", choices=("off", "gated", "always"),
                     default=None,
                     help="Ball-quiet as a point-end signal: 'off' is walking "
@@ -81,6 +97,14 @@ def main(argv=None):
         cfg.point_max_s = args.point_max
     if args.ball_quiet_mode is not None:
         cfg.ball_quiet_mode = args.ball_quiet_mode
+    if args.end_policy is not None:
+        cfg.end_policy = args.end_policy
+    if args.walk_ball_veto is not None:
+        cfg.walk_ball_veto_s = args.walk_ball_veto
+    if args.no_walk_quiet is not None:
+        cfg.no_walk_quiet_s = args.no_walk_quiet
+    if args.no_walk_stamp is not None:
+        cfg.no_walk_stamp_s = args.no_walk_stamp
     if args.min_service_run is not None:
         cfg.min_service_run = args.min_service_run
     if args.no_service_runs:
