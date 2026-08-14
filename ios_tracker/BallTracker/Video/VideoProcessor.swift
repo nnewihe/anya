@@ -104,19 +104,33 @@ final class VideoProcessor {
         var inferenceTotal = 0.0
         var lastProgressT = -1.0
 
-        while let sampleBuffer = output.copyNextSampleBuffer() {
-            try Task.checkCancellation()
-            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { continue }
-            let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        // Every iteration allocates a source frame plus a letterbox buffer, and
+        // this loop never returns to a run loop, so without an explicit pool
+        // nothing is reclaimed until the whole clip is decoded — hundreds of MB
+        // for a long video, and jetsam SIGKILLs the app. Draining per frame also
+        // keeps the letterbox CVPixelBufferPool recycling: it only reuses a
+        // buffer once the previous one is released, otherwise it allocates a
+        // fresh one every frame.
+        var reading = true
+        while reading {
+            try autoreleasepool {
+                guard let sampleBuffer = output.copyNextSampleBuffer() else {
+                    reading = false
+                    return
+                }
+                try Task.checkCancellation()
+                guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+                let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
 
-            let (dets, ms, _) = try engine.analysisDetections(pixelBuffer)
-            inferenceTotal += ms
-            perFrame.append(dets)
-            times.append(t)
+                let (dets, ms, _) = try engine.analysisDetections(pixelBuffer)
+                inferenceTotal += ms
+                perFrame.append(dets)
+                times.append(t)
 
-            if duration > 0, t - lastProgressT > 0.25 {
-                lastProgressT = t
-                progress(min(t / duration, 1.0) * 0.95)   // leave headroom for the solve
+                if duration > 0, t - lastProgressT > 0.25 {
+                    lastProgressT = t
+                    progress(min(t / duration, 1.0) * 0.95)   // leave headroom for the solve
+                }
             }
         }
 
