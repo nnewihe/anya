@@ -100,11 +100,11 @@ enum ExclusionZoneScanner {
     static func scan(asset: AVAsset,
                      detector: BallDetector,
                      analysisScale: CGFloat,
-                     sampleCount: Int = 50,
-                     conf: Float = 0.04,
-                     eps: Double = 12,
+                     sampleCount: Int = 200,
+                     conf: Float = 0.02,
+                     eps: Double = 18,
                      minSamples: Int = 15,
-                     padding: Double = 15) async throws -> ExclusionZones {
+                     padding: Double = 10) async throws -> ExclusionZones {
         let duration = try await asset.load(.duration)
         guard duration.seconds > 0 else { return .none }
 

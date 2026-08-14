@@ -1,0 +1,33 @@
+{
+  "source_results": "snippet_walking_live.jsonl",
+  "labels": "snippet_walking_labels.json",
+  "smoothing": {
+    "speed_mps": {
+      "median_window_seconds": 5,
+      "ema_alpha": 0.15
+    },
+    "stride_frequency_hz": {
+      "median_window_seconds": 5,
+      "ema_alpha": 0.2
+    },
+    "foot_separation_m": {
+      "median_window_seconds": 3,
+      "ema_alpha": 0.2
+    },
+    "missing_pose_policy": "do not smooth across gaps"
+  },
+  "profile": "snippet21_aggressive_smoothing_v1",
+  "rule": "is_walking = speed_mps > 2.00 and stride_frequency_hz > 2.47; missing metrics => false",
+  "confidence_if_walking": 0.5141242937853108,
+  "confidence_if_not_walking": 0.1557377049180328,
+  "fit_metrics": {
+    "tp": 91,
+    "fp": 86,
+    "fn": 38,
+    "tn": 206,
+    "precision": 0.5141242937853108,
+    "recall": 0.7054263565891473,
+    "f1": 0.5947712418300654
+  },
+  "cross_validation": "5-fold grouped by 30-second temporal blocks: precision 0.404, recall 0.736, F1 0.522"
+}

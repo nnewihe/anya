@@ -26,9 +26,21 @@ struct VideoCheck {
         let playerPkg = env["PLAYER_MODEL"].map { URL(fileURLWithPath: $0) }
             ?? repo.appendingPathComponent("spikes/models/yolo26n.mlpackage")
 
+        // ROI_MODEL (path to the small 480x288 mlpackage, or "1" for the
+        // default export) switches detection to tracked-ROI + tiered scan.
+        let roiPkg: URL? = env["ROI_MODEL"].flatMap {
+            if $0.isEmpty { return nil }
+            return $0 == "1"
+                ? repo.appendingPathComponent("spikes/models/ball_best_roi.mlpackage")
+                : URL(fileURLWithPath: $0)
+        }
+
         let compiled = try await MLModel.compileModel(at: mlpackage)
         let compiledPlayer = try await MLModel.compileModel(at: playerPkg)
-        let processor = VideoProcessor(modelURL: compiled, playerModelURL: compiledPlayer)
+        var compiledRoi: URL?
+        if let roiPkg { compiledRoi = try await MLModel.compileModel(at: roiPkg) }
+        let processor = VideoProcessor(modelURL: compiled, playerModelURL: compiledPlayer,
+                                       roiModelURL: compiledRoi)
 
         // The detector threshold trades recall against ghosts; sweepable so the
         // harness can explore it without rebuilding.

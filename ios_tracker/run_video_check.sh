@@ -10,6 +10,7 @@ swiftc -O -parse-as-library -o "$OUT" \
     ParityCheck/video_main.swift \
     BallTracker/Detection/Letterbox.swift \
     BallTracker/Detection/BallDetector.swift \
+    BallTracker/Detection/RoiPlanner.swift \
     BallTracker/Detection/ExclusionZones.swift \
     BallTracker/Detection/PlayerDetector.swift \
     BallTracker/Tracking/Matrix.swift \
@@ -20,4 +21,4 @@ swiftc -O -parse-as-library -o "$OUT" \
     BallTracker/Video/CheckpointStore.swift \
     BallTracker/Video/VideoProcessor.swift
 
-ANYA_REPO="$REPO" VIDEO="$VIDEO" DUMP_CSV="${DUMP_CSV:-}" "$OUT"
+ANYA_REPO="$REPO" VIDEO="$VIDEO" DUMP_CSV="${DUMP_CSV:-}" ROI_MODEL="${ROI_MODEL:-}" "$OUT"

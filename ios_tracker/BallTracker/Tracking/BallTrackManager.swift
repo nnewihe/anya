@@ -30,6 +30,9 @@ struct TrackStatus {
     let state: TrackState
     let position: (x: Double, y: Double)?
     let speedPxS: Double
+    /// Filtered velocity (vx, vy) in analysis px/s. Lets the ROI planner lead
+    /// the crop to where a fast ball will be next frame, not where it was.
+    let velocityPxS: (x: Double, y: Double)
     let timeSinceDetection: Double
     let coasting: Bool
     let ballCount: Int
@@ -232,6 +235,7 @@ final class BallTrackManager {
     let persp: PerspectiveScale
     let gateBasePx: Double
     let gateUncertaintyK: Double
+    let gateVelK: Double
     let seedGatePx: Double
     let seedCoherencePx: Double
     let confirmHits: Int
@@ -265,6 +269,13 @@ final class BallTrackManager {
          perspectiveScale: PerspectiveScale? = nil,
          gateBasePx: Double = 50.0,
          gateUncertaintyK: Double = 0.6,
+         // High-speed tightness: bracket one extra frame of predicted travel in
+         // the primary gate. On a clean consecutive-frame hit the coast term
+         // already adds coastGateK·speed·dt; this makes the speed allowance a
+         // full frame of travel so a serve-speed ball stays in-gate even when
+         // its velocity estimate lags. The kinematic plausibility guard still
+         // rejects teleports once a real coast gap opens.
+         gateVelK: Double = 0.5,
          seedGatePx: Double = 100.0,
          seedCoherencePx: Double = 38.0,
          confirmHits: Int = 3,
@@ -301,6 +312,7 @@ final class BallTrackManager {
         self.persp = perspectiveScale ?? noPerspective
         self.gateBasePx = gateBasePx
         self.gateUncertaintyK = gateUncertaintyK
+        self.gateVelK = gateVelK
         self.seedGatePx = seedGatePx
         self.seedCoherencePx = seedCoherencePx
         self.confirmHits = confirmHits
@@ -346,6 +358,10 @@ final class BallTrackManager {
             var gate = gateBasePx * scale +
                 gateUncertaintyK * max(t.positionUncertainty(), 0.0).squareRoot()
             let tsd = now - t.lastDetectionT
+            // Speed term: bracket one frame of predicted travel so a fast ball
+            // (serve) stays in-gate even on consecutive frames. Physically
+            // bounded by vMax·dt so it can't open the gate to a teleport.
+            gate += gateVelK * min(t.speedPxS(), vMaxPxS * scale) * dt
             // (#3) Cap the coast expansion by the physical travel envelope
             // vMax·gap as well as the absolute cap, so a corrupted speed estimate
             // can't open the gate wide enough to admit a teleport.
@@ -516,6 +532,7 @@ final class BallTrackManager {
                 state: .none,
                 position: nil,
                 speedPxS: 0.0,
+                velocityPxS: (0.0, 0.0),
                 timeSinceDetection: 0.0,
                 coasting: false,
                 ballCount: ballCount,
@@ -554,6 +571,7 @@ final class BallTrackManager {
             state: state,
             position: t.position,
             speedPxS: t.speedPxS(),
+            velocityPxS: t.velocityVec,
             timeSinceDetection: tsd,
             coasting: coasting,
             ballCount: ballCount,

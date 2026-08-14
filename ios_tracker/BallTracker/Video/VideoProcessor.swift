@@ -18,6 +18,8 @@ struct VideoAnalysis {
     let samples: [Sample]
     let rallySegments: [RallySegment]
     let avgInferenceMs: Double
+    /// Fenced stationary-clutter rects, in source (display) px, for the overlay.
+    let exclusionZones: [CGRect]
 
     /// Fraction of frames with a live moving/coasting trace.
     var liveTraceRate: Double {
@@ -61,20 +63,25 @@ enum VideoProcessorError: Error {
 final class VideoProcessor {
     private let modelURL: URL?
     private let playerModelURL: URL?
+    private let roiModelURL: URL?
 
     /// `modelURL` / `playerModelURL` override the app-bundle ball and player
     /// models (used by the test harness); nil falls back to the bundled models.
-    init(modelURL: URL? = nil, playerModelURL: URL? = nil) {
+    /// `roiModelURL`, when set, enables the tracked-ROI + tiered-scan path with
+    /// that small-input ball model.
+    init(modelURL: URL? = nil, playerModelURL: URL? = nil, roiModelURL: URL? = nil) {
         self.modelURL = modelURL
         self.playerModelURL = playerModelURL
+        self.roiModelURL = roiModelURL
     }
 
     /// Identifies the detector inputs a Pass-1 checkpoint depends on. If any of
     /// these change, a stored checkpoint's detections are stale and must not be
     /// resumed (rally post-processing is deliberately absent — it only affects
     /// Pass 2).
-    static func detectorFingerprint(conf: Float) -> String {
+    static func detectorFingerprint(conf: Float, roi: Bool) -> String {
         "ball_best-v1|conf=\(conf)|aw=\(TrackerEngine.analysisWidth)|players=yolo26n|carry1"
+            + (roi ? "|roi480p25" : "")
     }
 
     /// `checkpoint` is opt-in: when nil, this runs exactly as a single-shot pass
@@ -96,11 +103,12 @@ final class VideoProcessor {
         let composition = try await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset)
         let size = composition.renderSize
 
-        let engine = try TrackerEngine(fps: fps > 0 ? fps : 30, conf: conf, modelURL: modelURL)
+        let engine = try TrackerEngine(fps: fps > 0 ? fps : 30, conf: conf,
+                                       modelURL: modelURL, roiModelURL: roiModelURL)
         let playerDetector = try playerModelURL.map {
             try PlayerDetector(analysisWidth: Double(TrackerEngine.analysisWidth), modelURL: $0)
         } ?? PlayerDetector(analysisWidth: Double(TrackerEngine.analysisWidth))
-        let fingerprint = Self.detectorFingerprint(conf: conf)
+        let fingerprint = Self.detectorFingerprint(conf: conf, roi: roiModelURL != nil)
 
         // Pass 1 — detect every frame (ball candidates + player boxes). Unlike
         // the live path this commits to no associations: the whole clip's
@@ -185,7 +193,7 @@ final class VideoProcessor {
                 let t = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
                 if t < resumeSkipBelow { return }
 
-                let (dets, ms, _) = try engine.analysisDetections(pixelBuffer)
+                let (dets, ms, _) = try engine.analysisDetections(pixelBuffer, at: t)
                 inferenceTotal += ms
                 perFrame.append(dets)
                 players.append(playerDetector.update(pixelBuffer: pixelBuffer, t: t))
@@ -236,6 +244,7 @@ final class VideoProcessor {
         // carry test to every YOLO-detected player.
         let suppressor = CarrySuppressor(analysisWidth: Double(TrackerEngine.analysisWidth))
         var suppressedTotal = 0
+        var bodyClutterTotal = 0
         var samples: [VideoAnalysis.Sample] = []
         samples.reserveCapacity(times.count)
 
@@ -243,6 +252,7 @@ final class VideoProcessor {
             let framePlayers = i < players.count ? players[i] : .none
             let dets = suppressor.filter(perFrame[i], players: framePlayers, t: times[i])
             suppressedTotal += suppressor.lastSuppressedCount
+            bodyClutterTotal += suppressor.lastBodyClutterCount
             let status = manager.update(detections: dets, now: times[i])
             rally.observe(status: status,
                           players: framePlayers,
@@ -256,13 +266,26 @@ final class VideoProcessor {
                 speedPxS: status.speedPxS * toSource))
         }
         let segments = rally.finish(videoDuration: duration)
-        print("[CARRY] suppressed \(suppressedTotal) carried-ball detection(s)")
+        print("[CARRY] suppressed \(suppressedTotal) detection(s) "
+              + "(\(bodyClutterTotal) body-clutter, \(suppressedTotal - bodyClutterTotal) carried)")
+        if let p = engine.roiPlanner {
+            let frames = p.roiFrames + p.scanFrames
+            print(String(format: "[ROI] roi=%d scan=%d frames, %.2f inferences/frame",
+                         p.roiFrames, p.scanFrames,
+                         frames > 0 ? Double(p.tileInferences) / Double(frames) : 0))
+        }
         progress(1.0)
 
         // Pass 1 is done and its detections are baked into the analysis; the
         // checkpoint has served its purpose. Mark it complete so the resume
         // prompt won't offer it again (pruning reclaims the working copy later).
         if let checkpoint { checkpoint.store.markCompleted(key: checkpoint.key) }
+
+        // Zones are analysis-space rects; scale to source px for the overlay.
+        let zonesSource = engine.exclusionZones.rects.map {
+            CGRect(x: $0.minX * toSource, y: $0.minY * toSource,
+                   width: $0.width * toSource, height: $0.height * toSource)
+        }
 
         return VideoAnalysis(
             url: url,
@@ -271,6 +294,7 @@ final class VideoProcessor {
             duration: duration,
             samples: samples,
             rallySegments: segments,
-            avgInferenceMs: times.isEmpty ? 0 : inferenceTotal / Double(times.count))
+            avgInferenceMs: times.isEmpty ? 0 : inferenceTotal / Double(times.count),
+            exclusionZones: zonesSource)
     }
 }

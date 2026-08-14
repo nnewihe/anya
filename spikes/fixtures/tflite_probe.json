@@ -1,0 +1,20 @@
+{
+  "imgsz": [
+    544,
+    960
+  ],
+  "tflite": "ball_best_float16.tflite",
+  "input_shape": [
+    1,
+    544,
+    960,
+    3
+  ],
+  "output_shape": [
+    1,
+    5,
+    10710
+  ],
+  "coords_are_pixels": false,
+  "max_coord": 0.9980311393737793
+}

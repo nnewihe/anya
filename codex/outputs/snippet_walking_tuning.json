@@ -1,0 +1,22 @@
+{
+  "source_results": "snippet_walking_live.jsonl",
+  "labels": "snippet_walking_labels.json",
+  "profile": "snippet21_cadence_speed_v1",
+  "rule": "is_walking = stride_frequency_hz > 2.79 and speed_mps <= 12.71; missing metrics => false",
+  "confidence_if_walking": 0.6513761467889908,
+  "confidence_if_not_walking": 0.1858974358974359,
+  "fit_metrics": {
+    "tp": 71,
+    "fp": 38,
+    "fn": 58,
+    "tn": 254,
+    "precision": 0.6513761467889908,
+    "recall": 0.5503875968992248,
+    "f1": 0.5966386554621849
+  },
+  "cross_validation": "5-fold grouped by 30-second temporal blocks: precision 0.619, recall 0.543, F1 0.579",
+  "coverage": {
+    "labeled_walking_seconds": 129,
+    "with_pose": 123
+  }
+}

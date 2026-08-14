@@ -1,0 +1,12 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/app/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+# The exported model is a build artifact of spikes/export_tflite.py, not source.
+/app/src/main/assets/ball_best.tflite

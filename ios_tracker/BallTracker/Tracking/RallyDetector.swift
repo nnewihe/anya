@@ -32,6 +32,20 @@ enum RallyConstants {
     static let couplingMinPlayerSpeed  = 25.0   // px/s; player must be walking
     static let couplingRatioMax        = 0.50   // carried below this ratio
 
+    // ── Body-anchored clutter suppression ─────────────────────────────────
+    // A ball-model false positive fixed to the body — a wristband, sleeve logo,
+    // shoe — sits at a stable position in the player box's *normalised* frame,
+    // so world-static exclusion zones can't catch it (it travels with the
+    // player) but a per-cell histogram over normalised box coords can: it fires
+    // on nearly every frame at one (u,v), while a real ball only ever transits.
+    // Grid is coarse enough to span wristband jitter; the window is short enough
+    // that a serve toss — a handful of frames every ~20 s — never reaches the
+    // threshold, while an every-frame wristband clears it comfortably.
+    static let bodyClutterGridN     = 8
+    static let bodyClutterWindowSec = 2.0
+    static let bodyClutterMinHits   = 12     // floor, before the fps-scaled term
+    static let bodyClutterMinFrac   = 0.25   // ...or this fraction of window frames
+
     // ── Serving-pattern HMM ───────────────────────────────────────────────
     // Fitted from 15 labeled matches (203 stay-, 14 switch-transitions).
     static let hmmPStay    = 0.9355   // average game ~15.5 points
@@ -91,16 +105,86 @@ struct PlayerBoxes: Codable {
     static let none = PlayerBoxes(all: [], near: nil, far: nil)
 }
 
-/// Drops ball detections that are being carried by a player — inside a moving
-/// player box and sharing its pixel velocity — before they reach the tracker.
+/// Fences off *body-anchored* clutter — a wristband, sleeve logo, or shoe the
+/// ball model repeatedly fires on. This is the streaming analogue of
+/// `ExclusionZoneScanner`'s DBSCAN, lifted into a player box's moving reference
+/// frame: world-static zones can't catch clutter that travels with the player,
+/// but in *normalised* box coords a wristband sits at a fixed (u,v) across many
+/// frames while a real ball only ever transits.
 ///
-/// This generalises the near-player carry test in `RallyAccumulator` to every
-/// detected player and moves it to the detection feed, so a held/carried ball
-/// never seeds or sustains a track. It is deliberately conservative: a
-/// detection is dropped only when its velocity can be estimated AND it couples
-/// (`ratio < ratioMax`) to a box that is genuinely moving. A struck ball
-/// decouples (high ratio) and is kept; a detection whose velocity can't be
-/// estimated is kept.
+/// A coarse per-cell histogram over a short rolling window makes "persists at
+/// this body-relative spot" cheap to test each frame. Detections are recorded
+/// regardless of whether they are later suppressed, so a persistent wristband
+/// keeps its own cell hot. The window is short enough that a serve toss — a few
+/// frames every ~20 s — never reaches the threshold.
+final class BodyClutterModel {
+    private let gridN: Int
+    private let windowSec: Double
+    private let minHits: Int
+    private let minFrac: Double
+
+    private struct Hit { let t: Double; let cell: Int }
+    private var hits: [Hit] = []
+    private var frameTimes: [Double] = []
+    private var counts: [Int]
+
+    init(gridN: Int = RallyConstants.bodyClutterGridN,
+         windowSec: Double = RallyConstants.bodyClutterWindowSec,
+         minHits: Int = RallyConstants.bodyClutterMinHits,
+         minFrac: Double = RallyConstants.bodyClutterMinFrac) {
+        self.gridN = gridN
+        self.windowSec = windowSec
+        self.minHits = minHits
+        self.minFrac = minFrac
+        self.counts = [Int](repeating: 0, count: gridN * gridN)
+    }
+
+    /// Normalised (u, v) → cell index, clamped to the grid.
+    private func cell(u: Double, v: Double) -> Int {
+        let cu = min(gridN - 1, max(0, Int(u * Double(gridN))))
+        let cv = min(gridN - 1, max(0, Int(v * Double(gridN))))
+        return cv * gridN + cu
+    }
+
+    /// Prune to the window ending at `t` and note that a frame was observed
+    /// with this box present (the denominator for the fps-scaled threshold).
+    func advance(to t: Double) {
+        let cutoff = t - windowSec
+        while let f = hits.first, f.t < cutoff {
+            counts[f.cell] -= 1
+            hits.removeFirst()
+        }
+        while let f = frameTimes.first, f < cutoff { frameTimes.removeFirst() }
+        frameTimes.append(t)
+    }
+
+    /// Record a ball detection at normalised box coords.
+    func record(u: Double, v: Double, t: Double) {
+        let c = cell(u: u, v: v)
+        counts[c] += 1
+        hits.append(Hit(t: t, cell: c))
+    }
+
+    /// Has this body-relative spot fired often enough within the window to be
+    /// clutter? Threshold scales with the observed frame count, so it adapts to
+    /// fps without the model needing to know it.
+    func isHot(u: Double, v: Double) -> Bool {
+        let need = max(minHits, Int(minFrac * Double(frameTimes.count)))
+        return counts[cell(u: u, v: v)] >= need
+    }
+}
+
+/// Drops ball detections that are body clutter (a persistent wristband/logo,
+/// via `BodyClutterModel`) or being carried by a walking player, before they
+/// reach the tracker.
+///
+/// The carry test generalises the near-player check in `RallyAccumulator` to
+/// every detected player: a detection is dropped only when its velocity can be
+/// estimated AND it couples (`ratio < ratioMax`) to a box that is genuinely
+/// moving. A struck ball decouples (high ratio) and is kept; a detection whose
+/// velocity can't be estimated is kept. The body-clutter test complements it —
+/// it catches clutter fixed to a *stationary* player, which the motion-coupling
+/// test cannot see.
 ///
 /// coupling ratio = |v_det − v_box| / |v_det|  (≈0 carried, ≈1+ struck).
 final class CarrySuppressor {
@@ -110,8 +194,15 @@ final class CarrySuppressor {
 
     private var prevDets: [TrackerDetection] = []
     private var prevT: Double?
+    // One clutter histogram per stable player role (near/far). Normalised box
+    // coords are scale- and translation-free, so a wristband stays at a fixed
+    // (u,v) as the player moves around the court or toward/away from camera.
+    private let nearClutter = BodyClutterModel()
+    private let farClutter  = BodyClutterModel()
     /// Detections dropped on the most recent `filter` call (debug/tuning).
     private(set) var lastSuppressedCount = 0
+    /// The body-clutter subset of `lastSuppressedCount`.
+    private(set) var lastBodyClutterCount = 0
 
     /// Pipeline coupling constants are quoted in 960-wide analysis space; scale
     /// the pixel-valued ones to whatever analysis width the tracker runs in.
@@ -126,18 +217,68 @@ final class CarrySuppressor {
                 t: Double) -> [TrackerDetection] {
         defer { prevDets = dets; prevT = t }
         lastSuppressedCount = 0
-        guard let pT = prevT, t > pT, !players.all.isEmpty else { return dets }
-        let dt = t - pT
+        lastBodyClutterCount = 0
+
+        // Accumulate every in-box detection into the body-clutter histograms
+        // first, so this frame's evidence counts toward the persistence test.
+        accumulate(dets, box: players.near, into: nearClutter, t: t)
+        accumulate(dets, box: players.far,  into: farClutter,  t: t)
+
+        guard !players.all.isEmpty else { return dets }
+        // Carry needs a prior frame to estimate detection velocity; body clutter
+        // does not, so a nil prevT still runs the body-clutter pass.
+        let dt = prevT.map { t - $0 } ?? 0.0
+        let canCarry = dt > 0
         var kept: [TrackerDetection] = []
         kept.reserveCapacity(dets.count)
         for d in dets {
-            if isCarried(d, dt: dt, players: players) {
+            if isBodyClutter(d, players: players) {
+                lastBodyClutterCount += 1
+                lastSuppressedCount += 1
+            } else if canCarry, isCarried(d, dt: dt, players: players) {
                 lastSuppressedCount += 1
             } else {
                 kept.append(d)
             }
         }
         return kept
+    }
+
+    /// Advance the model one frame and record every detection inside `box`.
+    private func accumulate(_ dets: [TrackerDetection], box: PlayerBox?,
+                            into model: BodyClutterModel, t: Double) {
+        guard let box else { return }
+        model.advance(to: t)
+        guard let uv = Self.normalise(box) else { return }
+        for d in dets where box.contains(x: d.x, y: d.y) {
+            let (u, v) = uv(d)
+            model.record(u: u, v: v, t: t)
+        }
+    }
+
+    /// Is `d` inside a player box at a body-relative spot that keeps firing?
+    private func isBodyClutter(_ d: TrackerDetection, players: PlayerBoxes) -> Bool {
+        if let box = players.near, box.contains(x: d.x, y: d.y),
+           let uv = Self.normalise(box) {
+            let (u, v) = uv(d)
+            if nearClutter.isHot(u: u, v: v) { return true }
+        }
+        if let box = players.far, box.contains(x: d.x, y: d.y),
+           let uv = Self.normalise(box) {
+            let (u, v) = uv(d)
+            if farClutter.isHot(u: u, v: v) { return true }
+        }
+        return false
+    }
+
+    /// A closure mapping a detection to its normalised (u, v) in `box`, or nil
+    /// for a degenerate box.
+    private static func normalise(_ box: PlayerBox)
+        -> ((TrackerDetection) -> (Double, Double))? {
+        let w = box.x2 - box.x1
+        let h = box.y2 - box.y1
+        guard w > 0, h > 0 else { return nil }
+        return { d in ((d.x - box.x1) / w, (d.y - box.y1) / h) }
     }
 
     private func isCarried(_ d: TrackerDetection, dt: Double,

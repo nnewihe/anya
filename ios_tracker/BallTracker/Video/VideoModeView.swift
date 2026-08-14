@@ -84,7 +84,8 @@ struct VideoModeView: View {
             if case .idle = phase,
                let info = store.resumable(
                     detectorFingerprint: VideoProcessor.detectorFingerprint(
-                        conf: BallDetector.defaultConf)) {
+                        conf: BallDetector.defaultConf,
+                        roi: BallDetector.bundledRoiModelURL != nil)) {
                 phase = .resumable(info)
             }
         }
@@ -94,7 +95,7 @@ struct VideoModeView: View {
         VStack(spacing: 16) {
             Image(systemName: "arrow.clockwise.circle")
                 .font(.system(size: 44))
-                .foregroundStyle(BallOverlay.ballYellow)
+                .foregroundStyle(Theme.ballYellow)
             Text("Resume tracking “\(info.displayName)”?")
                 .multilineTextAlignment(.center)
             Text("\(Int(info.progress * 100))% processed")
@@ -106,7 +107,7 @@ struct VideoModeView: View {
                 } label: {
                     Label("Resume", systemImage: "play.fill")
                         .padding(.horizontal, 20).padding(.vertical, 10)
-                        .background(BallOverlay.ballYellow, in: Capsule())
+                        .background(Theme.ballYellow, in: Capsule())
                         .foregroundStyle(.black)
                 }
                 Button(role: .destructive) {
@@ -126,14 +127,14 @@ struct VideoModeView: View {
         VStack(spacing: 16) {
             Image(systemName: "video.badge.waveform")
                 .font(.system(size: 44))
-                .foregroundStyle(BallOverlay.ballYellow)
+                .foregroundStyle(Theme.ballYellow)
             Text("Pick a match video to track the ball offline.")
                 .multilineTextAlignment(.center)
             PhotosPicker(selection: $selection, matching: .videos) {
                 Label("Choose Video", systemImage: "photo.on.rectangle")
                     .padding(.horizontal, 20)
                     .padding(.vertical, 10)
-                    .background(BallOverlay.ballYellow, in: Capsule())
+                    .background(Theme.ballYellow, in: Capsule())
                     .foregroundStyle(.black)
             }
         }
@@ -183,7 +184,7 @@ struct VideoModeView: View {
         do {
             let store = store
             let analysis = try await Task.detached(priority: .userInitiated) {
-                try await VideoProcessor().process(
+                try await VideoProcessor(roiModelURL: BallDetector.bundledRoiModelURL).process(
                     url: url, checkpoint: (store, key, name)) { p in
                     Task { @MainActor in
                         if case .processing = phase { phase = .processing(p) }
@@ -284,7 +285,7 @@ struct AnalysisPlayerView: View {
                     .font(.callout.weight(.medium))
                     .padding(.horizontal, 20)
                     .padding(.vertical, 10)
-                    .background(segs.isEmpty ? Color.gray.opacity(0.3) : BallOverlay.ballYellow,
+                    .background(segs.isEmpty ? Color.gray.opacity(0.3) : Theme.ballYellow,
                                 in: Capsule())
                     .foregroundStyle(segs.isEmpty ? Color.secondary : Color.black)
             }
@@ -337,6 +338,15 @@ struct PlaybackOverlay: View {
                     CGPoint(x: fit.minX + p.x * s, y: fit.minY + p.y * s)
                 }
 
+                // Fenced stationary-clutter zones (ball baskets, resting balls).
+                for zone in analysis.exclusionZones {
+                    let o = map(CGPoint(x: zone.minX, y: zone.minY))
+                    let rect = CGRect(x: o.x, y: o.y,
+                                      width: zone.width * s, height: zone.height * s)
+                    ctx.stroke(Path(rect), with: .color(.red.opacity(0.9)),
+                               style: StrokeStyle(lineWidth: 1.5))
+                }
+
                 let trail = analysis.trail(at: t)
                 if trail.count >= 2 {
                     for i in 1..<trail.count {
@@ -344,7 +354,7 @@ struct PlaybackOverlay: View {
                         var seg = Path()
                         seg.move(to: map(trail[i - 1]))
                         seg.addLine(to: map(trail[i]))
-                        ctx.stroke(seg, with: .color(BallOverlay.ballYellow.opacity(alpha)),
+                        ctx.stroke(seg, with: .color(Theme.ballYellow.opacity(alpha)),
                                    style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     }
                 }
@@ -352,7 +362,7 @@ struct PlaybackOverlay: View {
                     let p = map(pos)
                     let ring = Path(ellipseIn: CGRect(x: p.x - 10, y: p.y - 10,
                                                       width: 20, height: 20))
-                    ctx.stroke(ring, with: .color(BallOverlay.ballYellow), lineWidth: 2.5)
+                    ctx.stroke(ring, with: .color(Theme.ballYellow), lineWidth: 2.5)
                 }
             }
         }

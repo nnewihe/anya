@@ -7,3 +7,27 @@ __pycache__/
 # named without a path (walking/extract_pose.py, pipeline/anya_end_telemetry.py).
 # The real copy is tracked at pipeline/models/yolov8n-pose.pt.
 /yolov8n-pose.pt
+/yolov8n.pt
+pipeline/yolov8n-pose.pt
+pipeline/yolov8n.pt
+
+# Sample clips and render output — regenerable, and large enough to bloat the
+# pack. Keep them local.
+*.mp4
+*.avi
+*.npy
+
+# Build output
+desktop/build/
+desktop/dist/
+desktop/.venv-intel/
+desktop/.toolchain-intel/
+mobile/build/
+
+# Scratch telemetry dumps written to the repo root by pipeline runs.
+/walking.json
+/walking.jsonl
+/serve_events.json
+
+# Third-party clone (github.com/yastrebksv/TrackNet) — re-clonable.
+spikes/tracknet_eval/repo/
