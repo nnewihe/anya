@@ -133,7 +133,19 @@ def _apply_preroll(segments, pre_roll_sec=RALLY_PRE_ROLL_SEC):
     return [(max(0.0, start - pre_roll_sec), end) for start, end in segments]
 
 
-def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
+def detect_rallies(
+    video_path,
+    output_path=None,
+    headless=False,
+    start_frame=0,
+    court_vertices=None,
+    active_zone_polygon=None,
+    ball_model_path=None,
+    player_model_path=None,
+    trophy_model_path=None,
+    skip_exclusion_zones=False,
+    progress_callback=None,
+):
     if output_path is None:
         video_dir  = os.path.dirname(os.path.abspath(video_path))
         video_stem = os.path.splitext(os.path.basename(video_path))[0]
@@ -150,7 +162,15 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
     video_time_offset  = start_frame / orig_fps
 
     # ── Telemetry provider — forced into ACTIVE so ball detection runs ────
-    telemetry_provider = AnyaTelemetryProvider(video_path)
+    telemetry_provider = AnyaTelemetryProvider(
+        video_path,
+        court_vertices=court_vertices,
+        active_zone_polygon=active_zone_polygon,
+        ball_model_path=ball_model_path,
+        player_model_path=player_model_path,
+        trophy_model_path=trophy_model_path,
+        skip_exclusion_zones=skip_exclusion_zones,
+    )
     telemetry_provider.update_state("ACTIVE")
 
     # ── Court vertices for the corridor filter ────────────────────────────
@@ -172,12 +192,17 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
     seg_start: float = None
     last_ts:   float = 0.0
     interrupted = False
+    _frame_idx = start_frame
 
     try:
         while cap.isOpened():
             success, orig_frame = cap.read()
             if not success:
                 break
+
+            _frame_idx += 1
+            if progress_callback is not None and _frame_idx % 150 == 0 and total_frames > 0:
+                progress_callback(_frame_idx / total_frames, f"Processing frame {_frame_idx}/{total_frames}")
 
             frame    = cv2.resize(orig_frame, (960, 540), interpolation=cv2.INTER_LINEAR)
             telemetry = telemetry_provider.process_frame(frame)

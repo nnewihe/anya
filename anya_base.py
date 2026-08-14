@@ -40,46 +40,84 @@ class TelemetryFrame:
 
 
 class AnyaTelemetryProvider:
-    def __init__(self, video_path: str):
+    def __init__(
+        self,
+        video_path: str,
+        court_vertices=None,
+        active_zone_polygon=None,
+        ball_model_path: str = None,
+        player_model_path: str = None,
+        trophy_model_path: str = None,
+        skip_exclusion_zones: bool = False,
+    ):
         self.video_path = video_path
         self._init_video_props()
 
+        _ball_path   = ball_model_path   or "/Users/tennis/Documents/Code/Laptop/weights/ball/weights/best.pt"
+        _player_path = player_model_path or "yolo26n.pt"
+        # trophy_model_path=None  → explicitly disabled (caller set it to None)
+        # trophy_model_path unset → falls back to Config default
+        _trophy_path = (None if trophy_model_path is None
+                        else (trophy_model_path or Config.DEFAULT_NEAR_TROPHY_MODEL_PATH))
+
         # Models
-        self.player_model = YOLO("yolo26n.pt")
-        self.ball_model   = YOLO("/Users/tennis/Documents/Code/Laptop/weights/ball/weights/best.pt")
-        self.trophy_model = YOLO(Config.DEFAULT_NEAR_TROPHY_MODEL_PATH)
+        self.player_model = YOLO(_player_path)
+        self.ball_model   = YOLO(_ball_path)
+        # Trophy model is only used in ARMED state; skip loading if path is None or unavailable.
+        if _trophy_path is None:
+            self.trophy_model = None
+            print("[INFO] Trophy model skipped (trophy_model_path=None).")
+        else:
+            try:
+                self.trophy_model = YOLO(_trophy_path)
+            except Exception as _e:
+                print(f"[WARN] Could not load trophy model ({_e}); ARMED-state trophy scoring disabled.")
+                self.trophy_model = None
 
         # Define the cache path
         self.active_zone_cache_path = "active_zone_config.json"
 
         # 1. Initialize Court Geometry (at 960x540 resolution)
-        self.court_vertices, self.frame_shape = init_court(
-            self.video_path,
-            analysis_size=(960, 540)
-        )
+        if court_vertices is not None:
+            self.court_vertices = [tuple(p) for p in court_vertices]
+            self.frame_shape    = (540, 960, 3)
+            print("[COURT] Using provided court vertices (skipping interactive selection).")
+        else:
+            self.court_vertices, self.frame_shape = init_court(
+                self.video_path,
+                analysis_size=(960, 540)
+            )
 
         # 2. Compute Homography (image→world)
         self.H = self._compute_homography()
 
-        # 3. Compute the active-zone polygon from court vertices (used in ACTIVE state)
-        self.active_zone_polygon = self._get_or_define_active_zone()
+        # 3. Active-zone polygon — use provided value, or load/select interactively.
+        if active_zone_polygon is not None:
+            self.active_zone_polygon = np.array(active_zone_polygon, dtype=np.int32)
+            print("[ZONE] Using provided active-zone polygon (skipping interactive selection).")
+        else:
+            self.active_zone_polygon = self._get_or_define_active_zone()
 
         # 4. Compute static exclusion zones from full video scan (one-time at startup)
-        print("\n[INFO] Scanning video for static exclusion zones...")
-        try:
-            self.static_exclusion_zones = create_auto_exclusion_zones(
-                self.video_path, self.ball_model,
-                num_frames=50,
-                conf=0.04,
-                eps=12,
-                padding=5,
-                ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
-                analysis_size=(960, 540),
-            )
-            print(f"[INFO] Found {len(self.static_exclusion_zones)} static exclusion zone(s)")
-        except Exception as e:
-            print(f"[WARN] Could not compute static exclusion zones: {e}")
+        if skip_exclusion_zones:
+            print("[INFO] Skipping static exclusion zone scan (skip_exclusion_zones=True).")
             self.static_exclusion_zones = []
+        else:
+            print("\n[INFO] Scanning video for static exclusion zones...")
+            try:
+                self.static_exclusion_zones = create_auto_exclusion_zones(
+                    self.video_path, self.ball_model,
+                    num_frames=50,
+                    conf=0.04,
+                    eps=12,
+                    padding=5,
+                    ball_class_index=Config.DEFAULT_BALL_CLASS_INDEX,
+                    analysis_size=(960, 540),
+                )
+                print(f"[INFO] Found {len(self.static_exclusion_zones)} static exclusion zone(s)")
+            except Exception as e:
+                print(f"[WARN] Could not compute static exclusion zones: {e}")
+                self.static_exclusion_zones = []
 
         # Dynamic exclusion zones — recomputed on each ARMED entry
         self.dynamic_exclusion_zones: List = []
@@ -423,7 +461,7 @@ class AnyaTelemetryProvider:
 
             # Trophy pose classification — run every ARMED_TROPHY_STRIDE frames,
             # carry forward the last score in between (pose changes slowly).
-            if self.frame_counter % self.ARMED_TROPHY_STRIDE == 0:
+            if self.trophy_model is not None and self.frame_counter % self.ARMED_TROPHY_STRIDE == 0:
                 pad_x = int(pw * Config.DEFAULT_TROPHY_PAD)
                 pad_y = int(ph * Config.DEFAULT_TROPHY_PAD)
                 tx1 = max(0, nx1 - pad_x); ty1 = max(0, ny1 - pad_y)
