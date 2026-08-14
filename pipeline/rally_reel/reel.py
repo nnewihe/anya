@@ -27,7 +27,8 @@ if __package__ in (None, ""):               # allow direct script execution
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     __package__ = "pipeline.rally_reel"
 
-from ..anya_telemetry import extract_anya_telemetry, telemetry_path_for
+from ..anya_telemetry import (ExtractorConfig, extract_anya_telemetry,
+                              telemetry_path_for)
 from ..anya_far_serve import detect_far_serves
 from ..extract_far_pose import extract_far_pose
 from ..anya_near_serve import score_telemetry, NearServeConfig
@@ -209,8 +210,13 @@ def build_reel(video_path: str,
     # ── Stage 1: telemetry ──────────────────────────────────────────────
     print("[REEL] Stage 1/7  telemetry")
     _emit(on_progress, 1, 0.0)
+    # ANALYSIS_SIZE is passed explicitly rather than left to the extractor's
+    # own default: stage 0 calibrates the court in these coordinates, and a
+    # telemetry pass on a different grid would silently mismatch the cached
+    # corners every consumer downstream reads through.
     telemetry = extract_anya_telemetry(
         video_path, force=force_telemetry,
+        cfg=ExtractorConfig(analysis_size=ANALYSIS_SIZE),
         progress_cb=lambda cur, tot: _emit(on_progress, 1, cur / max(1, tot)))
 
     # ── Stage 2: far-player pose ────────────────────────────────────────

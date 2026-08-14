@@ -42,6 +42,8 @@ Run:
 import argparse
 import json
 import os
+import queue
+import threading
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +100,21 @@ class ExtractorConfig:
                                         # would pad/upscale it for no benefit
     far_roi_edge_px:     int   = 4      # boxes whose feet sit this close to the
                                         # band's bottom edge are clipped, not landed
+
+    # Throughput. Neither knob changes a single detection: frames are batched
+    # into one model call instead of N, and decode/resize/crop runs on a
+    # worker thread so it overlaps inference rather than queueing behind it.
+    # Every image in a batch is the same shape (analysis frames are always
+    # analysis_size, ROI crops always far_roi), so ultralytics keeps `rect`
+    # letterboxing and preprocesses a batch exactly as it does a lone frame —
+    # output is byte-identical to the unbatched extractor at any batch size.
+    #
+    # Measured on M-series MPS, 4K source: 8-14 all land ~34 ms/frame, and 16+
+    # falls off a cliff (47 ms at 16, 55 at 32) as the batch's activations
+    # stop fitting comfortably. 8 sits on the plateau with room before the
+    # cliff for machines with less unified memory.
+    batch:               int   = 8
+    read_ahead_batches:  int   = 2      # decode queue depth (4K frames are big)
 
 
 def telemetry_path_for(video_path: str) -> str:
@@ -181,8 +198,41 @@ class AnyaTelemetryExtractor:
         return (max(0, int(x_left)), max(0, int(y_base - half_h)),
                 min(sw, int(x_right)), min(sh, int(y_base + half_h)))
 
+    @staticmethod
+    def _rows(result) -> List[List[float]]:
+        """A YOLO Results object as plain [x1, y1, x2, y2, conf, cls] rows.
+
+        One device->host transfer for the whole frame.  Reading `b.xyxy[0]`,
+        `b.conf[0]` and `b.cls[0]` per box instead costs three MPS syncs per
+        box, which at ~10 ball detections a frame was measurably more
+        expensive than the ball model's own forward pass.
+        """
+        if result is None:
+            return []
+        b = result.boxes
+        if b is None or len(b) == 0:
+            return []
+        return torch.cat([b.xyxy, b.conf[:, None], b.cls[:, None]], 1).cpu().tolist()
+
     def _detect_far_player_roi(self, orig_frame):
-        """Full-resolution person detection inside the far-baseline band.
+        """Single-frame convenience wrapper around `_far_roi_from`."""
+        crop = self._crop_far_roi(orig_frame)
+        if crop is None:
+            return None, None, None
+        res = self.player_model(crop, verbose=False,
+                                conf=self.cfg.far_roi_conf,
+                                imgsz=self.cfg.far_roi_imgsz,
+                                device=_DEVICE)
+        return self._far_roi_from(self._rows(res[0] if res else None))
+
+    def _crop_far_roi(self, orig_frame):
+        """The far-baseline band, copied out so the 4K frame can be released."""
+        rx1, ry1, rx2, ry2 = self.far_roi
+        crop = orig_frame[ry1:ry2, rx1:rx2]
+        return crop.copy() if crop.size else None
+
+    def _far_roi_from(self, rows):
+        """Picks the far player out of ROI-crop detections.
 
         Returns (box_source_px, world_feet, conf) or (None, None, None).
         Detections whose feet sit on the band's bottom edge are rejected: the
@@ -190,18 +240,10 @@ class AnyaTelemetryExtractor:
         boundary rather than their feet, and the world position derived from
         it would be wrong.
         """
+        if not rows:
+            return None, None, None
+
         rx1, ry1, rx2, ry2 = self.far_roi
-        crop = orig_frame[ry1:ry2, rx1:rx2]
-        if crop.size == 0:
-            return None, None, None
-
-        results = self.player_model(crop, verbose=False,
-                                    conf=self.cfg.far_roi_conf,
-                                    imgsz=self.cfg.far_roi_imgsz,
-                                    device=_DEVICE)
-        if not (results and results[0].boxes):
-            return None, None, None
-
         aw, ah = self.cfg.analysis_size
         sw, sh = self.source_size
         inv_x, inv_y = aw / float(sw), ah / float(sh)
@@ -209,10 +251,9 @@ class AnyaTelemetryExtractor:
         fpad = Config.FAR_PLAYER_X_PAD_FT
 
         best = None
-        for b in results[0].boxes:
-            if int(b.cls[0]) != Config.DEFAULT_PLAYER_CLASS_INDEX:
+        for cx1, cy1, cx2, cy2, conf, cls in rows:
+            if int(cls) != Config.DEFAULT_PLAYER_CLASS_INDEX:
                 continue
-            cx1, cy1, cx2, cy2 = b.xyxy[0].tolist()
 
             # Clipped by the band's bottom edge — feet are not really here.
             if cy2 >= band_h - self.cfg.far_roi_edge_px:
@@ -227,7 +268,6 @@ class AnyaTelemetryExtractor:
             if not (-fpad <= wx <= Config.COURT_WIDTH_FT + fpad):
                 continue
 
-            conf = float(b.conf[0])
             if best is None or conf > best[2]:
                 best = ((int(x1), int(y1), int(x2), int(y2)),
                         (round(wx, 2), round(wy, 2)), round(conf, 3))
@@ -264,10 +304,26 @@ class AnyaTelemetryExtractor:
             np.array([[[px, py]]], dtype=np.float32), self.H)
         return float(pt[0][0][0]), float(pt[0][0][1])
 
+    def _world_many(self, pts) -> List[Tuple[float, float]]:
+        """`_world` over a list of (px, py), in one transform call."""
+        if not pts:
+            return []
+        out = cv2.perspectiveTransform(
+            np.array([pts], dtype=np.float32), self.H)[0]
+        return [(float(x), float(y)) for x, y in out]
+
     # ------------------------------------------------------------------
     def _track_players(self, frame):
+        """Single-frame convenience wrapper around `_players_from`."""
+        res = self.player_model(frame, verbose=False,
+                                conf=self.cfg.player_conf,
+                                imgsz=Config.PLAYER_IMGSZ,
+                                device=_DEVICE)
+        return self._players_from(self._rows(res[0] if res else None))
+
+    def _players_from(self, rows):
         """
-        One full-frame player-model call classifying BOTH sides.
+        Classifies BOTH sides out of one full-frame player-model call.
 
         Near player: highest-conf-eligible detection whose feet are closest to
         the near baseline (y=0), feet-x within the near-baseline span (+pad),
@@ -277,24 +333,22 @@ class AnyaTelemetryExtractor:
 
         Returns (near_box, near_world, far_box, far_world_raw).
         """
-        results = self.player_model(frame, verbose=False,
-                                    conf=self.cfg.player_conf,
-                                    imgsz=Config.PLAYER_IMGSZ,
-                                    device=_DEVICE)
-        if not (results and results[0].boxes):
+        if not rows:
             return None, None, None, None
 
-        cands = []
-        for b in results[0].boxes:
-            if int(b.cls[0]) != Config.DEFAULT_PLAYER_CLASS_INDEX:
-                continue
-            x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
-            cx = (x1 + x2) / 2.0
-            wx, wy = self._world(cx, y2)
-            cands.append((x1, y1, x2, y2, wx, wy, float(b.conf[0])))
-
-        if not cands:
+        boxes = [(int(r[0]), int(r[1]), int(r[2]), int(r[3]), r[4])
+                 for r in rows
+                 if int(r[5]) == Config.DEFAULT_PLAYER_CLASS_INDEX]
+        if not boxes:
             return None, None, None, None
+
+        # One homography call for every candidate: cv2.perspectiveTransform is
+        # elementwise, so an N-point transform is the same arithmetic as N
+        # one-point transforms without N array allocations.
+        worlds = self._world_many([((x1 + x2) / 2.0, y2)
+                                   for x1, _, x2, y2, _ in boxes])
+        cands = [(x1, y1, x2, y2, wx, wy, conf)
+                 for (x1, y1, x2, y2, conf), (wx, wy) in zip(boxes, worlds)]
 
         L   = Config.COURT_LENGTH_FT
         pad = Config.NEAR_PLAYER_X_PAD_FT
@@ -337,16 +391,89 @@ class AnyaTelemetryExtractor:
 
     # ------------------------------------------------------------------
     def _detect_balls(self, frame) -> List[Tuple[float, float, float]]:
-        """Every ball detection on the whole analysis frame, unfiltered."""
+        """Single-frame convenience wrapper around `_balls_from`."""
         res = self.ball_model(frame, verbose=False, conf=self.cfg.ball_conf,
                               imgsz=self.cfg.ball_imgsz, device=_DEVICE)
-        out = []
-        if res and res[0].boxes:
-            for b in res[0].boxes:
-                bx1, by1, bx2, by2 = b.xyxy[0].tolist()
-                cx, cy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
-                out.append((round(cx, 1), round(cy, 1), round(float(b.conf[0]), 3)))
-        return out
+        return self._balls_from(self._rows(res[0] if res else None))
+
+    @staticmethod
+    def _balls_from(rows) -> List[Tuple[float, float, float]]:
+        """Every ball detection on the whole analysis frame, unfiltered."""
+        return [(round((bx1 + bx2) / 2.0, 1), round((by1 + by2) / 2.0, 1),
+                 round(conf, 3))
+                for bx1, by1, bx2, by2, conf, _ in rows]
+
+    # ------------------------------------------------------------------
+    def _read_batches(self, stride: int, max_frames: Optional[int],
+                      start_frame: int, batch_size: int):
+        """Yields [(frame_idx, analysis_frame, roi_crop), ...] batches.
+
+        Decode, downscale and ROI crop run on a worker thread so they overlap
+        inference instead of queueing behind it.  The 4K source frame is
+        dropped as soon as its two derivatives exist, so the queue holds
+        analysis frames and crops rather than whole native frames.
+        """
+        q: queue.Queue = queue.Queue(maxsize=max(1, self.cfg.read_ahead_batches))
+        DONE = object()
+
+        def worker():
+            cap = cv2.VideoCapture(self.video_path)
+            if start_frame > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            frame_idx = start_frame - 1
+            n_read = 0
+            buf: List[Tuple] = []
+            try:
+                while cap.isOpened():
+                    ok, orig_frame = cap.read()
+                    if not ok:
+                        break
+                    frame_idx += 1
+                    if stride > 1 and frame_idx % stride != 0:
+                        continue
+                    if max_frames is not None and n_read >= max_frames:
+                        break
+                    buf.append((
+                        frame_idx,
+                        cv2.resize(orig_frame, self.cfg.analysis_size,
+                                   interpolation=cv2.INTER_LINEAR),
+                        self._crop_far_roi(orig_frame),
+                    ))
+                    n_read += 1
+                    if len(buf) >= batch_size:
+                        q.put(buf)
+                        buf = []
+                if buf:
+                    q.put(buf)
+            except Exception as e:                  # surface, never deadlock
+                q.put(e)
+            finally:
+                cap.release()
+                q.put(DONE)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        while True:
+            item = q.get()
+            if item is DONE:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
+        t.join()
+
+    def _infer(self, model, images, conf: float, imgsz: int):
+        """One model call over a whole batch of equal-shaped images.
+
+        Ultralytics keeps `rect` letterboxing when every image in the batch
+        has the same shape, so a batched call preprocesses each image exactly
+        as a single-image call would — the detections are identical, only the
+        per-call Python and MPS dispatch overhead is amortised.
+        """
+        if not images:
+            return []
+        return model(images, verbose=False, conf=conf, imgsz=imgsz,
+                     device=_DEVICE)
 
     # ------------------------------------------------------------------
     def extract(self, out_path: Optional[str] = None, stride: int = 1,
@@ -359,11 +486,7 @@ class AnyaTelemetryExtractor:
         out_path = out_path or telemetry_path_for(self.video_path)
         tmp_path = out_path + ".part"
 
-        cap = cv2.VideoCapture(self.video_path)
-        if start_frame > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         n_written = 0
-        frame_idx = start_frame - 1
 
         with open(tmp_path, "w") as fh:
             meta = {
@@ -383,23 +506,27 @@ class AnyaTelemetryExtractor:
             }
             fh.write(json.dumps({"meta": meta}) + "\n")
 
-            try:
-                while cap.isOpened():
-                    ok, orig_frame = cap.read()
-                    if not ok:
-                        break
-                    frame_idx += 1
-                    if stride > 1 and frame_idx % stride != 0:
-                        continue
-                    if max_frames is not None and n_written >= max_frames:
-                        break
+            for batch in self._read_batches(stride, max_frames, start_frame,
+                                            max(1, self.cfg.batch)):
+                frames = [b[1] for b in batch]
+                crops  = [c for c in (b[2] for b in batch) if c is not None]
 
+                # Three batched calls per batch instead of three per frame.
+                play_res = self._infer(self.player_model, frames,
+                                       self.cfg.player_conf, Config.PLAYER_IMGSZ)
+                roi_res  = self._infer(self.player_model, crops,
+                                       self.cfg.far_roi_conf, self.cfg.far_roi_imgsz)
+                ball_res = self._infer(self.ball_model, frames,
+                                       self.cfg.ball_conf, self.cfg.ball_imgsz)
+                roi_iter = iter(roi_res)
+
+                # Per-frame state (far-box hold, world smoothing) is still
+                # advanced strictly in frame order, so batching cannot shift it.
+                for i, (frame_idx, _, crop) in enumerate(batch):
                     t = frame_idx / self.fps
-                    frame = cv2.resize(orig_frame, self.cfg.analysis_size,
-                                       interpolation=cv2.INTER_LINEAR)
 
                     near_box, near_world, far_box, far_world_raw = \
-                        self._track_players(frame)
+                        self._players_from(self._rows(play_res[i]))
 
                     # Far-box hold through short detection gaps
                     if far_box is not None:
@@ -412,10 +539,11 @@ class AnyaTelemetryExtractor:
 
                     # Independent native-resolution pass; deliberately NOT
                     # smoothed or hold-filled, so consumers see real gaps.
-                    roi_box, roi_world, roi_conf = \
-                        self._detect_far_player_roi(orig_frame)
+                    roi_box, roi_world, roi_conf = (
+                        self._far_roi_from(self._rows(next(roi_iter)))
+                        if crop is not None else (None, None, None))
 
-                    all_balls = self._detect_balls(frame)
+                    all_balls = self._balls_from(self._rows(ball_res[i]))
 
                     rec = {
                         "f": frame_idx,
@@ -440,8 +568,6 @@ class AnyaTelemetryExtractor:
                               f"({pct:.1f}%)  t={t:.1f}s")
                     if progress_cb is not None and n_written % 30 == 0:
                         progress_cb(frame_idx, self.total_frames)
-            finally:
-                cap.release()
 
         os.replace(tmp_path, out_path)
         print(f"[ANYA-TELEM] Wrote {n_written} records → {out_path}")
@@ -451,7 +577,8 @@ class AnyaTelemetryExtractor:
 def extract_anya_telemetry(video_path: str, force: bool = False, stride: int = 1,
                            max_frames: Optional[int] = None,
                            start_frame: int = 0,
-                           progress_cb=None) -> str:
+                           progress_cb=None,
+                           cfg: Optional[ExtractorConfig] = None) -> str:
     """Extract (or reuse cached) telemetry for video_path. Returns JSONL path."""
     out_path = telemetry_path_for(video_path)
     if not force and os.path.isfile(out_path):
@@ -467,7 +594,7 @@ def extract_anya_telemetry(video_path: str, force: bool = False, stride: int = 1
             return out_path
         print(f"[ANYA-TELEM] Cached telemetry is v{cached_ver}, current is "
               f"v{TELEMETRY_VERSION} — re-extracting.")
-    extractor = AnyaTelemetryExtractor(video_path)
+    extractor = AnyaTelemetryExtractor(video_path, cfg)
     return extractor.extract(stride=stride, max_frames=max_frames,
                              start_frame=start_frame, progress_cb=progress_cb)
 
@@ -485,8 +612,13 @@ if __name__ == "__main__":
                         help="Stop after writing N records (quick tests)")
     parser.add_argument("--start-frame", type=int, default=0,
                         help="Seek to this frame before processing (quick tests)")
+    parser.add_argument("--batch", type=int, default=ExtractorConfig.batch,
+                        help="Frames per model call. Does not affect output; "
+                             "tune only for throughput (default "
+                             f"{ExtractorConfig.batch})")
     args = parser.parse_args()
 
     extract_anya_telemetry(args.video, force=args.force, stride=args.stride,
                            max_frames=args.max_frames,
-                           start_frame=args.start_frame)
+                           start_frame=args.start_frame,
+                           cfg=ExtractorConfig(batch=args.batch))
