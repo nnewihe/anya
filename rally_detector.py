@@ -30,6 +30,91 @@ RALLY_GAP_THRESHOLD_SEC = 4.0
 RALLY_PRE_ROLL_SEC      = 1.5
 RALLY_END_PAD_SEC       = 1.0
 
+# ── Perspective-aware court-corridor filter ───────────────────────────────────
+# The camera sits ~18 ft behind the baseline at ~10 ft height, so adjacent-court
+# rallies bleed into the left / right edges of the frame.  We suppress traces
+# that reside primarily outside the main-court corridor defined by the user-
+# selected court vertices (BL, BR, TR, TL at 960×540).
+#
+# For a trace point at row y, the corridor's left and right pixel boundaries are
+# found by linearly interpolating along the court's left edge (BL→TL) and right
+# edge (BR→TR).  The interpolation parameter t is clamped to [0, 1], so points
+# beyond either baseline simply use that baseline's x-values as fixed walls.
+#
+# A trace whose points are < COURT_WEIGHT_MIN inside the corridor is classified
+# as an adjacent-court trace and does not count as an active rally.
+COURT_WEIGHT_MIN      = 0.25   # suppress trace if fewer than 25 % of points are in-corridor
+# Player-box suppression: a trace that stays mostly inside a player bounding box
+# is a false positive on a player (shirt logo, racket glare, etc.).  Real ball
+# contacts pass through the box briefly, so only a small fraction of their trace
+# points land inside — those traces are kept.
+PLAYER_BOX_WEIGHT_MIN = 0.25   # suppress trace if fewer than 25 % of points are outside boxes
+
+
+def _trace_court_weight(trace: list, court_vertices: list) -> float:
+    """
+    Return the fraction of trace points that fall inside the court corridor
+    defined by *court_vertices* = [BL, BR, TR, TL].
+
+    Left boundary interpolates BL→TL; right boundary interpolates BR→TR.
+    t is clamped to [0, 1] so points beyond either baseline extend that
+    baseline's boundary horizontally rather than extrapolating.
+
+    Returns 1.0 for an empty trace (no penalty on a brand-new track).
+    """
+    if not trace or not court_vertices:
+        return 1.0
+
+    BL, BR, TR, TL = court_vertices
+    bl_x, bl_y = float(BL[0]), float(BL[1])
+    br_x, br_y = float(BR[0]), float(BR[1])
+    tl_x, tl_y = float(TL[0]), float(TL[1])
+    tr_x, tr_y = float(TR[0]), float(TR[1])
+
+    # y-span between the two baselines (near baseline is lower in the frame → larger y)
+    near_y = max(bl_y, br_y)
+    far_y  = min(tl_y, tr_y)
+    span_y = near_y - far_y
+
+    inside = 0
+    for (x, y) in trace:
+        y = float(y)
+        if span_y > 0:
+            t = max(0.0, min(1.0, (y - far_y) / span_y))
+        else:
+            t = 0.5
+        left_x  = tl_x + t * (bl_x - tl_x)
+        right_x = tr_x + t * (br_x - tr_x)
+        if left_x <= float(x) <= right_x:
+            inside += 1
+
+    return inside / len(trace)
+
+
+def _in_box(x: float, y: float, box, padding: float = 10.0) -> bool:
+    """Return True if (x, y) falls inside *box* expanded by *padding* pixels."""
+    if box is None:
+        return False
+    x1, y1, x2, y2 = box
+    return (x1 - padding) <= x <= (x2 + padding) and (y1 - padding) <= y <= (y2 + padding)
+
+
+def _trace_player_box_weight(trace: list, near_box, far_box) -> float:
+    """
+    Return the fraction of trace points that fall *outside* both player boxes.
+
+    A real ball passing through a contact briefly dips into a player box for a
+    small fraction of its trace; a false positive locked onto a player feature
+    stays inside the box for most of its life.  Returns 1.0 for an empty trace.
+    """
+    if not trace:
+        return 1.0
+    outside = sum(
+        1 for (x, y) in trace
+        if not _in_box(x, y, near_box) and not _in_box(x, y, far_box)
+    )
+    return outside / len(trace)
+
 
 def _merge_segments(segments, gap_threshold_sec=RALLY_GAP_THRESHOLD_SEC):
     """Merge adjacent segments whose gap < gap_threshold_sec."""
@@ -46,14 +131,6 @@ def _merge_segments(segments, gap_threshold_sec=RALLY_GAP_THRESHOLD_SEC):
 
 def _apply_preroll(segments, pre_roll_sec=RALLY_PRE_ROLL_SEC):
     return [(max(0.0, start - pre_roll_sec), end) for start, end in segments]
-
-
-def _in_player_box(cx, cy, box, padding=10):
-    """Return True if (cx, cy) falls inside box expanded by padding pixels."""
-    if box is None:
-        return False
-    x1, y1, x2, y2 = box
-    return (x1 - padding) <= cx <= (x2 + padding) and (y1 - padding) <= cy <= (y2 + padding)
 
 
 def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
@@ -75,6 +152,9 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
     # ── Telemetry provider — forced into ACTIVE so ball detection runs ────
     telemetry_provider = AnyaTelemetryProvider(video_path)
     telemetry_provider.update_state("ACTIVE")
+
+    # ── Court vertices for the corridor filter ────────────────────────────
+    court_vertices = telemetry_provider.court_vertices   # [BL, BR, TR, TL] at 960×540
 
     # ── Ball tracker (independent from TransitionEngine) ──────────────────
     ball_tracker = BallTrackManager(
@@ -108,12 +188,27 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
             dets = [
                 (c["pixel_center"][0], c["pixel_center"][1], c["conf"])
                 for c in (telemetry.active_ball_candidates or [])
-                if not _in_player_box(c["pixel_center"][0], c["pixel_center"][1], near_box)
-                and not _in_player_box(c["pixel_center"][0], c["pixel_center"][1], far_box)
             ]
             status = ball_tracker.update(dets, telemetry.timestamp)
 
+            # Suppress traces that live primarily outside the main court corridor
+            # (adjacent-court interference) or inside a player bounding box (false
+            # positives on player features).  Brief passes through a player box —
+            # real ball contacts — score well because only a small fraction of the
+            # trace points land inside the box.
             if status.has_moving_trace:
+                court_weight  = _trace_court_weight(status.trace, court_vertices)
+                player_weight = _trace_player_box_weight(status.trace, near_box, far_box)
+            else:
+                court_weight  = 1.0
+                player_weight = 1.0
+            trace_active = (
+                status.has_moving_trace
+                and court_weight  >= COURT_WEIGHT_MIN
+                and player_weight >= PLAYER_BOX_WEIGHT_MIN
+            )
+
+            if trace_active:
                 if seg_start is None:
                     seg_start = video_time_offset + telemetry.timestamp
             else:
@@ -128,7 +223,7 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
                     seg_start = None
 
             if not headless:
-                _render_overlay(frame, status)
+                _render_overlay(frame, status, court_weight, player_weight)
                 cv2.imshow("Rally Detector", frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
@@ -167,11 +262,15 @@ def detect_rallies(video_path, output_path=None, headless=False, start_frame=0):
     print(f"[DONE] Segments : {len(final)}")
 
 
-def _render_overlay(frame, status):
-    """Minimal debug overlay — trace liveness and ball trail."""
-    alive = status.has_moving_trace
-    color = (0, 255, 0) if alive else (0, 255, 255)
-    label = f"TRACE: {'ALIVE' if alive else 'DEAD'}  {status.speed_px_s:.0f}px/s"
+def _render_overlay(frame, status, court_weight: float = 1.0, player_weight: float = 1.0):
+    """Minimal debug overlay — trace liveness, court/player weights, and ball trail."""
+    suppressed = status.has_moving_trace and (
+        court_weight < COURT_WEIGHT_MIN or player_weight < PLAYER_BOX_WEIGHT_MIN
+    )
+    alive = status.has_moving_trace and not suppressed
+    color = (0, 255, 0) if alive else ((0, 100, 255) if suppressed else (0, 255, 255))
+    tag   = "ALIVE" if alive else ("SUPPRESSED" if suppressed else "DEAD")
+    label = f"TRACE: {tag}  {status.speed_px_s:.0f}px/s  court={court_weight:.2f}  box={player_weight:.2f}"
     cv2.putText(frame, label, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
     trace = status.trace
