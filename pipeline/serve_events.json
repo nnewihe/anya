@@ -1,0 +1,42 @@
+{
+    "serves": [
+        {
+            "frame": 823,
+            "event": "Serve Executed (Toss + Ratio Shift)"
+        },
+        {
+            "frame": 6602,
+            "event": "Serve Executed (Toss + Ratio Shift)"
+        },
+        {
+            "frame": 8672,
+            "event": "Serve Executed (Toss + Ratio Shift)"
+        },
+        {
+            "frame": 10711,
+            "event": "Serve Executed (Toss + Ratio Shift)"
+        }
+    ],
+    "points": [
+        {
+            "start_frame": 823,
+            "end_frame": 1983,
+            "reason": "max duration"
+        },
+        {
+            "start_frame": 6602,
+            "end_frame": 7762,
+            "reason": "max duration"
+        },
+        {
+            "start_frame": 8672,
+            "end_frame": 9832,
+            "reason": "max duration"
+        },
+        {
+            "start_frame": 10711,
+            "end_frame": 11871,
+            "reason": "max duration"
+        }
+    ]
+}
