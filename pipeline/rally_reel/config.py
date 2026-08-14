@@ -117,7 +117,7 @@ class ReelConfig:
     # coverage interval is a guess made across a hole in the input, and its
     # own docs say downstream code should be able to drop those.
 
-    fast_end: bool = False
+    fast_end: bool = True
     # Take BOTH point-end signals from anya_end_telemetry (shared 540p proxy,
     # 15 fps pose, 10 fps whole-court ball) instead of a full-rate walking pose
     # pass plus the shared anya_telemetry ball stream.
