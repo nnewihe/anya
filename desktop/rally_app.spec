@@ -14,11 +14,11 @@
 # One folder, never --onefile: the payload is ~2 GB, and a one-file build
 # re-extracts all of it to a temp directory on every single launch.
 #
-# ffmpeg IS bundled on macOS (see fetch_ffmpeg.sh): a static arm64 build lands
-# in Contents/Frameworks alongside everything else, and preflight.repair_path()
-# puts that directory first on PATH so the pipeline's `subprocess.run(["ffmpeg",
-# ...])` calls find it without any of them changing.  Windows/Linux builds still
-# expect ffmpeg on PATH — vendor/ffmpeg is a Mach-O and is skipped there.
+# ffmpeg IS bundled on macOS (fetch_ffmpeg.sh) and Windows (fetch_ffmpeg.ps1):
+# a static build lands next to everything else — Contents/Frameworks on macOS,
+# _internal\ on Windows — and preflight.repair_path() puts that directory first
+# on PATH so the pipeline's `subprocess.run(["ffmpeg", ...])` calls find it
+# without any of them changing.  Linux builds still expect ffmpeg on PATH.
 #
 # Expect a large bundle (~2 GB): torch + ultralytics are required by the
 # telemetry and pose stages and cannot be excluded.
@@ -54,7 +54,12 @@ _REPO_ROOT = str(Path('.').resolve().parent)
 # has none — the exact prompt bundling ffmpeg exists to avoid.
 import platform
 _ARCH = platform.machine()
-_FFMPEG = Path('vendor') / _ARCH / 'ffmpeg'
+# platform.machine() is 'AMD64' on 64-bit Windows and 'arm64'/'x86_64' on
+# macOS, which is exactly the vendor/<arch>/ layout both fetch scripts write.
+_FFMPEG = Path('vendor') / _ARCH / ('ffmpeg.exe' if sys.platform == 'win32' else 'ffmpeg')
+_BUNDLES_FFMPEG = sys.platform in ('darwin', 'win32')
+_FETCH_HINT = ('.\\fetch_ffmpeg.ps1' if sys.platform == 'win32'
+               else f'./fetch_ffmpeg.sh {_ARCH}')
 _binaries = []
 # ffmpeg is GPL, so its licence has to accompany the binary. Taken from
 # vendor/<arch>/, which fetch_ffmpeg.sh populates with the pair matching THIS
@@ -63,23 +68,22 @@ _binaries = []
 # for one of the two DMGs. Also copied to the DMG root (make_dmg.sh) where a
 # tester can see it; this copy is so it still travels with a bare .app.
 #
-# Conditional for the same reason _binaries is: these files only exist once
-# fetch_ffmpeg.sh has run, and it only runs for macOS builds. Listing them
-# unconditionally fails the Windows build outright ("Unable to find
-# vendor\AMD64\FFMPEG-LICENSE.txt") — and there is nothing to license there,
-# because that build bundles no ffmpeg and the tester installs their own.
+# Conditional for the same reason _binaries is: these files only exist once a
+# fetch script has run. Listing them unconditionally fails a Linux build
+# outright ("Unable to find vendor/.../FFMPEG-LICENSE.txt"), and there is
+# nothing to license there because that build bundles no ffmpeg.
 _license_datas = []
-if sys.platform == 'darwin' and _FFMPEG.is_file():
+if _BUNDLES_FFMPEG and _FFMPEG.is_file():
     _binaries.append((str(_FFMPEG), '.'))
     _license_datas = [
         (f'vendor/{_ARCH}/FFMPEG-LICENSE.txt', 'licenses'),
         (f'vendor/{_ARCH}/COPYING.txt', 'licenses'),
     ]
-elif sys.platform == 'darwin':
+elif _BUNDLES_FFMPEG:
     raise SystemExit(
-        f"{_FFMPEG} is missing — run ./fetch_ffmpeg.sh {_ARCH} first.\n"
+        f"{_FFMPEG} is missing — run {_FETCH_HINT} first.\n"
         "Building without it silently ships an app that dies at the final "
-        "render on any machine without Homebrew ffmpeg."
+        "render on any machine that hasn't installed ffmpeg by hand."
     )
 
 _WINDOWS = sys.platform == 'win32'

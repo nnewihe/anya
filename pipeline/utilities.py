@@ -336,6 +336,57 @@ COURT_CORNER_ORDER = ["bottom-left", "bottom-right", "top-right", "top-left"]
 COURT_CORNER_TAGS  = ["BL", "BR", "TR", "TL"]
 
 
+def load_court_cache(video_path: str, analysis_size: tuple = None):
+    """Return cached ``(points, frame_shape)`` for this video, or None.
+
+    Split out of init_court so the desktop app's Qt corner picker
+    (desktop/court_dialog.py) reads and writes byte-identical cache files.
+    Stage 0 of build_reel calls init_court regardless of which picker ran, and
+    it must find that cache and return without opening anything — so the two
+    writers agreeing on this format is what keeps the window from appearing
+    twice.
+
+    ``analysis_size`` is part of the key, not just the payload: the points are
+    in the coordinate space of the resized frame, so corners picked at one
+    analysis size are meaningless at another.
+    """
+    cache_path = _court_cache_path(video_path)
+    if not os.path.isfile(cache_path):
+        return None
+    try:
+        with open(cache_path, "r") as f:
+            cached = json.load(f)
+        cached_size = tuple(cached.get("analysis_size", [None, None]))
+        if cached_size != (analysis_size if analysis_size else (None, None)):
+            print("[COURT] Analysis size changed — re-selecting corners.")
+            return None
+        pts   = [tuple(p) for p in cached["points"]]
+        shape = tuple(cached["frame_shape"])
+        print(f"[COURT] Loaded cached corners from: {os.path.basename(cache_path)}")
+        return pts, shape
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        print(f"[COURT] Cache corrupt ({e}), re-selecting.")
+        return None
+
+
+def save_court_cache(video_path: str, pts, shape, analysis_size: tuple = None) -> None:
+    """Persist picked corners next to the video. Best-effort: a failure here
+    costs one re-click on the next run, which is not worth losing the
+    already-completed calibration over."""
+    cache_path = _court_cache_path(video_path)
+    try:
+        with open(cache_path, "w") as f:
+            json.dump({
+                "points": [(float(x), float(y)) for x, y in pts],
+                "frame_shape": list(shape),
+                "analysis_size": list(analysis_size) if analysis_size else [None, None],
+                "video": os.path.basename(video_path),
+            }, f, indent=2)
+        print(f"[COURT] Saved corners to: {os.path.basename(cache_path)}")
+    except Exception as e:
+        print(f"[COURT] WARN: Could not save cache: {e}")
+
+
 def init_court(video_path: str, target_idx: int = 300, analysis_size: tuple = None):
     """One-time interactive court corner calibration, cached to disk.
 
@@ -344,22 +395,9 @@ def init_court(video_path: str, target_idx: int = 300, analysis_size: tuple = No
     homography (image -> world) computation expects. Once clicked, the
     points are cached alongside the video and reused on every future run.
     """
-    cache_path = _court_cache_path(video_path)
-
-    if os.path.isfile(cache_path):
-        try:
-            with open(cache_path, "r") as f:
-                cached = json.load(f)
-            cached_size = tuple(cached.get("analysis_size", [None, None]))
-            if cached_size == (analysis_size if analysis_size else (None, None)):
-                pts   = [tuple(p) for p in cached["points"]]
-                shape = tuple(cached["frame_shape"])
-                print(f"[COURT] Loaded cached corners from: {os.path.basename(cache_path)}")
-                return pts, shape
-            else:
-                print("[COURT] Analysis size changed — re-selecting corners.")
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            print(f"[COURT] Cache corrupt ({e}), re-selecting.")
+    cached = load_court_cache(video_path, analysis_size)
+    if cached is not None:
+        return cached
 
     num_points = len(COURT_CORNER_ORDER)
     win = "Court calibration — click corners IN ORDER: bottom-left, bottom-right, top-right, top-left  (r=reset, q=quit)"
@@ -387,18 +425,7 @@ def init_court(video_path: str, target_idx: int = 300, analysis_size: tuple = No
             cv2.waitKey(1)
             pts   = [(float(x), float(y)) for x, y in state["clicked_pts"]]
             shape = base.shape
-            try:
-                cache_data = {
-                    "points": pts,
-                    "frame_shape": list(shape),
-                    "analysis_size": list(analysis_size) if analysis_size else [None, None],
-                    "video": os.path.basename(video_path),
-                }
-                with open(cache_path, "w") as f:
-                    json.dump(cache_data, f, indent=2)
-                print(f"[COURT] Saved corners to: {os.path.basename(cache_path)}")
-            except Exception as e:
-                print(f"[COURT] WARN: Could not save cache: {e}")
+            save_court_cache(video_path, pts, shape, analysis_size)
             return pts, shape
 
         if key == ord("r"):

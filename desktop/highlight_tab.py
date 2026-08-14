@@ -19,9 +19,10 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from pipeline.rally_reel import ReelConfig, build_reel
 from pipeline.rally_reel.reel import ANALYSIS_SIZE
-from pipeline.utilities import init_court, probe_video
+from pipeline.utilities import probe_video
 
 from applog import log_path, logger
+from court_dialog import pick_court_corners
 from background import SleepBlocker, notify
 from preflight import ensure_ffmpeg
 from theme import BLACK, YELLOW, WHITE, ghost_btn_css, primary_btn_css, label_css, line_edit_css
@@ -246,13 +247,16 @@ class HighlightReelTab(QWidget):
             output = str(Path(video).parent / f"{Path(video).stem}_rally_reel.mp4")
         self._output_path = output
 
-        # One-time court calibration.  init_court opens a cv2 window, which
-        # must run on the MAIN thread — do it here (it caches to disk, so
-        # build_reel's stage-0 call is windowless).  A cached calibration
-        # returns instantly with no window.
+        # One-time court calibration, as a Qt dialog rather than init_court's
+        # OpenCV window: this runs inside a Qt slot, so the Qt event loop is
+        # already on the stack, and an OpenCV window that spins its own
+        # waitKey loop next to it painted fine on Windows and then ignored
+        # every click.  Still main-thread and still cached to disk, so
+        # build_reel's stage-0 init_court call finds the corners and opens
+        # nothing.  A cached calibration returns instantly with no dialog.
         try:
             self._set_status("Court calibration…")
-            init_court(video, analysis_size=ANALYSIS_SIZE)
+            pick_court_corners(self, video, analysis_size=ANALYSIS_SIZE)
         except Exception as ex:
             self._set_status(f"Calibration cancelled: {ex}", error=True)
             return
