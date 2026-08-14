@@ -8,6 +8,16 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.1.0-beta.7
+
+- **Better point endings.** The app used to end a point as soon as it saw a
+  player walking, even if the ball was still clearly in play — most often
+  when a player walked into a shot rather than running for it, which could
+  cut the reel off mid-rally. Walking near the ball no longer ends the
+  point; it now takes a longer, more deliberate stretch of the ball being
+  out of view before a point is called over. Reels should include less
+  accidentally-cut live tennis.
+
 ## 0.1.0-beta.6
 
 - **Fixed: the app tried to download part of itself on every run.** It was
