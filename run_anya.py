@@ -22,7 +22,8 @@ GAP_THRESHOLD_SEC   = 240.0   # 4 minutes — spans short changeovers within a r
 # Core segment-collection loop (shared by single and dual pipeline modes)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
+def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None,
+                      serve_side="near", define_far_region=False):
     """
     Run the Anya pipeline on a single video and return the detected active segments.
 
@@ -31,7 +32,11 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
     video_path  : source video file
     headless    : suppress all OpenCV windows
     start_frame : seek to this frame before starting (default 0)
-    csv_path    : explicit CSV output path; defaults to <video_dir>/<stem>_telemetry.csv
+    csv_path    : explicit CSV output path; defaults to
+                  <video_dir>/<stem>_telemetry_<serve_side>.csv
+    serve_side  : "near" or "far" — which baseline originates the serve.  The
+                  telemetry provider and transition engine are configured for that
+                  side; near reproduces the original single-side pipeline exactly.
 
     Returns
     -------
@@ -43,7 +48,7 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
     if csv_path is None:
         video_dir  = os.path.dirname(os.path.abspath(video_path))
         video_stem = os.path.splitext(os.path.basename(video_path))[0]
-        csv_path   = os.path.join(video_dir, f"{video_stem}_telemetry.csv")
+        csv_path   = os.path.join(video_dir, f"{video_stem}_telemetry_{serve_side}.csv")
 
     # ── Probe original video properties ──────────────────────────────────
     _probe   = cv2.VideoCapture(video_path)
@@ -53,8 +58,9 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
         orig_fps = 30.0
 
     # ── Initialize pipeline components ───────────────────────────────────
-    telemetry_provider = AnyaTelemetryProvider(video_path)
-    engine             = TransitionEngine(fps=telemetry_provider.fps)
+    telemetry_provider = AnyaTelemetryProvider(video_path, serve_side=serve_side,
+                                                define_far_region=define_far_region)
+    engine             = TransitionEngine(fps=telemetry_provider.fps, serve_side=serve_side)
 
     # ── CSV telemetry writer ──────────────────────────────────────────────
     _CSV_COLS = [
@@ -114,6 +120,12 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
                     state="WAITING",
                     near_player_box=last.near_player_box,
                     near_player_world=last.near_player_world,
+                    far_player_box=last.far_player_box,
+                    far_player_world=last.far_player_world,
+                    near_player_boxes=last.near_player_boxes,
+                    far_player_boxes=last.far_player_boxes,
+                    serve_player_box=last.serve_player_box,
+                    serve_player_world=last.serve_player_world,
                     toss_ball_candidates=[],
                     active_ball_candidates=[],
                 )
@@ -152,10 +164,12 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
             if not headless:
                 render_frame(frame, telemetry, current_state, engine,
                              telemetry_provider.exclusion_zones,
-                             telemetry_provider.active_zone_polygon)
+                             telemetry_provider.active_zone_polygon,
+                             far_region_polygon=telemetry_provider.far_region_polygon,
+                             serve_side=serve_side)
                 debug_panel = render_debug_panel(current_state, engine, telemetry_provider)
-                cv2.imshow("Anya Pipeline", frame)
-                cv2.imshow("Debug Panel", debug_panel)
+                cv2.imshow(f"Anya Pipeline [{serve_side}]", frame)
+                cv2.imshow(f"Debug Panel [{serve_side}]", debug_panel)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
@@ -174,7 +188,7 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
         if not headless:
             cv2.destroyAllWindows()
 
-    print(f"[COLLECT] {os.path.basename(video_path)}: {point_number} points, "
+    print(f"[COLLECT] {os.path.basename(video_path)} [{serve_side}]: {point_number} points, "
           f"{len(active_segments)} segments")
     if interrupted:
         print("[COLLECT] (pipeline interrupted — segments cover completed detections only)")
@@ -183,27 +197,84 @@ def _collect_segments(video_path, headless=False, start_frame=0, csv_path=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Single-video pipeline (unchanged public behaviour)
+# Single-video pipeline — near-origin and far-origin serves, merged by timestamp
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=0):
+def _merge_overlapping_segments(segments, merge_gap_sec=0.0):
+    """
+    Sort segments by start time and merge any that overlap (or sit within
+    merge_gap_sec of each other).  The two serve-side passes detect points
+    independently, so the same rally can occasionally be picked up by both; this
+    coalesces those into a single clip rather than cutting it twice.
+
+    Parameters
+    ----------
+    segments      : list of (start_sec, end_sec)
+    merge_gap_sec : gaps ≤ this many seconds are bridged into one segment
+
+    Returns the merged, chronologically ordered list of (start_sec, end_sec).
+    """
+    if not segments:
+        return []
+    ordered = sorted(segments, key=lambda s: s[0])
+    merged  = [list(ordered[0])]
+    for start, end in ordered[1:]:
+        if start <= merged[-1][1] + merge_gap_sec:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(s, e) for s, e in merged]
+
+
+def run_anya_pipeline(video_path, output_path=None, headless=False, start_frame=0,
+                      far_first=False, define_far_region=False):
+    """
+    Detect both near-origin and far-origin serves in a single video and build one
+    highlight reel ordered by point timestamp.
+
+    The pipeline runs in two passes over the same source: one configured for the
+    near-side server (identical to the original single-side behaviour) and one for
+    the far-side server.  The two segment lists are unioned, sorted by start time,
+    and overlapping detections are merged before the highlight MP4 is cut.
+
+    Parameters
+    ----------
+    far_first : process the far-side pass before the near-side pass.  The output
+                reel is timestamp-ordered regardless; this only changes which side
+                is analysed (and logged/CSV-written) first.
+    define_far_region : force the interactive far-side detection region selector
+                even if a cached region already exists for this video.
+    """
     # ── Default output path ───────────────────────────────────────────────
     if output_path is None:
         video_dir  = os.path.dirname(os.path.abspath(video_path))
         video_stem = os.path.splitext(os.path.basename(video_path))[0]
         output_path = os.path.join(video_dir, f"{video_stem}_highlights.mp4")
 
-    csv_path = os.path.splitext(output_path)[0] + "_telemetry.csv"
+    out_stem = os.path.splitext(output_path)[0]
+    order    = ["far", "near"] if far_first else ["near", "far"]
 
-    active_segments, point_number, _ = _collect_segments(
-        video_path, headless, start_frame, csv_path=csv_path
-    )
+    results = {}   # serve_side -> (segments, point_number, csv_path)
+    for serve_side in order:
+        print(f"\n{'='*60}\n  PASS: {serve_side.upper()}-SIDE SERVES\n{'='*60}")
+        csv_path = f"{out_stem}_telemetry_{serve_side}.csv"
+        segs, points, _ = _collect_segments(
+            video_path, headless, start_frame, csv_path=csv_path, serve_side=serve_side,
+            define_far_region=define_far_region,
+        )
+        results[serve_side] = (segs, points, csv_path)
 
-    create_highlights_ffmpeg(video_path, active_segments, output_path)
+    near_segs, near_pts, near_csv = results["near"]
+    far_segs,  far_pts,  far_csv  = results["far"]
 
-    print(f"\n[DONE] Output video  : {output_path}")
-    print(f"[DONE] Telemetry CSV : {csv_path}")
-    print(f"[DONE] Points recorded: {point_number}")
+    merged = _merge_overlapping_segments(near_segs + far_segs)
+
+    create_highlights_ffmpeg(video_path, merged, output_path)
+
+    print(f"\n[DONE] Output video    : {output_path}")
+    print(f"[DONE] Near telemetry  : {near_csv}  ({near_pts} points, {len(near_segs)} segments)")
+    print(f"[DONE] Far  telemetry  : {far_csv}  ({far_pts} points, {len(far_segs)} segments)")
+    print(f"[DONE] Merged segments : {len(merged)}  (near+far, timestamp-ordered)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -382,7 +453,7 @@ def _write_csv_row(csv_writer, engine, telemetry, point_number, frame_in_point):
 # ── Debug visualisation ────────────────────────────────────────────────────────
 
 def render_frame(frame, telemetry, state, engine=None, exclusion_zones=None,
-                 active_zone_polygon=None):
+                 active_zone_polygon=None, far_region_polygon=None, serve_side="near"):
     """Debug overlay — state badge, player boxes, balls, exclusion zones, and active polygon."""
 
     # Draw translucent light-green active-zone polygon in ACTIVE state
@@ -392,21 +463,32 @@ def render_frame(frame, telemetry, state, engine=None, exclusion_zones=None,
         cv2.addWeighted(overlay, 0.20, frame, 0.80, 0, frame)
         cv2.polylines(frame, [active_zone_polygon], True, (0, 200, 0), 1)
 
+    # Draw the user-defined far-side detection region (cyan outline), always visible.
+    if far_region_polygon is not None:
+        cv2.polylines(frame, [far_region_polygon], True, (255, 255, 0), 1, cv2.LINE_AA)
+
     color = (0, 255, 0) if state == "ACTIVE" else (0, 255, 255)
-    cv2.putText(frame, f"STATE: {state}", (50, 50),
+    cv2.putText(frame, f"STATE: {state}  ({serve_side} serve)", (50, 50),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
-    # Near player — blue box
-    if telemetry.near_player_box:
-        x1, y1, x2, y2 = telemetry.near_player_box
+    # Near players — blue boxes (supports multiple players, e.g. doubles)
+    for box in (telemetry.near_player_boxes or []):
+        x1, y1, x2, y2 = box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
-    # Far player — pink box in all states.
-    if telemetry.far_player_box:
-        x1, y1, x2, y2 = telemetry.far_player_box
+    # Far players — pink boxes in all states.
+    for box in (telemetry.far_player_boxes or []):
+        x1, y1, x2, y2 = box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 105, 255), 2)
         cv2.putText(frame, "FAR", (x1, y1 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 105, 255), 1, cv2.LINE_AA)
+
+    # Serving player — thick yellow highlight + label (the side under analysis).
+    if telemetry.serve_player_box:
+        x1, y1, x2, y2 = telemetry.serve_player_box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 3)
+        cv2.putText(frame, f"SERVER ({serve_side})", (x1, y2 + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2, cv2.LINE_AA)
 
     # Draw red bounding boxes for exclusion zones
     if exclusion_zones:
@@ -606,10 +688,26 @@ Examples:
             "Used for chronological sorting of the merged segment list (default: 0.0)."
         ),
     )
+    parser.add_argument(
+        "--far-first",
+        action="store_true",
+        help="[Single mode] Process far-side serves before near-side serves. The "
+             "output reel is timestamp-ordered regardless; this only changes the "
+             "analysis/logging order.",
+    )
+    parser.add_argument(
+        "--define-far-region",
+        action="store_true",
+        help="[Single mode] Force the interactive far-side player detection "
+             "region selector (4 points) even if a region is already cached for "
+             "this video, e.g. to fence off an adjacent court or bench behind "
+             "the far baseline. Cached to <video_dir>/far_region_config.json.",
+    )
     args = parser.parse_args()
 
     if len(args.input) == 1:
-        run_anya_pipeline(args.input[0], args.output, args.headless, args.start_frame)
+        run_anya_pipeline(args.input[0], args.output, args.headless, args.start_frame,
+                          far_first=args.far_first, define_far_region=args.define_far_region)
     elif len(args.input) == 2:
         run_anya_pipeline_dual(
             args.input[0], args.input[1],

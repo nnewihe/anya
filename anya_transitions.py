@@ -60,6 +60,7 @@ import math
 import numpy as np
 
 from ball_tracker import BallTrackManager, TrackStatus, make_image_row_perspective
+from utilities import Config
 
 
 # =====================================================================
@@ -80,6 +81,12 @@ class SignalPriorityConfig:
     toss_gap_tolerance:  int   = 1      # dropped frames allowed before a toss run resets (was 3)
     toss_confirm_frames: int   = 2      # consecutive good frames to confirm a toss (was 3)
 
+    # Far-side motion-history toss fallback (blended into the toss score).  Only
+    # consulted when serve_side == "far"; near side leaves this disabled.
+    use_mhi_toss:         bool  = False
+    mhi_threshold:        float = 0.30  # MHI must exceed this to contribute
+    mhi_max_contribution: float = 0.50  # MHI at 1.0 adds this many toss points
+
     # ---- Tier 1: POINT END (ACTIVE -> WAITING) — ball-trace authority ----
     min_point_duration_s: float = 2.0   # earliest a point may end           (was 3.0)
     trace_dead_timeout_s: float = 3.5   # trace-dark grace before ending      (was 3.0)
@@ -96,21 +103,65 @@ class SignalPriorityConfig:
     # ---- Cycle ----
     fast_rearm: bool = True             # ACTIVE -> ARMED directly if player already at baseline
 
+    @classmethod
+    def far(cls) -> "SignalPriorityConfig":
+        """
+        Forgiving configuration for far-side serve detection.
+
+        The far player is small, the toss ball is faint, and the trophy pose is
+        unreliable from the opposite camera angle, so we lean almost entirely on
+        the toss (YOLO + motion-history fallback), confirm on a single frame, and
+        drop the score threshold slightly.
+        """
+        return cls(
+            trophy_weight=0.05,
+            toss_weight=0.95,
+            serve_score_threshold=0.50,
+            toss_conf_floor=0.10,      # ball is faint at distance
+            toss_gap_tolerance=2,      # tolerate more dropped frames
+            toss_confirm_frames=1,     # a single good frame confirms
+            use_mhi_toss=True,
+        )
+
 
 class TransitionEngine:
-    def __init__(self, fps: float, cfg: Optional[SignalPriorityConfig] = None):
+    def __init__(self, fps: float, cfg: Optional[SignalPriorityConfig] = None,
+                 serve_side: str = "near"):
+        if serve_side not in ("near", "far"):
+            raise ValueError(f"serve_side must be 'near' or 'far', got {serve_side!r}")
+        self.serve_side = serve_side
         self.fps = fps
-        self.cfg = cfg or SignalPriorityConfig()
+        if cfg is not None:
+            self.cfg = cfg
+        else:
+            self.cfg = SignalPriorityConfig.far() if serve_side == "far" else SignalPriorityConfig()
 
         # ------------------------------------------------------------------
-        # WAITING / ARMED-band geometry (unchanged — point-start ZONE gating)
+        # WAITING / ARMED-band geometry (point-start ZONE gating).
+        # The ready band is measured behind the *serving* baseline.  The far
+        # side uses a wider band and more lenient out-of-band tolerance because
+        # the far box jitters (net occlusion, small size) more than the near.
         # ------------------------------------------------------------------
-        self.READY_MIN_DIST_FT   = -0.5
-        self.READY_MAX_DIST_FT   = 3.5
-        self.READY_WAIT_TIME_SEC = 0.4
+        if serve_side == "far":
+            self.READY_MIN_DIST_FT   = -1.0
+            self.READY_MAX_DIST_FT   = 6.0
+            self.READY_WAIT_TIME_SEC = 0.4
+            self.ARMED_BAND_WINDOW_SEC     = 2.0
+            self.ARMED_OUT_RATIO_THRESHOLD = 0.45   # tolerate more jitter than near (0.25)
+            self.READY_MISS_GRACE_FRAMES   = 10     # missed far detections before timer resets
+        else:
+            self.READY_MIN_DIST_FT   = -0.5
+            self.READY_MAX_DIST_FT   = 3.5
+            self.READY_WAIT_TIME_SEC = 0.4
+            self.ARMED_BAND_WINDOW_SEC     = 2.0
+            self.ARMED_OUT_RATIO_THRESHOLD = 0.25
+            self.READY_MISS_GRACE_FRAMES   = 0      # near box is reliable every frame
 
-        self.ARMED_BAND_WINDOW_SEC     = 2.0
-        self.ARMED_OUT_RATIO_THRESHOLD = 0.25
+        # Baseline-behind sign convention used by the ready-band helpers.
+        self._serve_baseline_ft = 0.0 if serve_side == "near" else Config.COURT_LENGTH_FT
+
+        # Missed-detection grace counter for the ready hold timer (far side).
+        self._ready_miss_frames = 0
 
         # ------------------------------------------------------------------
         # ACTIVE — ball-trace tracker (sole point-end authority)
@@ -195,31 +246,60 @@ class TransitionEngine:
         return current_state
 
     # ==================================================================
+    # Ready-band helpers (serve-side aware)
+    # ==================================================================
+    def _ready_behind_ft(self, world) -> float:
+        """Signed distance (ft) the serving player stands *behind* their baseline.
+
+        Positive = behind the court (the normal ready position).  Measured from
+        the near baseline (y=0) for near serves and the far baseline (y=78) for
+        far serves.
+        """
+        _, wy = world
+        if self.serve_side == "near":
+            return -wy                                   # behind near baseline → wy < 0
+        return wy - self._serve_baseline_ft              # behind far baseline → wy > 78
+
+    def _in_ready_band(self, world) -> bool:
+        """True if the serving player's feet lie in the ready band behind baseline."""
+        if world is None:
+            return False
+        b = self._ready_behind_ft(world)
+        if self.serve_side == "near" and not (world[1] < 0):
+            return False                                 # preserve exact near-side gate
+        return self.READY_MIN_DIST_FT <= b <= self.READY_MAX_DIST_FT
+
+    # ==================================================================
     # WAITING -> ARMED   (player settles into the ready band)
     # ==================================================================
     def _check_waiting(self, history: deque) -> str:
         frame = history[-1]
         now   = frame.timestamp
+        world = frame.serve_player_world
 
-        if frame.near_player_world is None:
-            self.near_ready_start_time = None
+        # Missed-detection grace (far side): a dropped box doesn't immediately
+        # reset the hold timer — the player rarely teleports out of the band.
+        if world is None:
+            self._ready_miss_frames += 1
+            if self._ready_miss_frames > self.READY_MISS_GRACE_FRAMES:
+                self.near_ready_start_time = None
+                self._ready_miss_frames    = 0
             return "WAITING"
 
-        _, wy   = frame.near_player_world
-        dist_ft = abs(wy)
-        in_zone = wy < 0 and self.READY_MIN_DIST_FT <= dist_ft <= self.READY_MAX_DIST_FT
-
-        if in_zone:
+        if self._in_ready_band(world):
+            self._ready_miss_frames = 0
             if self.near_ready_start_time is None:
                 self.near_ready_start_time = now
             elapsed = now - self.near_ready_start_time
             if elapsed > self.READY_WAIT_TIME_SEC:
-                print(f"[TRANSITION] WAITING -> ARMED. "
+                print(f"[TRANSITION] WAITING -> ARMED ({self.serve_side}). "
                       f"Player held ready for {elapsed:.1f}s.")
                 self.near_ready_start_time = None
                 return "ARMED"
         else:
+            # Player detected but out of zone — genuine, reset immediately.
             self.near_ready_start_time = None
+            self._ready_miss_frames    = 0
 
         return "WAITING"
 
@@ -230,11 +310,7 @@ class TransitionEngine:
         frame = history[-1]
         now   = frame.timestamp
 
-        in_band = False
-        if frame.near_player_world is not None:
-            _, wy   = frame.near_player_world
-            dist_ft = abs(wy)
-            in_band = wy < 0 and self.READY_MIN_DIST_FT <= dist_ft <= self.READY_MAX_DIST_FT
+        in_band = self._in_ready_band(frame.serve_player_world)
 
         self.armed_band_history.append((now, in_band))
         while (self.armed_band_history and
@@ -258,10 +334,10 @@ class TransitionEngine:
                     self._reset_armed_state()
                     return "WAITING"
 
-        if not in_band or frame.near_player_box is None:
+        if not in_band or frame.serve_player_box is None:
             return "ARMED"
 
-        nx1, ny1, nx2, ny2 = frame.near_player_box
+        nx1, ny1, nx2, ny2 = frame.serve_player_box
 
         # --- Trophy pose (Tier-1 confirmer, low weight) ---
         trophy_score = getattr(frame, "trophy_score", 0.0) or 0.0
@@ -269,7 +345,14 @@ class TransitionEngine:
             self._trophy_scores.append((trophy_score, now))
 
         # --- Ball toss (Tier-1 anchor, high weight) ---
+        # Far side blends in a motion-history fallback: when YOLO misses the
+        # faint ball, sustained head-region motion still contributes a partial
+        # toss score (bounded so MHI can never fire a serve on its own).
         toss_score = self._update_toss_detection(frame, ny1, now)
+        if self.cfg.use_mhi_toss:
+            mhi = getattr(frame, "mhi_toss_score", 0.0) or 0.0
+            if mhi >= self.cfg.mhi_threshold:
+                toss_score = max(toss_score, self.cfg.mhi_max_contribution * mhi)
         if toss_score > 0:
             self._toss_scores.append((toss_score, now))
 
@@ -297,7 +380,7 @@ class TransitionEngine:
 
             toss_h_str = (f"{self.toss_min_y_px:.1f}px (above {ny1})"
                           if self.toss_min_y_px is not None else "N/A")
-            print(f"[TRANSITION] ARMED -> ACTIVE. "
+            print(f"[TRANSITION] ARMED -> ACTIVE ({self.serve_side}). "
                   f"Serve detected! Score: {serve_score:.2f}  "
                   f"(trophy {max_trophy:.2f}*{self.cfg.trophy_weight} + "
                   f"toss {max_toss:.2f}*{self.cfg.toss_weight})  "
@@ -462,7 +545,7 @@ class TransitionEngine:
         print(f"\n[TRANSITION] ACTIVE -> WAITING (trace {status.state}; {vel_note}). "
               f"Lasted {elapsed:.1f}s. Rewind to t={death_t:.2f}s.")
 
-        next_world = frame.near_player_world
+        next_world = frame.serve_player_world
         self._reset_active_state()
 
         if self.cfg.fast_rearm:
@@ -516,23 +599,21 @@ class TransitionEngine:
     # ==================================================================
     # Helpers — reset / init
     # ==================================================================
-    def _post_active_next_state(self, near_pos, default_state: str) -> str:
+    def _post_active_next_state(self, serve_pos, default_state: str) -> str:
         """
-        On ACTIVE -> WAITING, bypass WAITING if the player is already inside the
-        ready band — go straight to ARMED for the next point. Cuts dead time
-        between consecutive serves from the same end.
+        On ACTIVE -> WAITING, bypass WAITING if the serving player is already
+        inside the ready band — go straight to ARMED for the next point. Cuts
+        dead time between consecutive serves from the same end.
         """
-        if near_pos is not None:
-            _, wy   = near_pos
-            dist_ft = abs(wy)
-            if wy < 0 and self.READY_MIN_DIST_FT <= dist_ft <= self.READY_MAX_DIST_FT:
-                print("[BYPASS] Player already at baseline. Jumping to ARMED.")
-                self._reset_armed_state()
-                return "ARMED"
+        if serve_pos is not None and self._in_ready_band(serve_pos):
+            print("[BYPASS] Player already at baseline. Jumping to ARMED.")
+            self._reset_armed_state()
+            return "ARMED"
         return default_state
 
     def _reset_armed_state(self) -> None:
         self.armed_band_history.clear()
+        self._ready_miss_frames            = 0
         self.toss_consecutive_frames       = 0
         self.toss_gap_frames               = 0
         self.toss_ball_above_head_detected = False
