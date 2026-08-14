@@ -31,3 +31,6 @@ mobile/build/
 
 # Third-party clone (github.com/yastrebksv/TrackNet) — re-clonable.
 spikes/tracknet_eval/repo/
+
+# Built installers, kept locally for the current release.
+desktop/releases/
