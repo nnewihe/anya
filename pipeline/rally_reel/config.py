@@ -191,12 +191,35 @@ class ReelConfig:
     # expressed directly by which rule owns which moment.  ball_quiet_mode,
     # ball_quiet_s and the near_* windows apply to "legacy" only.
 
-    walk_ball_veto_s: float = 1.0
+    walk_ball_veto_s: float = 4.0
     # "walk-ball" rule A.  How long the ball must have been unseen before an
-    # active walk counts as the end of the point.  This is a VETO window, not a
-    # quiet requirement: it is short because walking is already the evidence,
-    # and the ball is only here to catch the case where the player is walking
-    # while the rally demonstrably continues.
+    # active walk counts as the end of the point.
+    #
+    # This started at 1.0 s on the theory that walking is already the evidence
+    # and the ball only has to catch a rally that demonstrably continues.  That
+    # theory does not survive the detector's actual recall.  On Data/75 a ball
+    # is found on 12.1% of the frames that sample for one, and the gap between
+    # consecutive in-rally detections is p90 1.0 s, p95 2.1 s:
+    #
+    #   in-rally gap >= 1.0s   299 occurrences, in 95 of 114 rallies
+    #                >= 2.5s   123               in 62
+    #                >= 5.0s    17               in 14
+    #
+    # At 1.0 s the veto asks "was the ball seen in the last second" and gets a
+    # false "no" inside 83% of rallies — a player walking into a backhand while
+    # the tracker blinks ends the point with the ball still in play.  The ball
+    # was present; we just did not see it.
+    #
+    # At 4.0 s the veto sits just under no_walk_quiet_s (5.0), so a corroborated
+    # walk can still end a point a beat before the no-walk rule would — walking
+    # keeps a real say in the trigger rather than becoming pure stamping — while
+    # staying above the bulk of the dropout distribution.  The two rules
+    # otherwise differ in where the end is STAMPED: at the walk onset where
+    # walking corroborates (tight and well timed), at last_ball +
+    # no_walk_stamp_s where it does not.
+    #
+    # Raise toward no_walk_quiet_s to weight safety over tightness; lower only
+    # for a clip with better ball recall than this one.
 
     no_walk_quiet_s: float = 5.0
     # "walk-ball" rule B.  With no walking detected, this much ball silence ends
