@@ -372,7 +372,14 @@ def init_court(video_path: str, target_idx: int = 300, analysis_size: tuple = No
     state = {"img": img, "clicked_pts": [], "done": False, "win": win,
              "num_points": num_points, "labels": COURT_CORNER_TAGS}
 
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    # WINDOW_AUTOSIZE, not WINDOW_NORMAL: a resizable window hits a real
+    # OpenCV bug (opencv/opencv#23870) where the mouse callback only reports
+    # correct coordinates in the top-left quadrant once the window has been
+    # resized — which Windows triggers far more readily than macOS (DPI
+    # scaling, auto-fit-to-screen), making clicks silently land nowhere.
+    # AUTOSIZE locks the window to the image's native size (960x540 here,
+    # small enough to always fit) so it never resizes and never hits it.
+    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
     cv2.imshow(win, state["img"])
     cv2.setMouseCallback(win, select_points, state)
 
@@ -471,7 +478,7 @@ def init_far_player_roi(
             s["done"] = True
         cv2.imshow(s["win"], s["img"])
 
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)  # see init_court for why not WINDOW_NORMAL
     cv2.imshow(win, state["img"])
     cv2.setMouseCallback(win, _cb, state)
 
