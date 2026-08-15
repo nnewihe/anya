@@ -358,14 +358,14 @@ def init_court(video_path: str, target_idx: int = 300, analysis_size: tuple = No
             print(f"[COURT] Cache corrupt ({e}), re-selecting.")
 
     num_points = len(COURT_CORNER_ORDER)
-    win = "Court calibration — click corners IN ORDER: bottom-left, bottom-right, top-right, top-left  (r=reset, q=quit)"
+    win = "Court calibration click corners IN ORDER: bottom-left, bottom-right, top-right, top-left  (r=reset, q=quit)"
 
     base = get_reference_frame(video_path, target_idx=target_idx)
     if analysis_size is not None:
         base = cv2.resize(base, analysis_size, interpolation=cv2.INTER_AREA)
     img = base.copy()
 
-    print("[COURT] One-time court calibration — click these 4 points in order:")
+    print("[COURT] One-time court calibration click these 4 points in order:")
     for i, label in enumerate(COURT_CORNER_ORDER, start=1):
         print(f"[COURT]   {i}. {label}")
 

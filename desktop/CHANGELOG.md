@@ -8,6 +8,13 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.1.0-beta.9
+
+- **Court setup works properly on Windows.** The one-time "click the four
+  corners" step showed a garbled title bar and, on some machines, stopped
+  before the picture appeared at all. Both are fixed. Nothing changes on a
+  Mac.
+
 ## 0.1.0-beta.8
 
 - **Point endings are a bit more patient.** Following up on beta.7's fix,

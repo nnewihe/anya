@@ -5,7 +5,15 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.8"
+APP_VERSION = "0.1.0-beta.9"
+# beta.9 — strips the em dashes out of the court-calibration window title and
+# its console prompt.  Windows gives an OpenCV window title an ANSI code page
+# (cp1252 here), not UTF-8, so the em dash arrived as mojibake in the title
+# bar; the same character in the print() can raise UnicodeEncodeError on a
+# cp1252 stdout, which on Windows kills calibration before the window is even
+# shown.  Neither is reachable on macOS, where both surfaces are UTF-8.  This
+# is the second Windows-only court-calibration fix in a row — see beta.8's
+# WINDOW_AUTOSIZE note in pipeline/utilities.py for the first.
 # beta.8 — widens the walk-ball veto (see beta.7) from 4.0s to 5.0s, matching
 # no_walk_quiet_s. Measured on Data/75: 4.0 vs 5.0 differed on only 16 of 180
 # serve starts, and on every one of those 16 the wider window was the correct
