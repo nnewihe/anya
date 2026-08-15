@@ -1,0 +1,39 @@
+# constraints-windows.txt — pip constraints for the Windows CI build.
+#
+# requirements.txt uses floors (`ultralytics>=8.0`), which is right for a dev
+# machine and wrong for a release build: a CI runner resolves the newest of
+# everything, so the Windows installer shipped to testers is built against a
+# completely different stack from the macOS build that was actually validated.
+# The first Windows build proved the point — it resolved ultralytics 8.4.118
+# against a Mac running 8.4.36, and died at startup with
+# "No module named 'matplotlib'" because the newer release imports it eagerly.
+#
+# These are the versions the macOS build is validated against. Pinning them
+# here (and nowhere else) keeps the two platforms building the same software
+# without changing what a developer gets from `pip install -r requirements.txt`.
+#
+# Used only by .github/workflows/build-windows.yml:
+#     pip install -c constraints-windows.txt -r requirements.txt
+#
+# TO UPDATE: bump the macOS side first, confirm a good build and a real reel,
+# then copy the versions here. Keeping this file *ahead* of macOS defeats its
+# purpose.
+#
+# Two of these matter more than the rest:
+#   opencv-python  — 5.x is a major release; the pipeline uses the cv2 API
+#                    heavily and has only ever run against 4.x.
+#   scikit-learn   — walking/outputs/walking_model.joblib is a pickled
+#                    estimator. Unpickling across a minor version is exactly
+#                    where sklearn warns, and sometimes fails outright.
+
+ultralytics==8.4.36
+opencv-python==4.13.0.92
+numpy==2.1.3
+torch==2.11.0
+torchvision==0.26.0
+scipy==1.17.1
+scikit-learn==1.8.0
+joblib==1.5.3
+filterpy==1.4.5
+matplotlib==3.10.8
+PyQt6==6.11.0

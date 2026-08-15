@@ -6,10 +6,13 @@
 # pipeline resolves its weights relative to its own __file__, which under
 # PyInstaller lands under sys._MEIPASS with the same layout.
 #
-# Build:
-#   macOS  : pyinstaller rally_app.spec   -> dist/Anya Tennis.app
-#   Windows: pyinstaller rally_app.spec   -> dist/AnyaTennis/  (one folder)
+# Build (PyInstaller cannot cross-compile — each target builds on its own OS):
+#   macOS  : ./build_macos.sh             -> dist/Anya Tennis.app  (signed)
+#   Windows: .\build_windows.ps1          -> dist/AnyaTennis/ + the setup .exe
 #   Linux  : pyinstaller rally_app.spec   -> dist/AnyaTennis/  (one folder)
+#
+# One folder, never --onefile: the payload is ~2 GB, and a one-file build
+# re-extracts all of it to a temp directory on every single launch.
 #
 # ffmpeg IS bundled on macOS (see fetch_ffmpeg.sh): a static arm64 build lands
 # in Contents/Frameworks alongside everything else, and preflight.repair_path()
@@ -53,14 +56,97 @@ import platform
 _ARCH = platform.machine()
 _FFMPEG = Path('vendor') / _ARCH / 'ffmpeg'
 _binaries = []
+# ffmpeg is GPL, so its licence has to accompany the binary. Taken from
+# vendor/<arch>/, which fetch_ffmpeg.sh populates with the pair matching THIS
+# build — the arm64 and Intel binaries come from different upstreams under
+# GPLv2 and GPLv3 respectively, so shipping one fixed licence would be wrong
+# for one of the two DMGs. Also copied to the DMG root (make_dmg.sh) where a
+# tester can see it; this copy is so it still travels with a bare .app.
+#
+# Conditional for the same reason _binaries is: these files only exist once
+# fetch_ffmpeg.sh has run, and it only runs for macOS builds. Listing them
+# unconditionally fails the Windows build outright ("Unable to find
+# vendor\AMD64\FFMPEG-LICENSE.txt") — and there is nothing to license there,
+# because that build bundles no ffmpeg and the tester installs their own.
+_license_datas = []
 if sys.platform == 'darwin' and _FFMPEG.is_file():
     _binaries.append((str(_FFMPEG), '.'))
+    _license_datas = [
+        (f'vendor/{_ARCH}/FFMPEG-LICENSE.txt', 'licenses'),
+        (f'vendor/{_ARCH}/COPYING.txt', 'licenses'),
+    ]
 elif sys.platform == 'darwin':
     raise SystemExit(
         f"{_FFMPEG} is missing — run ./fetch_ffmpeg.sh {_ARCH} first.\n"
         "Building without it silently ships an app that dies at the final "
         "render on any machine without Homebrew ffmpeg."
     )
+
+_WINDOWS = sys.platform == 'win32'
+
+# UPX compresses each binary and unpacks it in memory at load. That is a bad
+# trade here and an outright hazard on Windows: torch ships DLLs (and PyQt6
+# ships Qt6*.dll) that UPX is known to corrupt, producing a build that links
+# fine and then dies with a bare "DLL load failed while importing _C" the
+# first time a stage touches torch. The bundle is ~2 GB of mostly-already-
+# compressed weights, so UPX buys little size back even when it works.
+# Left enabled on macOS/Linux, where the existing signed builds use it.
+_UPX = not _WINDOWS
+
+# The .exe's Details tab (right-click -> Properties). Windows shows "Unknown"
+# for every field without this resource, and an unsigned installer already
+# gives SmartScreen enough to complain about — a blank publisher makes a
+# tester's "is this safe?" question harder to answer than it needs to be.
+# Driven off APP_VERSION so it cannot drift from the header the app renders.
+def _version_resource():
+    """Build a VSVersionInfo from APP_VERSION, or None if it can't be parsed."""
+    # The binary FILEVERSION field is four integers and nothing else — it
+    # cannot carry "-beta.3". Parse the numeric prefix for that field and keep
+    # the full string, suffix and all, in the human-readable StringStruct.
+    numeric = APP_VERSION.split('-')[0].split('.')
+    try:
+        parts = [int(p) for p in numeric][:3]
+    except ValueError:
+        return None
+    while len(parts) < 4:
+        parts.append(0)
+    filevers = tuple(parts[:4])
+
+    # Imported here rather than at module scope: this module pulls in pefile
+    # and pywin32, which PyInstaller only installs on Windows, so a top-level
+    # import would break the macOS build outright.
+    try:
+        from PyInstaller.utils.win32.versioninfo import (
+            FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+            VarFileInfo, VarStruct, VSVersionInfo,
+        )
+    except ImportError as ex:
+        # Degrade instead of failing. The version resource only populates the
+        # .exe's Properties -> Details tab; losing it costs a bit of polish,
+        # and aborting a ~25-minute build over cosmetics would be a bad trade.
+        print(f'WARNING: no Windows version resource ({ex}) — building without it.')
+        return None
+
+    return VSVersionInfo(
+        ffi=FixedFileInfo(filevers=filevers, prodvers=filevers),
+        kids=[
+            StringFileInfo([StringTable('040904B0', [
+                StringStruct('CompanyName', 'Anya Tennis'),
+                StringStruct('FileDescription', 'Anya Tennis'),
+                StringStruct('FileVersion', APP_VERSION),
+                StringStruct('InternalName', 'AnyaTennis'),
+                StringStruct('OriginalFilename', 'AnyaTennis.exe'),
+                StringStruct('ProductName', 'Anya Tennis'),
+                StringStruct('ProductVersion', APP_VERSION),
+            ])]),
+            # 0x0409 = US English, 1200 = UTF-16. Must agree with the '040904B0'
+            # key above or Explorer ignores the whole block.
+            VarFileInfo([VarStruct('Translation', [0x0409, 1200])]),
+        ],
+    )
+
+
+_VERSION_RESOURCE = _version_resource() if _WINDOWS else None
 
 a = Analysis(
     ['app.py'],
@@ -91,15 +177,8 @@ a = Analysis(
         # resolved by pipeline.scoreboard_reel.render.find_font()
         ('assets/fonts/Montserrat-SemiBold.ttf', 'assets/fonts'),
         ('assets/fonts/Montserrat-Bold.ttf', 'assets/fonts'),
-        # ffmpeg is GPL, so its licence has to accompany the binary. Taken
-        # from vendor/<arch>/, which fetch_ffmpeg.sh populates with the pair
-        # matching THIS build — the arm64 and Intel binaries come from
-        # different upstreams under GPLv2 and GPLv3 respectively, so shipping
-        # one fixed licence would be wrong for one of the two DMGs. Also
-        # copied to the DMG root (make_dmg.sh) where a tester can see it;
-        # this copy is so it still travels with a bare .app.
-        (f'vendor/{_ARCH}/FFMPEG-LICENSE.txt', 'licenses'),
-        (f'vendor/{_ARCH}/COPYING.txt', 'licenses'),
+        # ffmpeg licences — macOS only; see _license_datas above.
+        *_license_datas,
     ],
     hiddenimports=[
         # ultralytics dynamic imports
@@ -146,7 +225,12 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['rthook_cv2.py'],
+    # macOS only. The hook works around a loader failure caused by the .app
+    # bundle's Contents/Frameworks -> Contents/Resources symlinks, which no
+    # one-folder Windows or Linux build has. Applying it anyway would force
+    # cv2's sys.path[0] rewrite on platforms whose import already resolves
+    # correctly — an unnecessary change to a working loader path.
+    runtime_hooks=['rthook_cv2.py'] if sys.platform == 'darwin' else [],
     excludes=[
         # NOTE torch is NOT excluded: anya_telemetry imports it to pick the
         # mps/cuda/cpu device, and ultralytics needs it for every model call.
@@ -155,7 +239,14 @@ a = Analysis(
         'torch_geometric',
         'mediapipe',
         'tensorflow',
-        'matplotlib',
+        # NOTE matplotlib is NOT excluded. It is a declared hard dependency of
+        # ultralytics (install_requires: matplotlib>=3.3.0), and excluding a
+        # declared dependency only ever worked by luck. ultralytics 8.4.x added
+        # a `semantic` task whose train.py imports matplotlib.pyplot at module
+        # scope, and models/yolo/__init__.py imports `semantic` eagerly — so
+        # from that release on, `import ultralytics` imports matplotlib
+        # unconditionally and the exclusion turns into an immediate
+        # "No module named 'matplotlib'" at app startup.
         'IPython',
         'notebook',
         'pytest',
@@ -177,8 +268,9 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=_UPX,
     console=False,          # no terminal window on Windows
+    version=_VERSION_RESOURCE,  # Windows only; None elsewhere
     disable_windowed_traceback=False,
     argv_emulation=False,
     # Pinned to the interpreter's own architecture rather than left None, so
@@ -203,12 +295,13 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=_UPX,
     # UPX rewrites a Mach-O in place. On the vendored ffmpeg that both breaks
     # the binary and invalidates the signature build_macos.sh applies to it,
     # and the failure only shows up at the very end of a render. UPX isn't
-    # normally installed on macOS so upx=True is usually a no-op — this makes
+    # normally installed on macOS so upx is usually a no-op there — this makes
     # sure a build machine that happens to have it doesn't ship a broken app.
+    # (On Windows _UPX is False outright; see its definition.)
     upx_exclude=['ffmpeg'],
     name='AnyaTennis',
 )
