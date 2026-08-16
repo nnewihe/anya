@@ -31,9 +31,45 @@ MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "outputs", "walking_model.joblib")
 
 
+def _alias_sklearn_loss():
+    """Make the bare module name ``_loss`` resolvable before unpickling.
+
+    The saved bundle is a HistGradientBoostingClassifier, and its fitted loss
+    object holds a Cython helper whose ``__module__`` is the string ``_loss``
+    rather than ``sklearn._loss._loss`` — sklearn compiles that extension
+    without the package prefix, so the pickle records the bare name. Nothing
+    on disk is wrong; ``pickle`` just ends up calling ``__import__("_loss")``.
+
+    Up to CPython 3.13 that call happened to succeed: a single-phase-init
+    extension also registered itself in ``sys.modules`` under its own internal
+    name, and ``sklearn._loss.loss`` (referenced earlier in the same pickle)
+    imports the extension, so ``_loss`` was already interned by the time the
+    unpickler asked for it. 3.14 keys extension modules by their spec name
+    only, the alias is gone, and the load dies with
+
+        ModuleNotFoundError: No module named '_loss'
+
+    from deep inside ``pickle.Unpickler.find_class`` — which reads like a
+    broken install but is purely a naming artefact. Re-training would not
+    help: a fresh dump on 3.14 records the same bare name.
+
+    Installing the alias ourselves restores the pre-3.14 behaviour without
+    depending on import order.
+    """
+    import sys
+    if "_loss" in sys.modules:
+        return
+    try:
+        import sklearn._loss._loss as sk_loss
+    except ImportError:      # let joblib raise the real error instead
+        return
+    sys.modules["_loss"] = sk_loss
+
+
 def predict_video(video, model_path=MODEL_PATH, pose_npz=None, device="mps",
                   pose_model=DEFAULT_POSE_MODEL):
     import joblib
+    _alias_sklearn_loss()
     bundle = joblib.load(model_path)
     model, names, post = bundle["model"], bundle["feature_names"], bundle["post"]
 

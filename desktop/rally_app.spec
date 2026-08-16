@@ -196,6 +196,18 @@ a = Analysis(
         'sklearn.ensemble',
         'sklearn.ensemble._hist_gradient_boosting',
         'sklearn.ensemble._hist_gradient_boosting.gradient_boosting',
+        # The pickled estimator also names sklearn._loss.loss (the fitted
+        # HalfBinomialLoss), sklearn._loss.link and sklearn.preprocessing._label
+        # (the LabelEncoder for classes_) — none of them reachable from
+        # `import sklearn.ensemble` by static analysis.  sklearn._loss._loss is
+        # the Cython extension behind walking.predict._alias_sklearn_loss; see
+        # that docstring for why the pickle asks for it under the bare name.
+        'sklearn._loss',
+        'sklearn._loss.loss',
+        'sklearn._loss.link',
+        'sklearn._loss._loss',
+        'sklearn.preprocessing',
+        'sklearn.preprocessing._label',
         # walking classifier: loaded via joblib, imported dynamically in
         # rally_reel.reel._walk_intervals so the analyzer cannot see it
         'joblib',
