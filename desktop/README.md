@@ -132,20 +132,33 @@ header records why this particular source was chosen. It is GPL, so
 `assets/FFMPEG-LICENSE.txt` and `assets/COPYING.GPLv2` ship in the bundle and
 in the DMG's `Licenses/` folder.
 
-Windows/Linux builds still expect ffmpeg on PATH; the spec skips the vendored
-Mach-O there and `preflight.ensure_ffmpeg` keeps showing the install hint.
+`fetch_ffmpeg.ps1` does the same for Windows, from a pinned gyan.dev release,
+and `build_windows.ps1` runs it. Linux builds still expect ffmpeg on PATH; the
+spec vendors nothing there and `preflight.ensure_ffmpeg` keeps showing the
+install hint.
 
-**The two architectures use different ffmpeg builds under different licences,
-and this is not tidyable.** A bundled ffmpeg must be both statically linked
-and redistributable, and no single project supplies both architectures that
+**Windows bundling is not a convenience.** Relying on the tester's own ffmpeg
+shipped beta.9, where a machine whose ffmpeg could not transcode the source
+produced no proxy — `proxy.py` returns the SOURCE path on any failure — so
+every pass decoded a 2.7K GoPro file through whatever backend OpenCV had, and
+that decode died 53 frames into a 31,860-frame video. The run reported
+success and produced an empty reel. `preflight.ensure_ffmpeg` did not catch it
+and cannot: it proves *an* ffmpeg is on PATH, not that it works on this video.
+`pipeline/utilities.assert_decode_complete` is the backstop for the general
+case; bundling is what removes the variable.
+
+**The three builds use three different ffmpeg binaries under two different
+licences, and this is not tidyable.** A bundled ffmpeg must be both statically
+linked and redistributable, and no single project supplies every platform that
 way. imageio-ffmpeg's arm64 wheel is `--enable-gpl` (fine); its **x86_64 wheel
 is also `--enable-nonfree`**, which cannot be redistributed by anyone at any
 price. eugeneware/ffmpeg-static's arm64 build is nonfree too. evermeet.cx is
-clean but x86_64-only. So arm64 comes from a PyPI wheel under **GPLv2** and
-Intel from evermeet.cx under **GPLv3**, and `assets/` carries both licence
-texts plus a per-architecture notice. `fetch_ffmpeg.sh` re-checks
-`ffmpeg -buildconf` for `--enable-nonfree` on every fetch and refuses the
-binary if it appears — do not "simplify" it to one source.
+clean but x86_64-only, and neither publishes a Windows binary at all. So arm64
+comes from a PyPI wheel under **GPLv2**, Intel macOS from evermeet.cx under
+**GPLv3**, and Windows from gyan.dev under **GPLv3**; `assets/` carries both
+licence texts plus a per-target notice. Both fetch scripts re-check
+`ffmpeg -buildconf` for `--enable-nonfree` on every fetch and refuse the
+binary if it appears — do not "simplify" them to one source.
 
 ## The Intel build
 

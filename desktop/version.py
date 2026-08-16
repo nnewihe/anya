@@ -5,7 +5,24 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.9"
+APP_VERSION = "0.1.0-beta.10"
+# beta.10 — a Windows run could analyse the first second of a match, report
+# success, and hand back an empty reel.  Two independent causes, both fixed.
+#   (1) The Windows build bundled no ffmpeg, so proxy.py fell back to the
+#       SOURCE path whenever the tester's own ffmpeg could not transcode it
+#       (proxy.py returns the source on ANY failure, by design).  Every pass
+#       then decoded a 2.7K GoPro file directly through whatever video backend
+#       OpenCV had, and that decode died ~53 frames in.  fetch_ffmpeg.ps1 now
+#       vendors a pinned gyan.dev build the way fetch_ffmpeg.sh does on macOS,
+#       and rally_app.spec hard-fails the build without it.
+#   (2) Every extraction pass is `while True: if not cap.grab(): break`, which
+#       cannot tell a dead decoder from EOF.  Pass A returned 5 samples out of
+#       an expected 2,655, the near extractor read that as "the player was
+#       never in the serve zone", and the run completed with 0 rallies.
+#       pipeline/utilities.assert_decode_complete now raises when a pass ends
+#       short of the frame it was asked to reach; ANYA_ALLOW_TRUNCATED_DECODE=1
+#       is the escape hatch.  proxy.py's fallback warnings also go to the log
+#       now — a windowed build owns no console, so its prints went nowhere.
 # beta.9 — strips the em dashes out of the court-calibration window title and
 # its console prompt.  Windows gives an OpenCV window title an ANSI code page
 # (cp1252 here), not UTF-8, so the em dash arrived as mojibake in the title
