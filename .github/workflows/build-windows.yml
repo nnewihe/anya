@@ -35,6 +35,15 @@ jobs:
           cache: 'pip'
           cache-dependency-path: desktop/requirements.txt
 
+      # First, because it takes a second and everything below it takes
+      # twenty minutes. A non-ASCII character in a .ps1 parses under pwsh 7
+      # and not under Windows PowerShell 5.1, so it can reach CI green and
+      # still break a developer's local build (or the reverse, which is how
+      # it got here). See desktop/check_ps1_ascii.py.
+      - name: Check PowerShell scripts are ASCII
+        working-directory: desktop
+        run: python check_ps1_ascii.py
+
       - name: Install Python dependencies
         working-directory: desktop
         run: |
