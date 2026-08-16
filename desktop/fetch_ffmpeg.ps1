@@ -1,11 +1,20 @@
-# fetch_ffmpeg.ps1 — put the static ffmpeg that gets bundled into the Windows
+# fetch_ffmpeg.ps1 - put the static ffmpeg that gets bundled into the Windows
 # build at desktop\vendor\<arch>\ffmpeg.exe.  The counterpart to fetch_ffmpeg.sh.
 #
 #   .\fetch_ffmpeg.ps1
 #
+# ASCII ONLY, deliberately - no em dashes, no box drawing, nothing above 0x7F.
+# Windows PowerShell 5.1 reads a .ps1 with no BOM as ANSI (cp1252), so a UTF-8
+# em dash arrives as three characters ending in a smart quote, and 5.1 then
+# reports "the string is missing the terminator" on a line that looks fine in
+# every editor. That is how the first run of this script failed in CI. pwsh 7
+# defaults to UTF-8 and would have been fine, which is exactly what makes the
+# bug intermittent and worth designing out rather than remembering.
+# desktop/check_ps1_ascii.py enforces this, and the workflow runs it first.
+#
 # Why bundle at all, when Windows testers can install their own: because
 # "their own" is a variable the app cannot see. preflight.ensure_ffmpeg only
-# proves *an* ffmpeg is on PATH — it says nothing about which build, which
+# proves *an* ffmpeg is on PATH - it says nothing about which build, which
 # version, or which encoders it has. A tester whose ffmpeg cannot transcode
 # the source produces a proxy that never gets built, and before the decode
 # guard in pipeline/utilities.py existed that failure was silent: proxy.py
@@ -19,7 +28,7 @@
 #
 # Why gyan.dev rather than the sources fetch_ffmpeg.sh uses: neither of those
 # publishes a Windows binary. gyan.dev's "essentials" build is the standard
-# redistributable Windows FFmpeg — configured --enable-gpl --enable-version3
+# redistributable Windows FFmpeg - configured --enable-gpl --enable-version3
 # (so, GPLv3) with libx264, which is what proxy.py encodes with. It is NOT
 # --enable-nonfree; that is verified below rather than assumed, because a
 # nonfree build cannot be redistributed by anyone at any price and the
@@ -29,7 +38,7 @@
 # vendor\ is gitignored: an 84 MB binary has no business in git history, and
 # this script plus the pinned SHA-256 pair make it reproducible.
 #
-# Idempotent — a no-op once the binary is in place and verifies.
+# Idempotent - a no-op once the binary is in place and verifies.
 
 [CmdletBinding()]
 param()
@@ -42,7 +51,7 @@ Set-Location -Path $PSScriptRoot
 # x86 Python on an x64 host still finds the binary it bundled.
 $arch = if ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE } else { 'AMD64' }
 if ($arch -ne 'AMD64') {
-    throw "Unsupported architecture '$arch' — only AMD64 is published by the pinned upstream. Add an ARM64 source here before building on one."
+    throw "Unsupported architecture '$arch': only AMD64 is published by the pinned upstream. Add an ARM64 source here before building on one."
 }
 
 # GitHub release assets are immutable once published, which is what makes this
@@ -63,7 +72,7 @@ function Test-Vendored {
 
 if (Test-Vendored) {
     Write-Host "==> $dest already present and verified (sha256 ok)" -ForegroundColor Green
-    exit 0
+    return
 }
 
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
@@ -94,7 +103,7 @@ try {
     Expand-Archive -Path $archive -DestinationPath $unpacked -Force
     $extracted = Join-Path $unpacked ($member -replace '/', '\')
     if (-not (Test-Path $extracted)) {
-        throw "$member is not in the archive — upstream changed its layout."
+        throw "$member is not in the archive: upstream changed its layout."
     }
     Copy-Item -Path $extracted -Destination $dest -Force
 
@@ -113,7 +122,7 @@ try {
     }
     if ($buildconf -notmatch '--enable-libx264') {
         Remove-Item $dest -Force -ErrorAction SilentlyContinue
-        throw "$dest has no libx264 — proxy.py encodes with it, so this build is unusable."
+        throw "$dest has no libx264, which proxy.py encodes with, so this build is unusable."
     }
     Write-Host "==> Licence check: no --enable-nonfree; libx264 present"
 
