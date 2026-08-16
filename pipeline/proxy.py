@@ -35,6 +35,7 @@ SOURCE path unchanged — a slow correct run beats a fast wrong one.
 """
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -47,6 +48,19 @@ try:                                        # package import (python -m pipeline
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import probe_video
     from subproc import run as _run
+
+# Every degradation below is recoverable, so none of them stops the run — but
+# a windowed PyInstaller build owns no console, `sys.stdout` goes nowhere, and
+# a `print` here is therefore invisible on exactly the machines that need it.
+# The desktop app configures the root logger (desktop/applog.py) to a rotating
+# file, so warnings routed here reach a tester's app.log; running from a
+# terminal they still print as before.
+_log = logging.getLogger("anya_tennis.proxy")
+
+
+def _warn(msg: str) -> None:
+    print(msg)
+    _log.warning(msg)
 
 PROXY_SUFFIX      = "_proxy540.mp4"
 FAR_BAND_SUFFIX   = "_farband.mp4"
@@ -82,7 +96,9 @@ def _transcode(video_path: str, out: str, vf: str, want: dict,
             pass
 
     if shutil.which("ffmpeg") is None:
-        print(f"[{label}] WARN: ffmpeg not found — decoding the source directly.")
+        _warn(f"[{label}] WARN: ffmpeg not found — decoding the source "
+              f"directly. Packaged builds bundle their own, so this means a "
+              f"source run on a machine without one.")
         return video_path
 
     tmp = out + ".part.mp4"
@@ -95,7 +111,15 @@ def _transcode(video_path: str, out: str, vf: str, want: dict,
     try:
         _run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as ex:
-        print(f"[{label}] WARN: proxy transcode failed ({ex}) — using source.")
+        # `capture_output=True` swallows ffmpeg's stderr into the exception,
+        # so without this the reason is lost and all a tester's log shows is
+        # that the run got slower and — on a source the fallback decoder
+        # cannot read — wrong.
+        err = ex.stderr or b""
+        if isinstance(err, (bytes, bytearray)):
+            err = err.decode("utf-8", "replace")
+        _warn(f"[{label}] WARN: proxy transcode failed ({ex}) — using source. "
+              f"ffmpeg said: {err.strip()[-2000:] or '(nothing)'}")
         if os.path.isfile(tmp):
             os.remove(tmp)
         return video_path
@@ -105,7 +129,7 @@ def _transcode(video_path: str, out: str, vf: str, want: dict,
     except Exception:
         proxy_n = -1
     if proxy_n != src_n:
-        print(f"[{label}] WARN: proxy has {proxy_n} frames vs source {src_n} "
+        _warn(f"[{label}] WARN: proxy has {proxy_n} frames vs source {src_n} "
               "— discarding it and using the source.")
         os.remove(tmp)
         return video_path

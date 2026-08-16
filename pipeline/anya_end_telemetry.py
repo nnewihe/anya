@@ -87,13 +87,15 @@ _DEVICE = ('mps' if torch.backends.mps.is_available()
 try:                                        # package import (python -m pipeline.x)
     from .utilities import (Config, init_court, create_auto_exclusion_zones,
                             load_cached_exclusion_zones,
-                            save_cached_exclusion_zones, probe_video)
+                            save_cached_exclusion_zones, probe_video,
+                            assert_decode_complete)
     from .proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from .proxy import ensure_proxy as _ensure_proxy
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import (Config, init_court, create_auto_exclusion_zones,
                            load_cached_exclusion_zones,
-                           save_cached_exclusion_zones, probe_video)
+                           save_cached_exclusion_zones, probe_video,
+                           assert_decode_complete)
     from proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from proxy import ensure_proxy as _ensure_proxy
 
@@ -338,6 +340,12 @@ class EndTelemetryExtractor:
                 yield idx, frame
         finally:
             cap.release()
+        # After the loop, not in `finally`: a consumer that stops early (or
+        # raises) closes the generator here, and its own reason for stopping
+        # is the one worth reporting. Reaching this line means the decode
+        # itself ended, so a short read is the decoder's.
+        assert_decode_complete("END-TELEM", src, idx,
+                               self.total_frames - 1, self.fps)
 
     def _prefetched(self, src: str, strides: Optional[Tuple[int, ...]] = None,
                     depth: int = 4):

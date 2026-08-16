@@ -618,6 +618,66 @@ def probe_video(video_path: str) -> dict:
     return info
 
 
+class TruncatedDecodeError(RuntimeError):
+    """A decode loop ended before the frame it was asked to reach.
+
+    Raised rather than returning short because every extraction pass in this
+    package is written as ``while True: if not cap.grab(): break``, and a
+    mid-file decode failure is byte-for-byte indistinguishable from a clean
+    EOF.  Without this check the pass finishes "successfully" on whatever it
+    managed to read, every stage downstream runs on that fragment, and the
+    run produces a plausible-looking empty result.
+    """
+
+
+# A container's frame count comes from stream metadata and can disagree with
+# the decoder by a frame or two (and by more on VFR sources), so an exact
+# match is too strict to enforce.  These bound the disagreement we accept:
+# generous enough that ordinary drift passes, tight enough that real
+# truncation cannot hide — the failure this exists to catch decoded 53 of
+# 31,860 frames, short by 99.8%.
+DECODE_SLACK_FRAC = 0.005
+DECODE_SLACK_MIN  = 2
+
+# Escape hatch for a tester sitting on a file we mis-measure. Deliberately an
+# env var rather than a config knob: it has to be *chosen*, and the warning it
+# prints keeps the degradation on the record instead of silent again.
+_ALLOW_TRUNCATED = "ANYA_ALLOW_TRUNCATED_DECODE"
+
+
+def assert_decode_complete(label: str, video_path: str, reached_idx: int,
+                           expected_idx: int, fps: float = 0.0) -> None:
+    """Raise unless a decode loop reached (near enough) `expected_idx`.
+
+    Call it after the loop, with the last index successfully grabbed and the
+    last index the pass needed — `total_frames - 1` for a whole-video walk, or
+    the last frame of the last window for a window-bounded one.
+    """
+    if expected_idx < 0:
+        return
+    short = expected_idx - reached_idx
+    if short <= max(DECODE_SLACK_MIN, int(expected_idx * DECODE_SLACK_FRAC)):
+        return
+
+    got, want = reached_idx + 1, expected_idx + 1
+    detail = (f"{got} of {want} frames" if not fps else
+              f"{got} of {want} frames ({got / fps:.1f}s of {want / fps:.1f}s)")
+    msg = (
+        f"[{label}] decoding {os.path.basename(video_path)} stopped early: "
+        f"{detail}. The file's metadata says it is longer than what the "
+        f"decoder would return, so the rest of the video was never seen and "
+        f"any result from this run covers only the opening fragment. This is "
+        f"usually a missing or wrong video backend (on Windows, OpenCV "
+        f"falling back to MSMF when its FFmpeg DLL is absent) or a codec the "
+        f"decoder cannot read past the first GOP. "
+        f"Set {_ALLOW_TRUNCATED}=1 to continue on the partial decode anyway."
+    )
+    if os.environ.get(_ALLOW_TRUNCATED) == "1":
+        print(f"[WARN] {msg}")
+        return
+    raise TruncatedDecodeError(msg)
+
+
 def resize_for_analysis(frame):
     return cv2.resize(frame, (Config.ANALYSIS_WIDTH, Config.ANALYSIS_HEIGHT),
                       interpolation=cv2.INTER_AREA)

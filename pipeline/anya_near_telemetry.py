@@ -72,13 +72,15 @@ _DEVICE = ('mps' if torch.backends.mps.is_available()
 try:                                        # package import (python -m pipeline.x)
     from .utilities import (Config, init_court, create_auto_exclusion_zones,
                             load_cached_exclusion_zones,
-                            save_cached_exclusion_zones, probe_video)
+                            save_cached_exclusion_zones, probe_video,
+                            assert_decode_complete)
     from .proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from .proxy import ensure_proxy as _ensure_proxy
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import (Config, init_court, create_auto_exclusion_zones,
                            load_cached_exclusion_zones,
-                           save_cached_exclusion_zones, probe_video)
+                           save_cached_exclusion_zones, probe_video,
+                           assert_decode_complete)
     from proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from proxy import ensure_proxy as _ensure_proxy
 
@@ -384,6 +386,12 @@ class NearTelemetryExtractor:
         finally:
             cap.release()
 
+        # Pass A defines the coverage of everything after it: ready windows
+        # come from these samples, and a short decode here reads as "the
+        # player was never in the serve zone" rather than as a failure.
+        assert_decode_complete("NEAR-TELEM pass A", src, idx,
+                               self.total_frames - 1, self.fps)
+
         self.timings["pass_player_s"] = time.perf_counter() - t0
         n_found = sum(1 for s in samples.values() if s["box"])
         print(f"[NEAR-TELEM] pass A: {len(samples)} player samples "
@@ -492,6 +500,12 @@ class NearTelemetryExtractor:
             flush()
         finally:
             cap.release()
+
+        # Window-bounded, so the bar is the last frame any window wanted
+        # rather than the end of the file.
+        assert_decode_complete(
+            "NEAR-TELEM pass B", src, idx,
+            min(self.total_frames - 1, int(windows[-1][1] * self.fps)), self.fps)
 
         self.timings["pass_ball_s"] = time.perf_counter() - t0
         print(f"[NEAR-TELEM] pass B: {n_infer} toss-ROI ball inferences over "
