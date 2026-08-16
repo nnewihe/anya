@@ -56,7 +56,7 @@ from ultralytics import YOLO
 
 from .utilities import (Config, _is_in_exclusion_zone, init_court,
                         create_auto_exclusion_zones, load_cached_exclusion_zones,
-                        save_cached_exclusion_zones, probe_video)
+                        save_cached_exclusion_zones, probe_video, open_video)
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -115,7 +115,7 @@ def _define_active_zone(video_path: str, cache_path: str) -> np.ndarray:
         except Exception as e:
             print(f"[TELEM] WARN: bad active-zone cache ({e}), re-selecting")
 
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "MATCH-TELEM")
     ret, frame = cap.read()
     cap.release()
     if not ret:
@@ -510,7 +510,7 @@ class MatchTelemetryExtractor:
         out_path = out_path or telemetry_path_for(self.video_path)
         tmp_path = out_path + ".part"
 
-        cap = cv2.VideoCapture(self.video_path)
+        cap = open_video(self.video_path, "MATCH-TELEM")
         if start_frame > 0:
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         n_written = 0

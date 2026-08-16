@@ -73,14 +73,14 @@ try:                                        # package import (python -m pipeline
     from .utilities import (Config, init_court, create_auto_exclusion_zones,
                             load_cached_exclusion_zones,
                             save_cached_exclusion_zones, probe_video,
-                            assert_decode_complete)
+                            assert_decode_complete, open_video)
     from .proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from .proxy import ensure_proxy as _ensure_proxy
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import (Config, init_court, create_auto_exclusion_zones,
                            load_cached_exclusion_zones,
                            save_cached_exclusion_zones, probe_video,
-                           assert_decode_complete)
+                           assert_decode_complete, open_video)
     from proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from proxy import ensure_proxy as _ensure_proxy
 
@@ -345,7 +345,7 @@ class NearTelemetryExtractor:
         """
         cfg = self.cfg
         t0 = time.perf_counter()
-        cap = cv2.VideoCapture(src)
+        cap = open_video(src, "NEAR-TELEM")
         samples: Dict[int, Dict] = {}
         pend_idx: List[int] = []
         pend_img: List[np.ndarray] = []
@@ -431,7 +431,7 @@ class NearTelemetryExtractor:
             self.timings["pass_ball_s"] = 0.0
             return {}
         t0 = time.perf_counter()
-        cap = cv2.VideoCapture(src)
+        cap = open_video(src, "NEAR-TELEM")
         out: Dict[int, List] = {}
         pend: List[Tuple[int, Tuple[int, int, int, int]]] = []
         pend_img: List[np.ndarray] = []

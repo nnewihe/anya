@@ -34,6 +34,14 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from walking.court import ANALYSIS_SIZE
 
+# Below the sys.path insert above, which is what makes the repo root — and so
+# `pipeline` — importable when this file is run as a script. The one thing
+# walking/ borrows from pipeline/: both packages decode the same videos and
+# must ask for the same backend, and duplicating the fallback logic here would
+# let the two drift. videoio is dependency-free (cv2 + stdlib), so it costs
+# nothing at import time.
+from pipeline.videoio import open_video
+
 N_KP = 17
 MAX_PERSONS = 8
 POSE_CONF = 0.20
@@ -133,7 +141,7 @@ def extract(video_path, model_path=DEFAULT_POSE_MODEL, device="mps",
     from ultralytics import YOLO
     model = YOLO(model_path)
 
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "WALK-POSE")
     fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if limit:
@@ -201,7 +209,7 @@ def rescue(video_path, model_path=DEFAULT_POSE_MODEL, device="mps",
     model = YOLO(model_path)
     sx = ANALYSIS_SIZE[0] / work_size[0]
     sy = ANALYSIS_SIZE[1] / work_size[1]
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "WALK-POSE")
     todo_set = set(int(t) for t in todo)
     found, t0 = 0, time.time()
     for f in range(len(cf)):

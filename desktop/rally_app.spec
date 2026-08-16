@@ -253,12 +253,13 @@ a = Analysis(
     ],
     hookspath=[],
     hooksconfig={},
-    # macOS only. The hook works around a loader failure caused by the .app
-    # bundle's Contents/Frameworks -> Contents/Resources symlinks, which no
-    # one-folder Windows or Linux build has. Applying it anyway would force
-    # cv2's sys.path[0] rewrite on platforms whose import already resolves
-    # correctly — an unnecessary change to a working loader path.
-    runtime_hooks=['rthook_cv2.py'] if sys.platform == 'darwin' else [],
+    # macOS AND Windows, for two unrelated reasons the hook handles separately
+    # (see its docstring): the .app's Frameworks -> Resources symlinks break
+    # cv2's bootstrap re-import, and a Windows bundle has to be told where the
+    # FFmpeg videoio DLL ended up or OpenCV silently decodes with Media
+    # Foundation instead. Not applied on Linux, which needs neither.
+    runtime_hooks=(['rthook_cv2.py']
+                   if sys.platform in ('darwin', 'win32') else []),
     excludes=[
         # NOTE torch is NOT excluded: anya_telemetry imports it to pick the
         # mps/cuda/cpu device, and ultralytics needs it for every model call.

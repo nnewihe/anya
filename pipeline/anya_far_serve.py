@@ -48,10 +48,12 @@ from collections import defaultdict, deque
 from typing import List, Dict, Any, Optional, Tuple
 
 try:                                        # package import (python -m pipeline.x)
+    from .videoio import open_video
     from .extract_far_pose import (far_pose_path_for, load_far_pose,
                                    L_SHOULDER, R_SHOULDER, L_WRIST, R_WRIST,
                                    L_HIP, R_HIP)
 except ImportError:                         # script import (python pipeline/x.py)
+    from videoio import open_video
     from extract_far_pose import (far_pose_path_for, load_far_pose,
                                   L_SHOULDER, R_SHOULDER, L_WRIST, R_WRIST,
                                   L_HIP, R_HIP)
@@ -229,7 +231,7 @@ def _probe_source_size(meta) -> Optional[Tuple[int, int]]:
         return None
     try:
         import cv2
-        cap = cv2.VideoCapture(video)
+        cap = open_video(video, "FAR-SERVE")
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()

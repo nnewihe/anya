@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 from ultralytics import YOLO
 
+try:                                        # package import (python -m pipeline.x)
+    from .videoio import open_video
+except ImportError:                         # script import (python pipeline/x.py)
+    from videoio import open_video
+
 class MatchState(Enum):
     INACTIVE = 0  
     FAR_SERVE_IN_FLIGHT = 1       
@@ -240,7 +245,7 @@ def get_court_corners_interactive(video_path: str) -> np.ndarray:
     Extracts the middle frame of the video and opens an interactive OpenCV 
     window for the user to select the 4 corners of the court.
     """
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "GEMINI")
     if not cap.isOpened():
         raise ValueError(f"Could not open video {video_path}")
         
@@ -327,7 +332,7 @@ def run_point_detector(video_path: str, output_path: str, ball_model_path: str):
     yolo_ball_model = YOLO(ball_model_path)
     
     # 3. Open Video for Processing
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "GEMINI")
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))

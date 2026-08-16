@@ -21,6 +21,13 @@ import os
 
 import numpy as np
 
+# The one thing walking/ borrows from pipeline/: both packages decode the same
+# videos and must ask for the same backend, and duplicating the fallback logic
+# here would let the two drift. videoio is dependency-free (cv2 + stdlib), so
+# it costs nothing at import time. Resolvable wherever `walking` itself is —
+# both packages sit at the repo root.
+from pipeline.videoio import open_video
+
 from walking.court import ANALYSIS_SIZE, load_homography
 from walking.evaluate import apply_post, to_intervals
 from walking.extract_pose import DEFAULT_POSE_MODEL, extract
@@ -158,7 +165,7 @@ def render_overlay(video, res, out_path, labels=None, max_seconds=None,
                    start_second=0.0):
     """Review video: box, probability bar, and the ground-truth strip if given."""
     import cv2
-    cap = cv2.VideoCapture(video)
+    cap = open_video(video, "WALK")
     fps, n = res["fps"], res["n_frames"]
     z = np.load(pose_path(video))
     bbox = z["bbox"]

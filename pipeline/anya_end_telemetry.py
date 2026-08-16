@@ -88,14 +88,14 @@ try:                                        # package import (python -m pipeline
     from .utilities import (Config, init_court, create_auto_exclusion_zones,
                             load_cached_exclusion_zones,
                             save_cached_exclusion_zones, probe_video,
-                            assert_decode_complete)
+                            assert_decode_complete, open_video)
     from .proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from .proxy import ensure_proxy as _ensure_proxy
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import (Config, init_court, create_auto_exclusion_zones,
                            load_cached_exclusion_zones,
                            save_cached_exclusion_zones, probe_video,
-                           assert_decode_complete)
+                           assert_decode_complete, open_video)
     from proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from proxy import ensure_proxy as _ensure_proxy
 
@@ -321,7 +321,7 @@ class EndTelemetryExtractor:
         conversion and the copy into numpy, which is the part worth avoiding.
         """
         strides = strides or (self.pose_stride, self.ball_stride)
-        cap = cv2.VideoCapture(src)
+        cap = open_video(src, "END-TELEM")
         aw, ah = self.cfg.analysis_size
         idx = -1
         try:

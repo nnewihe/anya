@@ -51,7 +51,8 @@ from .match_telemetry import telemetry_path_for
 from .point_segmenter import (SegmenterConfig, load_telemetry,
                               suppress_static_candidates, alive_intervals,
                               _replay_core)
-from .utilities import load_cached_exclusion_zones, _is_in_exclusion_zone
+from .utilities import (load_cached_exclusion_zones, _is_in_exclusion_zone,
+                        open_video)
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -181,7 +182,7 @@ def detect_targets(video_path: str, targets: Dict[int, Tuple[float, float, float
     from ultralytics import YOLO
     model = YOLO(str(_MODELS_DIR / "ball_best.pt"))
 
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "TRACE")
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {video_path}")
     nat_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
