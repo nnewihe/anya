@@ -14,11 +14,18 @@
 # One folder, never --onefile: the payload is ~2 GB, and a one-file build
 # re-extracts all of it to a temp directory on every single launch.
 #
-# ffmpeg IS bundled on macOS (see fetch_ffmpeg.sh): a static arm64 build lands
-# in Contents/Frameworks alongside everything else, and preflight.repair_path()
-# puts that directory first on PATH so the pipeline's `subprocess.run(["ffmpeg",
-# ...])` calls find it without any of them changing.  Windows/Linux builds still
-# expect ffmpeg on PATH — vendor/ffmpeg is a Mach-O and is skipped there.
+# ffmpeg IS bundled on macOS (fetch_ffmpeg.sh) and on Windows
+# (fetch_ffmpeg.ps1): the static binary lands next to everything else —
+# Contents/Frameworks in the .app, _internal\ in the Windows one-folder build —
+# and preflight.repair_path() puts that directory first on PATH so the
+# pipeline's `subprocess.run(["ffmpeg", ...])` calls find it without any of
+# them changing.  Linux builds still expect ffmpeg on PATH.
+#
+# Windows bundling is not a convenience: relying on the tester's own ffmpeg
+# shipped a build where proxy.py's transcode failed, silently returned the
+# SOURCE path, and every pass then decoded a 2.7K GoPro file through whatever
+# backend OpenCV had — 531 seconds of match came back as 0.9 seconds of
+# telemetry.  See the fetch_ffmpeg.ps1 header.
 #
 # Expect a large bundle (~2 GB): torch + ultralytics are required by the
 # telemetry and pose stages and cannot be excluded.
@@ -42,44 +49,53 @@ from version import APP_VERSION
 # repo ROOT (parent of desktop/) must be on the analysis path, not just desktop/.
 _REPO_ROOT = str(Path('.').resolve().parent)
 
-# Static ffmpeg, fetched by fetch_ffmpeg.sh.  Declared as a *binary* rather
-# than a data file so PyInstaller keeps the executable bit; on macOS it lands
-# in Contents/Frameworks, which is what sys._MEIPASS points at.  Guarded so a
-# Windows/Linux build (where the vendored Mach-O is useless) still works.
+# Static ffmpeg, fetched by fetch_ffmpeg.sh (macOS) or fetch_ffmpeg.ps1
+# (Windows).  Declared as a *binary* rather than a data file so PyInstaller
+# keeps the executable bit; it lands wherever sys._MEIPASS points —
+# Contents/Frameworks in the .app, _internal\ in the Windows one-folder build.
+# Guarded so a Linux build (which vendors nothing) still works.
 #
 # The architecture is the one this Python is running as, NOT the host's:
 # the Intel build runs PyInstaller under an x86_64 interpreter via Rosetta, so
 # platform.machine() is what decides which vendored binary belongs in this
 # bundle.  Getting this wrong ships an app that needs Rosetta on a Mac that
-# has none — the exact prompt bundling ffmpeg exists to avoid.
+# has none — the exact prompt bundling ffmpeg exists to avoid.  The same call
+# reports AMD64 on 64-bit Windows, which is the directory fetch_ffmpeg.ps1
+# writes to.
 import platform
 _ARCH = platform.machine()
-_FFMPEG = Path('vendor') / _ARCH / 'ffmpeg'
+_FFMPEG = Path('vendor') / _ARCH / ('ffmpeg.exe' if sys.platform == 'win32'
+                                    else 'ffmpeg')
 _binaries = []
 # ffmpeg is GPL, so its licence has to accompany the binary. Taken from
-# vendor/<arch>/, which fetch_ffmpeg.sh populates with the pair matching THIS
-# build — the arm64 and Intel binaries come from different upstreams under
-# GPLv2 and GPLv3 respectively, so shipping one fixed licence would be wrong
-# for one of the two DMGs. Also copied to the DMG root (make_dmg.sh) where a
-# tester can see it; this copy is so it still travels with a bare .app.
+# vendor/<arch>/, which the fetch script populates with the pair matching THIS
+# build — the arm64, Intel and Windows binaries come from three different
+# upstreams (GPLv2 for arm64, GPLv3 for the other two), so shipping one fixed
+# licence would be wrong for two of the three. Also copied to the DMG root
+# (make_dmg.sh) where a tester can see it; this copy is so it still travels
+# with a bare .app or the installed Windows folder.
 #
 # Conditional for the same reason _binaries is: these files only exist once
-# fetch_ffmpeg.sh has run, and it only runs for macOS builds. Listing them
-# unconditionally fails the Windows build outright ("Unable to find
-# vendor\AMD64\FFMPEG-LICENSE.txt") — and there is nothing to license there,
-# because that build bundles no ffmpeg and the tester installs their own.
+# the fetch script has run, and Linux has no fetch script. Listing them
+# unconditionally fails that build outright ("Unable to find
+# vendor/.../FFMPEG-LICENSE.txt").
 _license_datas = []
-if sys.platform == 'darwin' and _FFMPEG.is_file():
+_VENDORS_FFMPEG = sys.platform in ('darwin', 'win32')
+if _VENDORS_FFMPEG and _FFMPEG.is_file():
     _binaries.append((str(_FFMPEG), '.'))
     _license_datas = [
         (f'vendor/{_ARCH}/FFMPEG-LICENSE.txt', 'licenses'),
         (f'vendor/{_ARCH}/COPYING.txt', 'licenses'),
     ]
-elif sys.platform == 'darwin':
+elif _VENDORS_FFMPEG:
+    _fetch = ('.\\fetch_ffmpeg.ps1' if sys.platform == 'win32'
+              else f'./fetch_ffmpeg.sh {_ARCH}')
     raise SystemExit(
-        f"{_FFMPEG} is missing — run ./fetch_ffmpeg.sh {_ARCH} first.\n"
-        "Building without it silently ships an app that dies at the final "
-        "render on any machine without Homebrew ffmpeg."
+        f"{_FFMPEG} is missing — run {_fetch} first.\n"
+        "Building without it ships an app that depends on whatever ffmpeg the "
+        "tester happens to have: it dies at the final render on a machine with "
+        "none, and on a machine with a build that cannot transcode the source "
+        "it silently analyses only the first second of the video."
     )
 
 _WINDOWS = sys.platform == 'win32'
@@ -177,7 +193,7 @@ a = Analysis(
         # resolved by pipeline.scoreboard_reel.render.find_font()
         ('assets/fonts/Montserrat-SemiBold.ttf', 'assets/fonts'),
         ('assets/fonts/Montserrat-Bold.ttf', 'assets/fonts'),
-        # ffmpeg licences — macOS only; see _license_datas above.
+        # ffmpeg licences — macOS and Windows; see _license_datas above.
         *_license_datas,
     ],
     hiddenimports=[

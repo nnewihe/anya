@@ -123,13 +123,15 @@ _DEVICE = ('mps' if torch.backends.mps.is_available()
 try:                                        # package import (python -m pipeline.x)
     from .utilities import (Config, init_court, create_auto_exclusion_zones,
                             load_cached_exclusion_zones,
-                            save_cached_exclusion_zones, probe_video)
+                            save_cached_exclusion_zones, probe_video,
+                            assert_decode_complete)
     from .proxy import ensure_proxy, ensure_crop_proxy, FAR_BAND_SUFFIX
     from .extract_far_pose import FAR_POSE_VERSION, N_KP, far_pose_path_for
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import (Config, init_court, create_auto_exclusion_zones,
                            load_cached_exclusion_zones,
-                           save_cached_exclusion_zones, probe_video)
+                           save_cached_exclusion_zones, probe_video,
+                           assert_decode_complete)
     from proxy import ensure_proxy, ensure_crop_proxy, FAR_BAND_SUFFIX
     from extract_far_pose import FAR_POSE_VERSION, N_KP, far_pose_path_for
 
@@ -415,6 +417,11 @@ class FarTelemetryExtractor:
         finally:
             cap.release()
 
+        # Armed windows come from these samples, so a short decode here is
+        # indistinguishable from "the far player never settled to serve".
+        assert_decode_complete("FAR-TELEM pass A", src, idx,
+                               self.total_frames - 1, self.fps)
+
         self.timings["pass_player_s"] = time.perf_counter() - t0
         n_found = sum(1 for s in samples.values() if s["box"])
         print(f"[FAR-TELEM] pass A: {len(samples)} player samples "
@@ -663,6 +670,11 @@ class FarTelemetryExtractor:
         finally:
             cap.release()
 
+        # Window-bounded: the bar is the last frame any armed window wanted.
+        assert_decode_complete(
+            "FAR-TELEM pass B", src, idx,
+            min(self.total_frames - 1, int(windows[-1][1] * self.fps)), self.fps)
+
         self.timings["pass_pose_s"] = time.perf_counter() - t0
         print(f"[FAR-TELEM] pass B: {n_infer} pose inferences at {cw}x{ch} over "
               f"{len(windows)} armed window(s), {len(out)} with keypoints "
@@ -758,6 +770,9 @@ class FarTelemetryExtractor:
             flush()
         finally:
             cap.release()
+
+        assert_decode_complete("FAR-TELEM pass C", src, idx,
+                               self.total_frames - 1, self.fps)
 
         self.timings["pass_ball_s"] = time.perf_counter() - t0
         n_possible = self.total_frames // self.ball_stride
@@ -963,6 +978,10 @@ class FarTelemetryExtractor:
             flush()
         finally:
             cap.release()
+
+        assert_decode_complete("FAR-TELEM pass A (from source)",
+                               self.video_path, idx,
+                               self.total_frames - 1, self.fps)
 
         self.timings["pass_player_s"] = time.perf_counter() - t0
         print(f"[FAR-TELEM] pass A (from source): {len(samples)} player samples "

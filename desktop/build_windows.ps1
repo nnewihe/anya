@@ -78,6 +78,15 @@ Invoke-Checked -Exe 'python' -What 'Import check' -Arguments @(
     "import sys; sys.path.insert(0, '..'); sys.path.insert(0, '.'); import pipeline.rally_reel, pipeline.scoreboard_reel; print('imports OK')"
 )
 
+# ── Vendored ffmpeg ────────────────────────────────────────────────────────
+# Before PyInstaller, because rally_app.spec hard-fails if the binary is not
+# there. Idempotent, so this is a checksum check on a re-run rather than an
+# 88 MB download every build.
+Write-Host "==> Fetching the ffmpeg to bundle"
+Invoke-Checked -Exe 'powershell' -What 'fetch_ffmpeg.ps1' -Arguments @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '.\fetch_ffmpeg.ps1'
+)
+
 # ── Clean ──────────────────────────────────────────────────────────────────
 if (-not $KeepBuild) {
     Write-Host "==> Cleaning previous build"

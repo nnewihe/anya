@@ -1,0 +1,35 @@
+FFmpeg — licence and source notice (Windows build)
+==================================================
+
+Anya Tennis bundles a copy of FFmpeg to cut and encode video. FFmpeg is a
+separate program: Anya Tennis runs it as its own process and does not link
+against it.
+
+Bundled build
+-------------
+
+  FFmpeg 7.1
+  Windows, x86-64, statically linked
+  Obtained from https://github.com/GyanD/codexffmpeg/releases/tag/7.1
+  (ffmpeg-7.1-essentials_build.zip, the gyan.dev Windows build)
+
+Licence
+-------
+
+This build is configured with --enable-gpl and --enable-version3, so the
+resulting binary is covered by the GNU General Public License, version 3.
+The full text of GPL version 3 is in COPYING.GPLv3 next to this file.
+
+Note the three builds of Anya Tennis bundle three different FFmpeg binaries,
+because no single upstream publishes a redistributable static build for all
+of them. The Apple silicon build is covered by GPL version 2 (see
+COPYING.GPLv2); the Intel macOS and Windows builds by GPL version 3.
+
+FFmpeg's own source, including the licence headers of every component, is at
+https://ffmpeg.org and https://github.com/FFmpeg/FFmpeg.
+
+Written offer for source
+------------------------
+
+The bundled binary is unmodified upstream FFmpeg 7.1. On request we will
+provide the complete corresponding source for it: nnewihe@gmail.com.

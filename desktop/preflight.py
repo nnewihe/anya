@@ -6,9 +6,16 @@ last stage. Without a check up front, a tester missing ffmpeg would sit
 through the entire pipeline before hitting a raw ``FileNotFoundError``
 traceback.
 
-The packaged macOS app ships its own static ffmpeg (rally_app.spec /
-fetch_ffmpeg.sh), so `ensure_ffmpeg` should never fire there — it remains the
-path for source runs, and for Windows/Linux builds where nothing is bundled.
+The packaged macOS and Windows apps ship their own static ffmpeg
+(rally_app.spec / fetch_ffmpeg.sh / fetch_ffmpeg.ps1), so `ensure_ffmpeg`
+should never fire there — it remains the path for source runs and for Linux
+builds, where nothing is bundled.
+
+Note what `ensure_ffmpeg` does and does not prove: it proves *an* ffmpeg is on
+PATH, not that it can transcode the tester's video. Bundling exists because
+the difference was invisible — proxy.py falls back to the source on a failed
+transcode, and that fallback used to be silent. pipeline/utilities.py's
+`assert_decode_complete` is the other half of that fix.
 
 Either way the resolution happens in `repair_path()`, which must run before
 anything shells out — see below.
@@ -106,8 +113,9 @@ def repair_path() -> None:
     four-year-old one missing an encoder as it is to be newer. Shipping a known
     ffmpeg is most of the point of shipping one at all.
 
-    Windows bundles nothing today, so it depends entirely on the appended
-    bindirs; its PATH-inheritance problem has a different cause but the same
+    Windows now bundles one too (fetch_ffmpeg.ps1), so the prepend covers it
+    the same way; the appended bindirs stay as the fallback for a source run,
+    where its PATH-inheritance problem has a different cause but the same
     symptom — see _windows_bindirs().
     """
     parts = os.environ.get("PATH", "").split(os.pathsep)

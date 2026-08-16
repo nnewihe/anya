@@ -8,6 +8,18 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.1.0-beta.10
+
+- **Fixes a Windows run that quietly analysed only the first second of a
+  match.** It looked like it worked — the job ran to the end and reported no
+  errors — but the reel came back empty, because the app had only ever seen
+  the opening moment of the video. Windows installs now come with everything
+  needed to read your footage, instead of relying on other video software
+  being on the machine.
+- **The app now tells you when it can't read a whole video** rather than
+  carrying on with the part it managed to open. If this happens you get a
+  clear error naming the file, instead of an empty reel and no explanation.
+
 ## 0.1.0-beta.9
 
 - **Court setup works properly on Windows.** The one-time "click the four
