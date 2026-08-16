@@ -21,7 +21,8 @@ from sklearn.cluster import DBSCAN
 from .utilities import (Config, _is_in_exclusion_zone, init_court,
                                create_auto_exclusion_zones,
                                get_exclusion_zones_from_frames, Point3D, Box,
-                               load_cached_exclusion_zones, save_cached_exclusion_zones)
+                               load_cached_exclusion_zones, save_cached_exclusion_zones,
+                               open_video)
 from collections import deque
 
 _MODELS_DIR = Path(__file__).parent / "models"
@@ -166,7 +167,7 @@ class AnyaTelemetryProvider:
 
     def _interactive_polygon_selector(self) -> np.ndarray:
         """OpenCV window to collect exactly 8 points from the user."""
-        cap = cv2.VideoCapture(self.video_path)
+        cap = open_video(self.video_path, "ANYA")
         ret, frame = cap.read()
         cap.release()
 
@@ -204,7 +205,7 @@ class AnyaTelemetryProvider:
         return np.array(selected_points, dtype=np.int32)
 
     def _init_video_props(self):
-        cap = cv2.VideoCapture(self.video_path)
+        cap = open_video(self.video_path, "ANYA")
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         # Frames are resampled to 960x540 in run_anya.py
         self.width = 960
@@ -654,7 +655,7 @@ class FarSideTelemetryProvider:
         return np.array(points, dtype=np.int32)
 
     def _init_video_props(self):
-        cap = cv2.VideoCapture(self.video_path)
+        cap = open_video(self.video_path, "ANYA")
         self.fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         self.width = 960
         self.height = 540

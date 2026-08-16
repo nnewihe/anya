@@ -147,6 +147,24 @@ and cannot: it proves *an* ffmpeg is on PATH, not that it works on this video.
 `pipeline/utilities.assert_decode_complete` is the backstop for the general
 case; bundling is what removes the variable.
 
+### OpenCV's video backend
+
+Separate from the bundled `ffmpeg.exe` above, and easy to confuse with it.
+That one is a *program* the pipeline shells out to for transcodes and the
+final cut. This is the *library* OpenCV decodes frames with in-process, and on
+Windows it lives in its own `opencv_videoio_ffmpeg*.dll` that videoio loads by
+name at runtime. When that DLL is missing OpenCV does not raise — it drops to
+Media Foundation, which opens the file, reports the container's frame count,
+and then stops decoding partway through. Silent wrong answers, which is why
+there are three separate defences:
+
+- `pipeline/videoio.open_video` asks for `CAP_FFMPEG` explicitly, logs the
+  backend it actually got, and warns loudly if it had to fall back. Every
+  `cv2.VideoCapture` in `pipeline/` and `walking/` goes through it.
+- `rthook_cv2.py` sets `OPENCV_FFMPEG_DLL_DIR` in the frozen Windows build, so
+  OpenCV looks where PyInstaller put the DLL rather than guessing.
+- `build_windows.ps1` fails the build if the DLL is not in `dist\`.
+
 **The three builds use three different ffmpeg binaries under two different
 licences, and this is not tidyable.** A bundled ffmpeg must be both statically
 linked and redistributable, and no single project supplies every platform that

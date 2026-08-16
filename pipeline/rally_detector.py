@@ -39,7 +39,7 @@ import numpy as np
 
 from .anya_base import AnyaTelemetryProvider
 from .ball_tracker import BallTrackManager, make_image_row_perspective
-from .utilities import create_highlights_ffmpeg
+from .utilities import create_highlights_ffmpeg, open_video
 
 
 RALLY_GAP_THRESHOLD_SEC = 4.0
@@ -344,7 +344,7 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
     progress_cb: optional callable(current_frame, total_frames) called every 30 frames.
     """
     # ── Probe video ───────────────────────────────────────────────────────
-    _probe = cv2.VideoCapture(video_path)
+    _probe = open_video(video_path, "RALLY")
     orig_fps    = _probe.get(cv2.CAP_PROP_FPS)
     total_frames = int(_probe.get(cv2.CAP_PROP_FRAME_COUNT))
     _probe.release()
@@ -364,7 +364,7 @@ def collect_rally_segments(video_path, headless=False, start_frame=0, progress_c
     )
 
     # ── Main loop ─────────────────────────────────────────────────────────
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "RALLY")
     if start_frame > 0:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         print(f"[RALLY] Seeking to frame {start_frame}")

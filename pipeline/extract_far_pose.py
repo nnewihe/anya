@@ -54,8 +54,10 @@ import cv2
 from ultralytics import YOLO
 
 try:                                        # package import (python -m pipeline.x)
+    from .videoio import open_video
     from .anya_telemetry import _DEVICE, TELEMETRY_SUFFIX
 except ImportError:                         # script import (python pipeline/x.py)
+    from videoio import open_video
     from anya_telemetry import _DEVICE, TELEMETRY_SUFFIX
 
 _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
@@ -160,7 +162,7 @@ def extract_far_pose(telemetry_path: str, force: bool = False,
         raise FileNotFoundError(f"far-player video not found next to telemetry: {video_path}")
 
     pose_model = YOLO(str(os.path.join(_MODELS_DIR, "yolov8n-pose.pt")))
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "FAR-POSE")
 
     by_frame = {r["f"]: r for r in records}
     max_f = max(by_frame) if by_frame else -1

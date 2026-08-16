@@ -18,6 +18,14 @@ import tempfile
 import shutil
 from pathlib import Path
 
+# Re-exported: modules across pipeline/ already import from utilities, so this
+# saves an import line at ~a dozen call sites. The helper itself lives in a
+# dependency-free module so walking/ can use it too — see videoio.py.
+try:                                        # package import (python -m pipeline.x)
+    from .videoio import open_video
+except ImportError:                         # script import (python pipeline/x.py)
+    from videoio import open_video
+
 try:                                        # package import (python -m pipeline.x)
     from .subproc import run as _run
 except ImportError:                         # script import (python pipeline/x.py)
@@ -165,7 +173,7 @@ def create_auto_exclusion_zones(
     that look like balls (e.g. ball-baskets). Uses DBSCAN clustering of detection
     centers. Returns exclusion zone rectangles with padding.
     """
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "UTIL")
     if not cap.isOpened():
         return []
 
@@ -535,7 +543,7 @@ def point_line_distance_px(P, A, B):
 
 
 def get_reference_frame(video_path: str, target_idx: int):
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "UTIL")
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {video_path}")
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -589,7 +597,7 @@ def point_in_mask(mask, x, y):
 
 
 def probe_video(video_path: str) -> dict:
-    cap = cv2.VideoCapture(video_path)
+    cap = open_video(video_path, "UTIL")
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {video_path}")
     fps         = cap.get(cv2.CAP_PROP_FPS)

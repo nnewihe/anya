@@ -45,6 +45,11 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+try:                                        # package import (python -m pipeline.x)
+    from .videoio import open_video
+except ImportError:                         # script import (python pipeline/x.py)
+    from videoio import open_video
+
 DATA_ROOT = "/Volumes/Anya/Data"
 GT_NAME = "ground_truth.json"
 GT_DERIVED = "derived_ground_truth.json"
@@ -78,7 +83,7 @@ def _fps_for(clip_dir: str) -> float:
         if os.path.isfile(p):
             try:
                 import cv2
-                cap = cv2.VideoCapture(p)
+                cap = open_video(p, "GT")
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 cap.release()
                 if fps and fps > 1:
@@ -94,7 +99,7 @@ def _n_frames(clip_dir: str) -> Optional[int]:
         if os.path.isfile(p):
             try:
                 import cv2
-                cap = cv2.VideoCapture(p)
+                cap = open_video(p, "GT")
                 n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 cap.release()
                 if n > 0:

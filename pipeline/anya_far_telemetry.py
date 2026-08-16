@@ -124,14 +124,14 @@ try:                                        # package import (python -m pipeline
     from .utilities import (Config, init_court, create_auto_exclusion_zones,
                             load_cached_exclusion_zones,
                             save_cached_exclusion_zones, probe_video,
-                            assert_decode_complete)
+                            assert_decode_complete, open_video)
     from .proxy import ensure_proxy, ensure_crop_proxy, FAR_BAND_SUFFIX
     from .extract_far_pose import FAR_POSE_VERSION, N_KP, far_pose_path_for
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import (Config, init_court, create_auto_exclusion_zones,
                            load_cached_exclusion_zones,
                            save_cached_exclusion_zones, probe_video,
-                           assert_decode_complete)
+                           assert_decode_complete, open_video)
     from proxy import ensure_proxy, ensure_crop_proxy, FAR_BAND_SUFFIX
     from extract_far_pose import FAR_POSE_VERSION, N_KP, far_pose_path_for
 
@@ -379,7 +379,7 @@ class FarTelemetryExtractor:
         """
         cfg = self.cfg
         t0 = time.perf_counter()
-        cap = cv2.VideoCapture(src)
+        cap = open_video(src, "FAR-TELEM")
         samples: Dict[int, Dict] = {}
         pend_idx: List[int] = []
         pend_img: List[np.ndarray] = []
@@ -597,7 +597,7 @@ class FarTelemetryExtractor:
             return out
 
         t0 = time.perf_counter()
-        cap = cv2.VideoCapture(src)
+        cap = open_video(src, "FAR-TELEM")
         ox, oy = band_origin
         pend: List[Tuple[int, float]] = []       # (frame idx, scaled box height)
         pend_img: List[np.ndarray] = []
@@ -697,7 +697,7 @@ class FarTelemetryExtractor:
         """
         cfg = self.cfg
         t0 = time.perf_counter()
-        cap = cv2.VideoCapture(src)
+        cap = open_video(src, "FAR-TELEM")
         out: Dict[int, List] = {}
         pend: List[int] = []
         pend_img: List[np.ndarray] = []
@@ -938,7 +938,7 @@ class FarTelemetryExtractor:
         cfg = self.cfg
         t0 = time.perf_counter()
         rx1, ry1, rx2, ry2 = self.far_roi
-        cap = cv2.VideoCapture(self.video_path)
+        cap = open_video(self.video_path, "FAR-TELEM")
         samples: Dict[int, Dict] = {}
         pend_idx: List[int] = []
         pend_img: List[np.ndarray] = []

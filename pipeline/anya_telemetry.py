@@ -58,11 +58,13 @@ _DEVICE = ('mps' if torch.backends.mps.is_available()
 try:                                        # package import (python -m pipeline.x)
     from .utilities import (Config, init_court, create_auto_exclusion_zones,
                             load_cached_exclusion_zones,
-                            save_cached_exclusion_zones, probe_video)
+                            save_cached_exclusion_zones, probe_video,
+                            open_video)
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import (Config, init_court, create_auto_exclusion_zones,
                            load_cached_exclusion_zones,
-                           save_cached_exclusion_zones, probe_video)
+                           save_cached_exclusion_zones, probe_video,
+                           open_video)
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -381,7 +383,7 @@ class AnyaTelemetryExtractor:
         drops the source frame — only the two small images travel on, so a
         read-ahead queue of 4K frames never accumulates.
         """
-        cap = cv2.VideoCapture(self.video_path)
+        cap = open_video(self.video_path, "TELEM")
         if start_frame > 0:
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         frame_idx = start_frame - 1

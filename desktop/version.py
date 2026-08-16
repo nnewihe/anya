@@ -23,6 +23,18 @@ APP_VERSION = "0.1.0-beta.10"
 #       short of the frame it was asked to reach; ANYA_ALLOW_TRUNCATED_DECODE=1
 #       is the escape hatch.  proxy.py's fallback warnings also go to the log
 #       now — a windowed build owns no console, so its prints went nowhere.
+# Same release, the two remaining Windows/macOS build asymmetries behind it:
+#   (3) Every pass opened video with a bare cv2.VideoCapture, taking whichever
+#       backend OpenCV picked.  On Windows the FFmpeg backend is a separate
+#       DLL loaded by name; when it is missing OpenCV drops to Media
+#       Foundation without a word, and MSMF is what truncated the decode
+#       above.  pipeline/videoio.open_video asks for CAP_FFMPEG, logs the
+#       backend it got, and warns loudly on a fallback; rthook_cv2.py now sets
+#       OPENCV_FFMPEG_DLL_DIR in the frozen Windows build, and
+#       build_windows.ps1 fails if the DLL is not in dist\.
+#   (4) build_windows.ps1 never ran check_model_paths.py, so the Windows
+#       installer shipped without the guard that stops ultralytics
+#       downloading weights instead of using the bundled copies.  It does now.
 # beta.9 — strips the em dashes out of the court-calibration window title and
 # its console prompt.  Windows gives an OpenCV window title an ANSI code page
 # (cp1252 here), not UTF-8, so the em dash arrived as mojibake in the title
