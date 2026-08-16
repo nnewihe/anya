@@ -24,8 +24,10 @@ sudo apt install ffmpeg      # Debian/Ubuntu
 winget install Gyan.FFmpeg   # Windows
 ```
 
-The **packaged macOS app bundles its own** (see *Build a distributable*), so
-testers install nothing.
+The **packaged macOS and Windows apps bundle their own** (see *Build a
+distributable*), so testers install nothing. That is correctness, not just
+convenience: without it the analysis passes fall back to decoding the source
+video directly, which on some machines stops partway through.
 
 ## What it does
 
@@ -365,10 +367,11 @@ Windows-specific notes:
   SmartScreen immediately, OV only after the build accumulates reputation.)
 - **It installs per-user**, into `%LOCALAPPDATA%\Programs\Anya Tennis`, so
   there is no UAC elevation prompt on top of the SmartScreen one.
-- **ffmpeg is still required** and still not bundled:
-  `winget install Gyan.FFmpeg`. The app probes winget/Chocolatey/Scoop install
-  locations directly, so a fresh install is picked up without signing out
-  first (Windows only hands a running Explorer the PATH it started with).
+- **ffmpeg is bundled** as of 0.1.0-beta.10 (`fetch_ffmpeg.ps1`), so testers
+  install nothing. `preflight.repair_path` puts the bundled copy first on
+  PATH; the winget/Chocolatey/Scoop probing stays as the fallback for a source
+  run, where a fresh install is picked up without signing out first (Windows
+  only hands a running Explorer the PATH it started with).
 - **UPX is disabled on Windows** (`rally_app.spec`) — it corrupts torch and Qt
   DLLs, producing a build that dies with `DLL load failed while importing _C`.
 - **Logs** land in `%LOCALAPPDATA%\Anya Tennis\logs\app.log` — ask for this
