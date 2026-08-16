@@ -19,6 +19,9 @@ release a version it can't find a section for.
 - **The app now tells you when it can't read a whole video** rather than
   carrying on with the part it managed to open. If this happens you get a
   clear error naming the file, instead of an empty reel and no explanation.
+- **Windows reads video the same way a Mac does.** The app now insists on the
+  same video decoder on both, so footage that works on one works on the other.
+  Nothing changes on a Mac.
 
 ## 0.1.0-beta.9
 

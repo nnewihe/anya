@@ -87,6 +87,15 @@ Invoke-Checked -Exe 'powershell' -What 'fetch_ffmpeg.ps1' -Arguments @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '.\fetch_ffmpeg.ps1'
 )
 
+# ── Model paths ────────────────────────────────────────────────────────────
+# Handed a bare name like "yolov8n-pose.pt", ultralytics looks in the CWD and
+# then DOWNLOADS the weights, ignoring the bundled copy — see
+# check_model_paths.py, which exists because that shipped once and was
+# invisible to anyone with a working internet connection. build_macos.sh has
+# run this since; the Windows build had no equivalent gate.
+Write-Host "==> Checking model defaults resolve to bundled files"
+Invoke-Checked -Exe 'python' -Arguments @('check_model_paths.py') -What 'Model path check'
+
 # ── Clean ──────────────────────────────────────────────────────────────────
 if (-not $KeepBuild) {
     Write-Host "==> Cleaning previous build"
@@ -109,6 +118,33 @@ $sizeMb = [math]::Round((Get-ChildItem -Recurse -File 'dist\AnyaTennis' | Measur
 Write-Host "==> Bundle size: $sizeMb MB"
 if ($sizeMb -lt 300) {
     throw "dist\AnyaTennis is only $sizeMb MB — torch/ultralytics were not collected. Check the PyInstaller warnings."
+}
+
+# ── OpenCV's FFmpeg backend DLL ────────────────────────────────────────────
+# videoio loads this by name at runtime. When it is absent OpenCV does not
+# fail — it drops to Media Foundation, which opens a GoPro file, reports the
+# right frame count, and then stops decoding partway through. That is a silent
+# wrong answer, so it is a build gate rather than something to find in the
+# field. rthook_cv2.py points OPENCV_FFMPEG_DLL_DIR at whichever of these two
+# directories it lands in; both are searched here for the same reason.
+$ffmpegDll = Get-ChildItem -Path 'dist\AnyaTennis' -Recurse -File `
+    -Filter 'opencv_videoio_ffmpeg*.dll' -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if (-not $ffmpegDll) {
+    throw "opencv_videoio_ffmpeg*.dll is not in dist\AnyaTennis — OpenCV would fall back to Media Foundation and silently truncate long videos. Check the PyInstaller cv2 hook and warn-rally_app.txt."
+}
+Write-Host "    OpenCV FFmpeg backend: $($ffmpegDll.FullName.Substring((Resolve-Path 'dist\AnyaTennis').Path.Length + 1))"
+
+# ── Bundled ffmpeg.exe ─────────────────────────────────────────────────────
+if (-not (Test-Path 'dist\AnyaTennis\_internal\ffmpeg.exe')) {
+    # PyInstaller's layout has moved between majors; look anywhere before
+    # failing, so a version bump reports honestly instead of crying wolf.
+    $anyFfmpeg = Get-ChildItem -Path 'dist\AnyaTennis' -Recurse -File `
+        -Filter 'ffmpeg.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $anyFfmpeg) {
+        throw "ffmpeg.exe is not in dist\AnyaTennis — the spec should have bundled it. Run .\fetch_ffmpeg.ps1 and rebuild."
+    }
+    Write-Host "    Bundled ffmpeg: $($anyFfmpeg.FullName)" -ForegroundColor Yellow
 }
 
 # ── Smoke test: does the thing actually start? ─────────────────────────────
