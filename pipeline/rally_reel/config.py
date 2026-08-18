@@ -294,6 +294,31 @@ class ReelConfig:
     # that hold the near player more reliably.
 
     # ---- output segments ----------------------------------------------
+    # ---- dead-time confidence ------------------------------------------
+    # A score is emitted once per elapsed second after every detected point
+    # start.  It is deliberately an accumulator, rather than a per-frame
+    # classifier: between two starts the score can only rise or hold.  This
+    # makes it useful to review *when* the evidence for dead time became
+    # convincing without allowing a brief ball miss to undo an earlier call.
+    deadtime_base_per_s: float = 0.12
+    deadtime_walking_weight: float = 0.20
+    deadtime_ball_trace_weight: float = 0.24
+    deadtime_max_increment_per_s: float = 0.25
+    deadtime_score_threshold: float = 0.70
+    # Elapsed time and walking are positive evidence; ball trace inhibits the
+    # increment.  Ball trace is the share of ball-model looks in the second
+    # that retain a filtered ball.  Seconds with no ball-model look at all hold
+    # the score rather than incrementing it, so patchy detection cannot
+    # manufacture confidence.
+    #
+    # The cap is what sets the floor on how fast dead time can be called:
+    # threshold / cap seconds, so 0.70 / 0.25 means no point can be declared
+    # over in under three seconds no matter how the weights are tuned.  Keep it
+    # BELOW base + walking (0.32 here, up to 0.60 across the tuner's sweep) or
+    # it stops binding and that floor quietly disappears.
+    # Keep these as explicit config values: `tune_deadtime_confidence.py`
+    # sweeps them against labelled clips without rerunning perception.
+
     pre_roll_s: float = 1.5      # lead-in before the serve
     post_roll_s: float = 1.0     # tail after the point ends
     merge_gap_s: float = 1.5     # join segments closer than this

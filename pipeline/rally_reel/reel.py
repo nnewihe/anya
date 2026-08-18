@@ -43,6 +43,7 @@ from ..utilities import Config, init_court, create_highlights_ffmpeg, probe_vide
 from .config import ReelConfig
 from .points import (build_segments, enforce_service_runs,
                      merge_serve_starts, usable_walk_intervals, walk_onsets)
+from .deadtime_confidence import score_deadtime
 
 ANALYSIS_SIZE = (960, 540)
 SEGMENTS_SUFFIX = "_rally_segments.json"
@@ -103,7 +104,8 @@ def _walk_model_path(cfg: ReelConfig) -> Optional[str]:
 def _walk_intervals(video_path: str, device: str = "mps",
                     dets_npz: Optional[str] = None,
                     pose_npz: Optional[str] = None,
-                    model_path: Optional[str] = None) -> List[Dict]:
+                    model_path: Optional[str] = None,
+                    return_result: bool = False):
     """Walking intervals, as the dead-time proxy for point ends.
 
     `dets_npz`/`pose_npz` point the classifier at a pose pass someone else
@@ -131,13 +133,14 @@ def _walk_intervals(video_path: str, device: str = "mps",
                         model_path=model_path or MODEL_PATH)
     fps, prob, mask = res["fps"], res["prob"], res["is_walking"]
     valid = res["sig"]["valid"]
-    return [{
+    intervals = [{
         "start_second": a / fps,
         "end_second": (b + 1) / fps,
         "duration_s": (b - a + 1) / fps,
         "mean_prob": float(np.mean(prob[a:b + 1])),
         "detection_coverage": float(np.mean(valid[a:b + 1])),
     } for a, b in to_intervals(mask)]
+    return (intervals, res) if return_result else intervals
 
 
 def _near_blind_mask(records: List[Dict], fps: float,
@@ -477,14 +480,15 @@ def build_reel(video_path: str,
             video_path, force=force_telemetry,
             progress_cb=lambda cur, tot: _emit(on_progress, 5,
                                                cur / max(1, tot)))
-        walks = _walk_intervals(video_path, device=device,
-                                dets_npz=end_dets_path_for(video_path),
-                                pose_npz=end_pose_path_for(video_path),
-                                model_path=_walk_model_path(cfg))
+        walks, walk_result = _walk_intervals(
+            video_path, device=device, dets_npz=end_dets_path_for(video_path),
+            pose_npz=end_pose_path_for(video_path), model_path=_walk_model_path(cfg),
+            return_result=True)
     else:
         print("[REEL] Stage 5/7  walking (dead-time proxy)")
         _emit(on_progress, 5)   # predict_video returns only when done
-        walks = _walk_intervals(video_path, device=device)
+        walks, walk_result = _walk_intervals(video_path, device=device,
+                                             return_result=True)
     if cfg.end_policy == "walk-ball":
         print(f"[REEL]   walk intervals: {len(walks)} -> "
               f"{len(usable_walk_intervals(walks, cfg))} usable")
@@ -517,6 +521,7 @@ def build_reel(video_path: str,
                 starts = [p for p in starts if not p.side_conflict]
 
     segments = build_segments(starts, dead_onsets, duration, cfg)
+    confidence_rows = score_deadtime(starts, duration, walk_result, end_telemetry, cfg)
 
     seg_path = _stem_path(video_path, SEGMENTS_SUFFIX)
     with open(seg_path, "w") as fh:
@@ -526,6 +531,10 @@ def build_reel(video_path: str,
             "config": cfg.__dict__,
             "n_serve_starts": len(starts),
             "segments": [s.as_dict() for s in segments],
+            "deadtime_confidence": {
+                "threshold": cfg.deadtime_score_threshold,
+                "samples": confidence_rows,
+            },
         }, fh, indent=2)
 
     kept = sum(s.end - s.start for s in segments)
