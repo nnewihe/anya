@@ -180,10 +180,26 @@ class EndExtractorConfig:
     # is what this flag records, not the magnitudes.
 
 
-def end_telemetry_path_for(video_path: str) -> str:
+def end_telemetry_path_for(video_path: str,
+                           ball_fps: Optional[float] = None,
+                           ball_imgsz: Optional[int] = None) -> str:
+    """Cache path, keyed by ball rate and resolution when either is non-default.
+
+    The trace policy needs a denser and higher-resolution ball stream than
+    anything else does, and re-extracting on every policy flip would make an
+    A/B unaffordable.  Keying the non-default settings into the filename lets
+    every variant live on disk at once.
+    """
     d = os.path.dirname(os.path.abspath(video_path))
     stem = os.path.splitext(os.path.basename(video_path))[0]
-    return os.path.join(d, f"{stem}{END_TELEMETRY_SUFFIX}")
+    base = os.path.join(d, f"{stem}{END_TELEMETRY_SUFFIX}")
+    defaults = EndExtractorConfig()
+    tag = ""
+    if ball_fps is not None and abs(float(ball_fps) - defaults.ball_fps) > 1e-6:
+        tag += f"_b{int(round(float(ball_fps)))}"
+    if ball_imgsz is not None and int(ball_imgsz) != int(defaults.ball_imgsz):
+        tag += f"_i{int(ball_imgsz)}"
+    return base if not tag else base[:-len(".jsonl")] + tag + ".jsonl"
 
 
 def end_dets_path_for(video_path: str) -> str:
@@ -609,6 +625,27 @@ class EndTelemetryExtractor:
         return out_path
 
 
+def _rate_matches(out_path: str, cfg: Optional["EndExtractorConfig"]) -> bool:
+    """Is the cached file's ball rate the one this run asked for?
+
+    The version gate alone compares only the schema, so a file built with
+    `--ball-fps 30` and a caller wanting 10 (or the reverse) read as a hit.
+    Harmless until the trace policy made two rates coexist; now a silent reuse
+    would hand the tracker a stream it cannot confirm on, or make a cheap run
+    pay for a dense one.
+    """
+    c = cfg or EndExtractorConfig()
+    try:
+        with open(out_path) as fh:
+            meta = json.loads(fh.readline()).get("meta", {})
+        fps, stride = float(meta["fps"]), int(meta["ball_stride"])
+        imgsz = int(meta.get("ball_imgsz", c.ball_imgsz))
+    except Exception:
+        return True                  # unreadable meta is the version gate's problem
+    rate_ok = abs(fps / max(1, stride) - fps / max(1, round(fps / c.ball_fps))) < 0.05
+    return rate_ok and imgsz == int(c.ball_imgsz)
+
+
 def extract_end_telemetry(video_path: str, force: bool = False,
                           cfg: Optional[EndExtractorConfig] = None,
                           out_path: Optional[str] = None,
@@ -626,7 +663,7 @@ def extract_end_telemetry(video_path: str, force: bool = False,
                 ver = int(json.loads(fh.readline()).get("meta", {}).get("version", 0))
         except Exception:
             ver = 0
-        if ver == END_TELEMETRY_VERSION and os.path.isfile(dets):
+        if ver == END_TELEMETRY_VERSION and os.path.isfile(dets) and _rate_matches(out_path, cfg):
             print(f"[END-TELEM] Using cached end telemetry: {out_path}")
             return out_path
     return EndTelemetryExtractor(video_path, cfg=cfg).extract(

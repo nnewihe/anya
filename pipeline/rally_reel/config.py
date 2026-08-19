@@ -145,6 +145,12 @@ class ReelConfig:
     # `--no-fast-end` restores the full-rate path, and is the arm to run when
     # scoring point ends against ground truth.
     #
+    # NOTE the 12.84 ms/frame above is the ball_fps 10 / imgsz 960 pass.  Under
+    # end_policy="trace" (now the default) stage 5 runs 30 Hz at imgsz 1920 and
+    # costs 26-70 ms/source-frame depending on source rate, so fast_end's 2.5x
+    # win no longer describes a default run.  What still holds is the structural
+    # part — fast_end is what lets stages 1-2 be skipped entirely.
+    #
     # walking.predict was already scoring at 15 Hz — every 2nd frame of a 30
     # fps clip — so the pose beneath it ran at twice the rate anything read.
     # 15 Hz is the floor: the features measure a 0.7-4.0 Hz cadence band, and
@@ -170,7 +176,7 @@ class ReelConfig:
     # False on a 30 Hz pose pass (pose_fps 30 costs 20.28 ms/frame against
     # 12.84), where the shipped model is the matched one.
 
-    end_policy: str = "walk-ball"      # "walk-ball" | "legacy"
+    end_policy: str = "trace"          # "trace" | "walk-ball" | "confidence" | "legacy"
     # How the two dead-time signals combine into point ends.
     #
     #   "legacy"     walk onsets UNION gated ball-quiet onsets, first one after
@@ -186,10 +192,244 @@ class ReelConfig:
     #                Where walking is silent, no_walk_quiet_s of ball silence
     #                ends the point on its own.
     #
+    # MEASURED against "walk-ball" (2026-08-19, eval_point_end.py, 11 trusted
+    # clips / 135 labelled ends, both arms built from DETECTED starts):
+    #
+    #                  walk-ball   confidence
+    #   recall             29%         30%
+    #   precision          50%         38%
+    #   event med       -0.03s      +1.16s
+    #   point med       +8.59s      +3.29s
+    #   truncations          5           6
+    #   mid-rally FP         5           7   (0.23 -> 0.33 per live-minute)
+    #
+    # "confidence" is NOT the default, because truncations were the gate and it
+    # did not clear them — 5 -> 6, with precision down 12 points and mid-rally
+    # false fires up.  It emits an onset for every point that crosses, so it
+    # fires 104 times against 78 and buys its recall with false positives.
+    #
+    # What it does win is over-retention: point-level median error falls from
+    # +8.59s to +3.29s, so segments stop running ~8.6s past the point.  Choose
+    # it when reel tightness matters more than truncation safety.  Per clip it
+    # is genuinely mixed rather than uniformly worse: clip 25 goes 7% -> 40%
+    # recall at 25% -> 86% precision and clip 50 (never seen by the tuner) 0% ->
+    # 14%, while 21/22/23/24/26 all regress.
+    #
+    # Note the weights were tuned from LABELLED rally starts, where the score
+    # scored MAE 3.13s and 9/128 early cuts.  That did not transfer to detected
+    # starts, which is the gap between the two evaluations and the reason this
+    # measurement exists rather than an assumption that it would.
+    #
+    # DEFAULT as of 2026-08-19.  Measured over Data/21,22,23 (42 labelled ends)
+    # against the two arms it replaces:
+    #
+    #                    recall  prec  event med  pt med  trunc  midFP
+    #     walk-ball        48%    62%    -0.44     +1.43     1      1
+    #     trace v1         48%    65%    +0.87     +1.95     0      0
+    #     trace (this)     62%    76%    +0.01     +0.82     0      0
+    #
+    # The first policy to beat walk-ball on recall, precision AND point median
+    # while holding truncations at zero — the gate every previous attempt failed.
+    #
+    # IT IS NOT FREE.  It needs trace_ball_fps 30 and trace_ball_imgsz 1920, so
+    # stage 5 costs 26 ms/source-frame on a 59.94 fps clip (stride 2) and
+    # 52-70 ms on a 29.97 fps clip (stride 1), against fast_end's documented
+    # 12.84.  End to end that takes a run from ~1.6x clip length to roughly 3x.
+    # Set end_policy="walk-ball" to trade the accuracy back for the speed.
+    #
+    # Corpus caveat, on the record: 3 clips / 42 ends, below the ~8-clip floor
+    # this project learned the hard way when a 3-clip tuner picked a different
+    # config in every fold.  The direction is robust — every swept stamp beat
+    # both baselines at zero truncations — but the exact values are not pinned.
+    #
+    #   "trace"      ball TRACE, not ball presence, is the evidence.  A trace is
+    #                an IMM-tracked ball that is actually MOVING and inside the
+    #                court; a single glint cannot make one, which is the point —
+    #                per-look detection rates run 9.7%-43% across the corpus, so
+    #                presence forces the long veto/quiet windows the other
+    #                policies use.  Two rules:
+    #                  1 a walk span starting at w0 ends the point if NO trace
+    #                    appears in [w0, w0+trace_walk_confirm_s], stamped at
+    #                    w0+trace_walk_stamp_s;
+    #                  2 trace_quiet_s with no trace ends it where no walk span
+    #                    covers the trigger instant, stamped at the gap start
+    #                    +trace_quiet_stamp_s.
+    #                Requires ball sampling at trace_ball_fps — see that field,
+    #                the rate is a CORRECTNESS precondition, not a nicety.
+    #
+    #   "confidence" the dead-time accumulator decides.  Ends where the
+    #                monotonic score first reaches deadtime_score_threshold,
+    #                emitted as an onset so find_point_end still applies
+    #                point_min_s, point_max_s and next_serve_guard_s.  Unlike
+    #                the rule-based policies it cannot flip back and forth: the
+    #                score only rises or holds between two starts, so a brief
+    #                ball miss cannot end a live point on its own.  A point
+    #                whose score never crosses contributes no onset and falls
+    #                through to the guards.
+    #
     # "walk-ball" makes the near-blind gate redundant: the gate existed to keep
     # ball-quiet from speaking where walking was informative, and that is now
     # expressed directly by which rule owns which moment.  ball_quiet_mode,
     # ball_quiet_s and the near_* windows apply to "legacy" only.
+
+    # ---- trace policy (end_policy="trace") -----------------------------
+    trace_ball_fps: float = 30.0
+    # Ball sampling rate this policy REQUIRES of anya_end_telemetry, requested
+    # per-run rather than by raising EndExtractorConfig.ball_fps, which stays at
+    # 10.0 so nothing that ships today gets slower.
+    #
+    # This is a correctness precondition.  BallTrackManager builds a constant-dt
+    # state transition from fps and calls predict() once per update(), so the
+    # timebase must be uniform AND the rate real.  At 10 Hz dt is 0.1 s and a
+    # 1000 px/s ball moves ~100 px between samples against gate_base_px=50, so
+    # association fails; confirm_hits=3 inside confirm_window_s=0.6 then has 6
+    # looks to work with and the tracker essentially never confirms.
+    #
+    # 30.0 was chosen because the stride arithmetic lands every corpus clip on
+    # ONE uniform rate — the rate those tracker constants were tuned against, so
+    # none of them is rescaled:
+    #
+    #     source fps   stride @10   stride @30   effective
+    #       29.97          3            1         29.97 Hz
+    #       59.94          6            2         29.97 Hz
+    trace_ball_imgsz: int = 1920
+    # Ball model input size under this policy, against the global default 960.
+    #
+    # config.py has said since 2026-08-14 that 960 -> 1920 buys recall that is
+    # "98% background noise" — but that a real gain exists "when gated to the
+    # court's own pixel band", and that ball_imgsz stays at 960 "until that
+    # lands".  The court gate above IS that gate, so both halves were finally
+    # measurable.  On Data/23 (2026-08-19), rally-second trace coverage:
+    #
+    #                        rally-cov   dead-cov   contrast
+    #     960  gated            28.0%       0.5%        56x
+    #     1920 gated            49.9%       2.5%        20x
+    #     1920 UNGATED          70.4%      35.1%         2x
+    #
+    # So the earlier reading was right on both counts: ungated 1920 tracks
+    # clutter through dead time and is useless, while gated 1920 nearly doubles
+    # rally coverage and stays specific.  The gate is not an optimisation here,
+    # it is what makes the resolution usable at all.
+    #
+    # It also buys a cleaner regime: at 960 the merge gap kept buying coverage
+    # out to 2.0 s (bridging sampling holes, which couples badly with a 4.0 s
+    # quiet trigger), while at 1920 it saturates by 0.8 s — the remaining gaps
+    # are genuine absence rather than missed looks.
+    #
+    # Cost: 26.32 ms/source-frame on Data/23 against fast_end's documented
+    # 12.84, and the ball model is 86% of it.  Strictly a trace-policy setting;
+    # as a global default it would gut fast_end's economics.
+
+    trace_min_ball_fps: float = 20.0
+    # Below this the policy REFUSES rather than degrading.  A near-empty trace
+    # makes rule 1 confirm everywhere and rule 2 fire continuously, which looks
+    # like a working policy and is a worse ball-quiet.
+
+    trace_quiet_s: float = 4.0
+    trace_gap_walk_s: float = 2.0
+    # How long a trace gap must run before it ends the point: trace_quiet_s on
+    # its own, trace_gap_walk_s when a usable walk span BEGINS inside the gap.
+    # That is the whole of "walking is confirmatory" — it does not end a point
+    # by itself, it shortens what the trace has to prove.  Must be >=
+    # trace_merge_gap_s or the shorter threshold is unreachable, since anything
+    # under the bridge is not a gap at all.
+
+    trace_walk_lead_s: float = 0.0
+    # Grace for a walk that began slightly BEFORE the trace stopped.  At 0.0 the
+    # walk must begin after the gap opens, which is deliberate: a walk already
+    # under way when the trace ends is the mid-rally walking that walk-ball
+    # spends its whole veto budget rejecting, and admitting it would fire the
+    # short threshold inside live rallies.  This is the knob that trades
+    # truncation risk against recall on the walk-confirmed branch.
+
+    trace_stamp_s: float = 2.0
+    # Where the end lands, measured from the last trace.  Swept 1.0/1.5/2.0/2.5
+    # on Data/21,22,23 (42 ends): 1.0 costs 2 truncations, 1.5-2.5 cost none,
+    # and 2.0 is the joint best on recall (62%) and precision (76%) with an
+    # event median of +0.01 s — essentially unbiased.  1.5 and 2.0 are within
+    # noise of each other on 42 ends; do not read the third decimal.
+    #
+    # NOT padding:
+    # alive_intervals anchors interval ends to the last REAL detection (t - tsd),
+    # so the gap start already sits up to ~1 s before the ball truly stopped and
+    # this roughly restores it.  The end is stamped EARLIER than it is confirmed,
+    # which is safe — had the trace resumed before the confirmation instant, the
+    # gap would not have qualified at all.
+
+    trace_point_min_s: float = 4.0
+    # Minimum point length under this policy: no end may be stamped before
+    # serve_t + this.  Policy-scoped rather than raising the shared point_min_s
+    # (3.0), so the walk-ball and legacy arms are untouched and an A/B is not
+    # confounded.
+    #
+    # This is the "ignore the first 4 s" rule in END-BLANKING form, and the
+    # distinction matters.  Blanking the EVIDENCE instead would mean a point
+    # whose ball is never traced — real, rally coverage runs 48-76% — presents a
+    # 4 s gap immediately and ends at ~serve_t+5, manufacturing an end out of
+    # absence of data.  Blanking the STAMP makes the same point fall through to
+    # next-serve/cap: over-retention rather than truncation.
+
+    trace_walk_merge_gap_s: float = 1.0
+    # Merge usable walk spans before taking rule-1 onsets.  usable_walk_intervals
+    # filters but never merges, and the classifier emits runs split by
+    # sub-second gaps; without this each fragment emits its own onset inside one
+    # dead period.  _walk_ball_onsets gets this for free from its pending latch.
+
+    trace_merge_gap_s: float = 2.0
+    # The BRIDGE: gaps this short do not count as gaps.  Applied AFTER
+    # micro-intervals are dropped (see ball_trace.assemble_intervals) — folding
+    # at the bridge width first would absorb a blip into its neighbour where no
+    # length filter can reach it.
+    #
+    # 2.0 was the feared setting, because a server bouncing the ball pre-serve
+    # makes a ~1-2 Hz chain of genuinely moving in-court traces that an
+    # unconditional bridge could merge into one interval running from the
+    # rally's last trace to the next serve.  Measured 2026-08-19 on Data/21,22,23
+    # at ball_fps 30 / imgsz 1920, that does NOT happen — rally coverage rises
+    # and dead-time coverage barely moves:
+    #
+    #     bridge   21 rally/dead   22 rally/dead   23 rally/dead
+    #       0.6      68.5%/12.9%     70.2%/19.0%     48.1%/2.5%
+    #       2.0      73.8%/13.0%     76.3%/21.2%     49.9%/2.5%
+    #
+    # Contrast holds (21 improves 5.3x -> 5.7x, 23 19.3x -> 20.0x, 22 flat), so
+    # the bridge is buying real rally continuity rather than merging bounces.
+
+    trace_min_interval_s: float = 0.25
+    # Drop intervals shorter than this BEFORE bridging.  One confirmed frame of
+    # clutter mid-dead-time otherwise resets the quiet clock — the same failure
+    # SegmenterConfig.far_trace_min_interval_s was added for.
+
+    trace_bridge_min_span_s: float = 0.25
+    # Both intervals adjacent to a bridged gap must be at least this long — the
+    # anti-bounce lever.  INERT AT THE DEFAULT, and deliberately so: it equals
+    # trace_min_interval_s, which has already removed everything shorter, and a
+    # sweep at 0.0 vs 0.25 on Data/21,22,23 produced byte-identical intervals.
+    # It exists to be RAISED above trace_min_interval_s on a clip where bounce
+    # chains do bridge; measure `bridged_s` and post-bridge dead-time coverage
+    # before reaching for it.
+
+    trace_onset_dedupe_s: float = 0.75
+    # Both rules can fire inside one long gap (a walk beginning after the quiet
+    # trigger legitimately owns its own moment).  A duplicate is a plain false
+    # positive against n_det, so collapse them and keep the corroborated label.
+
+    trace_court_gate: bool = True
+    trace_court_pad_ft: float = 25.0
+    trace_court_lateral_frac: float = 0.5
+    trace_court_near_frac: float = 0.06
+    # In-court gate, applied at TRACKER INPUT so the IMM never locks onto
+    # off-court clutter.  Pixel space, no homography: a ground-plane homography
+    # describes points ON the ground, and mapping an airborne ball projects it
+    # past the far baseline — above the horizon the sign of w flips and the
+    # result is garbage, which would delete exactly the high far-side balls a
+    # far-serve rally depends on.
+    #
+    # Measured over the 11 trusted clips, rejections are overwhelmingly LATERAL
+    # (fence, spectators, canopy) and vertical loss is ~4% of detections at a
+    # 15 ft pad, ~1% at 25 ft — hence 25.0.  Margins are in court feet at the
+    # FAR baseline's px/ft scale, not pixel literals, because a court spanning
+    # 149 px of depth and one spanning 200+ need different pixel margins.
 
     walk_ball_veto_s: float = 5.0
     # "walk-ball" rule A.  How long the ball must have been unseen before an
@@ -294,6 +534,41 @@ class ReelConfig:
     # that hold the near player more reliably.
 
     # ---- output segments ----------------------------------------------
+    # ---- dead-time confidence ------------------------------------------
+    # A score is emitted once per elapsed second after every detected point
+    # start.  It is deliberately an accumulator, rather than a per-frame
+    # classifier: between two starts the score can only rise or hold.  This
+    # makes it useful to review *when* the evidence for dead time became
+    # convincing without allowing a brief ball miss to undo an earlier call.
+    deadtime_base_per_s: float = 0.06
+    deadtime_walking_weight: float = 0.34
+    deadtime_ball_trace_weight: float = 0.24
+    deadtime_max_increment_per_s: float = 0.25
+    deadtime_score_threshold: float = 0.70
+    # Elapsed time and walking are positive evidence; ball trace inhibits the
+    # increment.  Ball trace is the share of ball-model looks in the second
+    # that retain a filtered ball.  Seconds with no ball-model look at all hold
+    # the score rather than incrementing it, so patchy detection cannot
+    # manufacture confidence.
+    #
+    # These four came off `tune_deadtime_confidence.py --leave-one-out` over ten
+    # labelled clips (Data/21,22,23,24,25,26,36,38,40,43 — 128 rallies, 53 near
+    # / 75 far) on 2026-08-19: all ten folds picked this config, and pooled
+    # held-out loss matched full-corpus loss, so it is not a training-set
+    # argmin.  Nothing here is at a sweep edge.  Against the previous defaults
+    # (.12/.20/.24) MAE is UNCHANGED at 3.13 s while early cuts drop 32/128 ->
+    # 9/128: the tuning buys direction, not accuracy.  Do not re-tune on fewer
+    # than ~8 clips — at four the walking weight fits to 1.00, three times the
+    # value 128 rallies settle on, and at three the folds disagree outright.
+    #
+    # The cap is what sets the floor on how fast dead time can be called:
+    # threshold / cap seconds, so 0.70 / 0.25 means no point can be declared
+    # over in under three seconds no matter how the weights are tuned.  Keep it
+    # BELOW base + walking (0.32 here, up to 0.60 across the tuner's sweep) or
+    # it stops binding and that floor quietly disappears.
+    # Keep these as explicit config values: `tune_deadtime_confidence.py`
+    # sweeps them against labelled clips without rerunning perception.
+
     pre_roll_s: float = 1.5      # lead-in before the serve
     post_roll_s: float = 1.0     # tail after the point ends
     merge_gap_s: float = 1.5     # join segments closer than this

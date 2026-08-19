@@ -33,8 +33,10 @@ class RallySegment:
     end_t: float
     start: float           # serve_t - pre_roll, clamped
     end: float             # end_t + post_roll, clamped
-    end_method: str        # "walk" | "next-serve" | "cap"
-    confidence: str
+    end_method: str        # "walk" | "trace-walk" | "trace-gap" | "next-serve" | "cap"
+    confidence: str        # SERVE-START provenance, from PointStart
+    end_confidence: str = ""   # END confidence: "high" | "medium" | "" (guard/cap)
+    end_reason: str = ""       # human-readable why, for review
 
     def as_dict(self) -> Dict:
         return asdict(self)
@@ -172,7 +174,7 @@ def walk_onsets(intervals: Sequence[Dict], cfg: ReelConfig) -> List[tuple]:
 
 def find_point_end(serve_t: float, next_serve_t: Optional[float],
                    dead_onsets: Sequence[tuple], cfg: ReelConfig,
-                   duration: float):
+                   duration: float, min_point_s: Optional[float] = None):
     """First dead-time onset after the serve, else a bounded fallback.
 
     `dead_onsets` is a sorted [(t, source)] list of every signal that says
@@ -181,14 +183,20 @@ def find_point_end(serve_t: float, next_serve_t: Optional[float],
     the next-serve guard or the cap, which is why those two methods show up
     in the output whenever the walking model is mistuned for the clip.
 
+    `min_point_s` overrides cfg.point_min_s for one policy without moving the
+    shared default — the trace policy wants a 4 s floor while walk-ball and
+    legacy keep 3 s, and raising the shared value would confound any A/B
+    between them.
+
     Returns (end_t, method).
     """
+    floor = cfg.point_min_s if min_point_s is None else min_point_s
     hard_cap = min(serve_t + cfg.point_max_s, duration)
     if next_serve_t is not None:
         hard_cap = min(hard_cap, next_serve_t - cfg.next_serve_guard_s)
-    hard_cap = max(hard_cap, serve_t + cfg.point_min_s)
+    hard_cap = max(hard_cap, serve_t + floor)
 
-    earliest = serve_t + cfg.point_min_s
+    earliest = serve_t + floor
     for t, source in dead_onsets:
         if t < earliest:
             continue
@@ -203,13 +211,15 @@ def find_point_end(serve_t: float, next_serve_t: Optional[float],
 
 
 def build_segments(starts: Sequence[PointStart], dead_onsets: Sequence[tuple],
-                   duration: float, cfg: ReelConfig) -> List[RallySegment]:
+                   duration: float, cfg: ReelConfig,
+                   min_point_s: Optional[float] = None) -> List[RallySegment]:
     dead_onsets = sorted(dead_onsets, key=lambda x: x[0])
 
     segments: List[RallySegment] = []
     for i, ps in enumerate(starts):
         next_t = starts[i + 1].t if i + 1 < len(starts) else None
-        end_t, method = find_point_end(ps.t, next_t, dead_onsets, cfg, duration)
+        end_t, method = find_point_end(ps.t, next_t, dead_onsets, cfg, duration,
+                                       min_point_s=min_point_s)
 
         start = max(0.0, ps.t - cfg.pre_roll_s)
         end = min(duration, end_t + cfg.post_roll_s)
@@ -239,6 +249,12 @@ def _merge_overlaps(segments: List[RallySegment],
             # on the next-serve guard when the true number was zero.
             if seg.end_t > prev.end_t:
                 prev.end_method = seg.end_method
+                # The end's CONFIDENCE describes the same decision as its
+                # method, so it has to travel with end_t too — keeping one and
+                # not the other reproduces the Data/75 desync above, just in a
+                # field nobody thinks to check.
+                prev.end_confidence = seg.end_confidence
+                prev.end_reason = seg.end_reason
             prev.end = max(prev.end, seg.end)
             prev.end_t = max(prev.end_t, seg.end_t)
             if prev.side != seg.side:

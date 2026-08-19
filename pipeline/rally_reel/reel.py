@@ -36,13 +36,16 @@ from ..extract_far_pose import extract_far_pose
 from ..anya_near_serve import score_telemetry, NearServeConfig
 from ..anya_near_telemetry import extract_near_telemetry
 from ..anya_far_telemetry import extract_far_telemetry
-from ..anya_end_telemetry import (extract_end_telemetry, end_dets_path_for,
-                                  end_pose_path_for)
+from ..anya_end_telemetry import (EndExtractorConfig, extract_end_telemetry,
+                                  end_dets_path_for, end_pose_path_for,
+                                  end_telemetry_path_for)
 from ..utilities import Config, init_court, create_highlights_ffmpeg, probe_video
 
 from .config import ReelConfig
 from .points import (build_segments, enforce_service_runs,
                      merge_serve_starts, usable_walk_intervals, walk_onsets)
+from .deadtime_confidence import deadtime_onsets, score_deadtime
+from . import ball_trace
 
 ANALYSIS_SIZE = (960, 540)
 SEGMENTS_SUFFIX = "_rally_segments.json"
@@ -103,7 +106,8 @@ def _walk_model_path(cfg: ReelConfig) -> Optional[str]:
 def _walk_intervals(video_path: str, device: str = "mps",
                     dets_npz: Optional[str] = None,
                     pose_npz: Optional[str] = None,
-                    model_path: Optional[str] = None) -> List[Dict]:
+                    model_path: Optional[str] = None,
+                    return_result: bool = False):
     """Walking intervals, as the dead-time proxy for point ends.
 
     `dets_npz`/`pose_npz` point the classifier at a pose pass someone else
@@ -131,13 +135,14 @@ def _walk_intervals(video_path: str, device: str = "mps",
                         model_path=model_path or MODEL_PATH)
     fps, prob, mask = res["fps"], res["prob"], res["is_walking"]
     valid = res["sig"]["valid"]
-    return [{
+    intervals = [{
         "start_second": a / fps,
         "end_second": (b + 1) / fps,
         "duration_s": (b - a + 1) / fps,
         "mean_prob": float(np.mean(prob[a:b + 1])),
         "detection_coverage": float(np.mean(valid[a:b + 1])),
     } for a, b in to_intervals(mask)]
+    return (intervals, res) if return_result else intervals
 
 
 def _near_blind_mask(records: List[Dict], fps: float,
@@ -197,7 +202,9 @@ def _ball_quiet_onsets(telemetry_path: str, cfg: ReelConfig) -> List[tuple]:
     or stationary at that moment: a silent ball while the walking classifier
     is watching a visible, moving player is not evidence the point ended.
     """
-    meta, records, is_ball = _ball_stream(telemetry_path)
+    meta, records, filter_balls = _ball_stream(telemetry_path)
+    def is_ball(r):
+        return bool(filter_balls(r))
 
     gated = cfg.ball_quiet_mode == "gated"
     blind = _near_blind_mask(records, meta.get("fps", 30.0), cfg) if gated else None
@@ -243,23 +250,37 @@ def _ball_quiet_onsets(telemetry_path: str, cfg: ReelConfig) -> List[tuple]:
 
 
 def _ball_stream(telemetry_path: str):
-    """(meta, records, is_ball) with the same ball filtering ball-quiet uses.
+    """(meta, records, filter_balls) with the ball filtering ball-quiet uses.
 
-    Factored out of `_ball_quiet_onsets` so both policies see an identical
+    Factored out of `_ball_quiet_onsets` so every policy sees an identical
     ball stream — confidence floor, rescaled exclusion zones, self-calibrated
     static blobs — and a difference between them is never a difference in what
     counts as a ball.
+
+    `filter_balls(record)` returns the surviving `(cx, cy, conf)` detections, so
+    a caller that needs positions (the trace policy feeds them to the tracker)
+    and a caller that only needs presence share one definition.  Use
+    `bool(filter_balls(r))` for the presence question.
+
+    The static-blob thresholds are DETECTION COUNTS, so they mean something
+    different against a decimated stream and `ball_sampling_scales` is what
+    makes them comparable.  Omitting it — as this did until 2026-08-19 — left a
+    10 fps stream judged against full-rate thresholds, so a persistent false
+    positive needed 3x its share of looks before it read as static and a
+    scoreboard glint could keep a point alive.  The error scales with the
+    sampling rate, so it also moves when ball_fps does.
     """
     from ..anya_far_serve import (FarServeDetector, FarServeDetectorConfig,
-                                  calibrate_static_blobs, load_telemetry,
-                                  scale_exclusion_zones)
+                                  ball_sampling_scales, calibrate_static_blobs,
+                                  load_telemetry, scale_exclusion_zones)
 
     meta, records = load_telemetry(telemetry_path)
     fcfg = FarServeDetectorConfig()
     det = FarServeDetector(fcfg)
     det.set_exclusion_zones(scale_exclusion_zones(meta.get("exclusion_zones", []), meta))
-    det.set_static_cells(calibrate_static_blobs(records, fcfg))
-    return meta, records, lambda r: bool(det._filter_balls(r.get("all_balls", [])))
+    hits_scale, rate_scale = ball_sampling_scales(meta)
+    det.set_static_cells(calibrate_static_blobs(records, fcfg, hits_scale, rate_scale))
+    return meta, records, lambda r: det._filter_balls(r.get("all_balls", []))
 
 
 def _walk_ball_onsets(telemetry_path: str, walks: List[Dict],
@@ -286,7 +307,9 @@ def _walk_ball_onsets(telemetry_path: str, walks: List[Dict],
     window that was barely sampled is silent from sampling noise rather than
     from evidence, and per-frame ball recall runs 7%-92% across the corpus.
     """
-    meta, records, is_ball = _ball_stream(telemetry_path)
+    meta, records, filter_balls = _ball_stream(telemetry_path)
+    def is_ball(r):
+        return bool(filter_balls(r))
 
     usable = usable_walk_intervals(walks, cfg)
     spans = sorted((float(w["start_second"]), float(w["end_second"]))
@@ -355,6 +378,7 @@ def build_reel(video_path: str,
                force_telemetry: bool = False,
                device: str = "mps",
                dry_run: bool = False,
+               segments_suffix: Optional[str] = None,
                on_progress=None) -> Tuple[List, Optional[str]]:
     """Runs every stage. Returns (segments, output_path or None).
 
@@ -473,19 +497,63 @@ def build_reel(video_path: str,
         # stream ball-quiet reads.
         print("[REEL] Stage 5/7  walking + ball quiet (fast path)")
         _emit(on_progress, 5)   # opens with a possible one-time proxy build
+        ecfg = None
+        end_out = None
+        if cfg.end_policy == "trace":
+            # The trace policy is the only consumer that needs a dense ball
+            # stream, so it requests one per-run rather than raising the global
+            # default and slowing every other path down.  Its own cache path
+            # lets both rates coexist, so an A/B does not re-extract per flip.
+            ecfg = EndExtractorConfig()
+            ecfg.ball_fps = cfg.trace_ball_fps
+            ecfg.ball_imgsz = cfg.trace_ball_imgsz
+            end_out = end_telemetry_path_for(video_path, cfg.trace_ball_fps,
+                                             cfg.trace_ball_imgsz)
         end_telemetry = extract_end_telemetry(
-            video_path, force=force_telemetry,
+            video_path, force=force_telemetry, cfg=ecfg, out_path=end_out,
             progress_cb=lambda cur, tot: _emit(on_progress, 5,
                                                cur / max(1, tot)))
-        walks = _walk_intervals(video_path, device=device,
-                                dets_npz=end_dets_path_for(video_path),
-                                pose_npz=end_pose_path_for(video_path),
-                                model_path=_walk_model_path(cfg))
+        walks, walk_result = _walk_intervals(
+            video_path, device=device, dets_npz=end_dets_path_for(video_path),
+            pose_npz=end_pose_path_for(video_path), model_path=_walk_model_path(cfg),
+            return_result=True)
     else:
         print("[REEL] Stage 5/7  walking (dead-time proxy)")
         _emit(on_progress, 5)   # predict_video returns only when done
-        walks = _walk_intervals(video_path, device=device)
-    if cfg.end_policy == "walk-ball":
+        walks, walk_result = _walk_intervals(video_path, device=device,
+                                             return_result=True)
+    # One ball stream for every consumer below.  `_ball_stream` exists so that a
+    # difference between point-end policies is never a difference in what counts
+    # as a ball, and the confidence score is now one of those consumers.
+    ball_records, is_ball = None, None
+    trace_details = []
+    if cfg.end_policy in ("walk-ball", "trace", "confidence") or cfg.ball_quiet_mode != "off":
+        ball_meta, ball_records, filter_balls = _ball_stream(end_telemetry)
+        def is_ball(r):
+            return bool(filter_balls(r))
+
+    if cfg.end_policy == "confidence":
+        # Scored in stage 6, where `starts` exists: the accumulator resets at
+        # every point start, so it cannot be built before they are known.
+        dead_onsets = []
+        print(f"[REEL]   walk intervals: {len(walks)} -> confidence policy "
+              f"(threshold {cfg.deadtime_score_threshold})")
+    elif cfg.end_policy == "trace":
+        intervals, tstats = ball_trace.trace_intervals(
+            ball_meta, ball_records, filter_balls,
+            _stem_path(video_path, "_court_cache.json"), cfg)
+        looks = [float(r["t"]) for r in ball_records if r.get("bn")]
+        dead_onsets, trace_details = ball_trace.trace_onsets(
+            intervals, walks, cfg, look_times=looks,
+            last_record_t=looks[-1] if looks else duration)
+        n_hi = sum(1 for d in trace_details if d["level"] == "high")
+        print(f"[REEL]   trace: {tstats['n_pre_bridge']} interval(s) -> "
+              f"{tstats['n_post_bridge']} after bridging {tstats['bridged_s']}s "
+              f"at {cfg.trace_merge_gap_s}s; {tstats['alive_s']:.1f}s alive; gate "
+              f"passed {tstats['gate_rate']:.0%} of {tstats['dets']} detection(s)")
+        print(f"[REEL]   dead-time onsets: {n_hi} trace+walk (high) + "
+              f"{len(dead_onsets) - n_hi} trace-only (medium)")
+    elif cfg.end_policy == "walk-ball":
         print(f"[REEL]   walk intervals: {len(walks)} -> "
               f"{len(usable_walk_intervals(walks, cfg))} usable")
         dead_onsets = _walk_ball_onsets(end_telemetry, walks, cfg)
@@ -516,9 +584,31 @@ def build_reel(video_path: str,
             if cfg.drop_side_conflicts:
                 starts = [p for p in starts if not p.side_conflict]
 
-    segments = build_segments(starts, dead_onsets, duration, cfg)
+    confidence_rows = []
+    if ball_records is not None:
+        confidence_rows = score_deadtime(starts, duration, walk_result,
+                                         ball_records, is_ball, cfg)
+    if cfg.end_policy == "confidence":
+        dead_onsets = deadtime_onsets(confidence_rows, cfg)
+        print(f"[REEL]   dead-time onsets: {len(dead_onsets)} confidence "
+              f"crossing(s) from {len(starts)} start(s)")
 
-    seg_path = _stem_path(video_path, SEGMENTS_SUFFIX)
+    segments = build_segments(
+        starts, dead_onsets, duration, cfg,
+        min_point_s=cfg.trace_point_min_s if cfg.end_policy == "trace" else None)
+
+    # Decorate ends with their graded confidence.  Keyed on the onset instant:
+    # find_point_end returns min(t, hard_cap) and the cap path reports a
+    # different end_method, so a trace-* method implies the exact instant here.
+    by_t = {round(d["t"], 3): d for d in trace_details}
+    for seg in segments:
+        det = by_t.get(round(seg.end_t, 3))
+        if det is not None and seg.end_method.startswith("trace"):
+            seg.end_confidence, seg.end_reason = det["level"], det["reason"]
+        else:
+            seg.end_confidence, seg.end_reason = "", seg.end_method
+
+    seg_path = _stem_path(video_path, segments_suffix or SEGMENTS_SUFFIX)
     with open(seg_path, "w") as fh:
         json.dump({
             "video": os.path.basename(video_path),
@@ -526,6 +616,17 @@ def build_reel(video_path: str,
             "config": cfg.__dict__,
             "n_serve_starts": len(starts),
             "segments": [s.as_dict() for s in segments],
+            "end_confidence": {
+                "policy": cfg.end_policy,
+                "levels": {"high": "trace gap + walking",
+                           "medium": "trace gap only",
+                           "": "guard or cap decided the end"},
+                "samples": trace_details,
+            },
+            "deadtime_confidence": {
+                "threshold": cfg.deadtime_score_threshold,
+                "samples": confidence_rows,
+            },
         }, fh, indent=2)
 
     kept = sum(s.end - s.start for s in segments)
