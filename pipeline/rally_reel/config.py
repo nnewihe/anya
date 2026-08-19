@@ -170,7 +170,7 @@ class ReelConfig:
     # False on a 30 Hz pose pass (pose_fps 30 costs 20.28 ms/frame against
     # 12.84), where the shipped model is the matched one.
 
-    end_policy: str = "walk-ball"      # "walk-ball" | "confidence" | "legacy"
+    end_policy: str = "walk-ball"      # "walk-ball" | "trace" | "confidence" | "legacy"
     # How the two dead-time signals combine into point ends.
     #
     #   "legacy"     walk onsets UNION gated ball-quiet onsets, first one after
@@ -214,6 +214,21 @@ class ReelConfig:
     # starts, which is the gap between the two evaluations and the reason this
     # measurement exists rather than an assumption that it would.
     #
+    #   "trace"      ball TRACE, not ball presence, is the evidence.  A trace is
+    #                an IMM-tracked ball that is actually MOVING and inside the
+    #                court; a single glint cannot make one, which is the point —
+    #                per-look detection rates run 9.7%-43% across the corpus, so
+    #                presence forces the long veto/quiet windows the other
+    #                policies use.  Two rules:
+    #                  1 a walk span starting at w0 ends the point if NO trace
+    #                    appears in [w0, w0+trace_walk_confirm_s], stamped at
+    #                    w0+trace_walk_stamp_s;
+    #                  2 trace_quiet_s with no trace ends it where no walk span
+    #                    covers the trigger instant, stamped at the gap start
+    #                    +trace_quiet_stamp_s.
+    #                Requires ball sampling at trace_ball_fps — see that field,
+    #                the rate is a CORRECTNESS precondition, not a nicety.
+    #
     #   "confidence" the dead-time accumulator decides.  Ends where the
     #                monotonic score first reaches deadtime_score_threshold,
     #                emitted as an onset so find_point_end still applies
@@ -228,6 +243,78 @@ class ReelConfig:
     # ball-quiet from speaking where walking was informative, and that is now
     # expressed directly by which rule owns which moment.  ball_quiet_mode,
     # ball_quiet_s and the near_* windows apply to "legacy" only.
+
+    # ---- trace policy (end_policy="trace") -----------------------------
+    trace_ball_fps: float = 30.0
+    # Ball sampling rate this policy REQUIRES of anya_end_telemetry, requested
+    # per-run rather than by raising EndExtractorConfig.ball_fps, which stays at
+    # 10.0 so nothing that ships today gets slower.
+    #
+    # This is a correctness precondition.  BallTrackManager builds a constant-dt
+    # state transition from fps and calls predict() once per update(), so the
+    # timebase must be uniform AND the rate real.  At 10 Hz dt is 0.1 s and a
+    # 1000 px/s ball moves ~100 px between samples against gate_base_px=50, so
+    # association fails; confirm_hits=3 inside confirm_window_s=0.6 then has 6
+    # looks to work with and the tracker essentially never confirms.
+    #
+    # 30.0 was chosen because the stride arithmetic lands every corpus clip on
+    # ONE uniform rate — the rate those tracker constants were tuned against, so
+    # none of them is rescaled:
+    #
+    #     source fps   stride @10   stride @30   effective
+    #       29.97          3            1         29.97 Hz
+    #       59.94          6            2         29.97 Hz
+    trace_min_ball_fps: float = 20.0
+    # Below this the policy REFUSES rather than degrading.  A near-empty trace
+    # makes rule 1 confirm everywhere and rule 2 fire continuously, which looks
+    # like a working policy and is a worse ball-quiet.
+
+    trace_walk_confirm_s: float = 3.0
+    trace_walk_stamp_s: float = 0.5
+    # Rule 1.  The lookahead is CONFIRMATION, not duration — the point stopped
+    # when the player turned away, so the stamp is close to the walk onset.
+
+    trace_quiet_s: float = 4.0
+    trace_quiet_stamp_s: float = 3.0
+    # Rule 2, and the stamp is measured from the last trace rather than from the
+    # confirmation.  Note alive_intervals anchors interval ends to the last REAL
+    # detection (t - tsd), so last_trace can already sit up to ~1 s before the
+    # ball truly stopped; the +3.0 is the headroom walk-ball bought with a +5.0
+    # trigger and a +1.5 stamp.
+
+    trace_walk_merge_gap_s: float = 1.0
+    # Merge usable walk spans before taking rule-1 onsets.  usable_walk_intervals
+    # filters but never merges, and the classifier emits runs split by
+    # sub-second gaps; without this each fragment emits its own onset inside one
+    # dead period.  _walk_ball_onsets gets this for free from its pending latch.
+
+    trace_merge_gap_s: float = 0.6
+    trace_min_interval_s: float = 0.25
+    # Fold micro-gaps inside a trace, then drop micro-intervals.  One confirmed
+    # frame of clutter mid-dead-time otherwise resets rule 2's quiet clock —
+    # the same failure SegmenterConfig.far_trace_min_interval_s was added for.
+
+    trace_onset_dedupe_s: float = 0.75
+    # Both rules can fire inside one long gap (a walk beginning after the quiet
+    # trigger legitimately owns its own moment).  A duplicate is a plain false
+    # positive against n_det, so collapse them and keep the corroborated label.
+
+    trace_court_gate: bool = True
+    trace_court_pad_ft: float = 25.0
+    trace_court_lateral_frac: float = 0.5
+    trace_court_near_frac: float = 0.06
+    # In-court gate, applied at TRACKER INPUT so the IMM never locks onto
+    # off-court clutter.  Pixel space, no homography: a ground-plane homography
+    # describes points ON the ground, and mapping an airborne ball projects it
+    # past the far baseline — above the horizon the sign of w flips and the
+    # result is garbage, which would delete exactly the high far-side balls a
+    # far-serve rally depends on.
+    #
+    # Measured over the 11 trusted clips, rejections are overwhelmingly LATERAL
+    # (fence, spectators, canopy) and vertical loss is ~4% of detections at a
+    # 15 ft pad, ~1% at 25 ft — hence 25.0.  Margins are in court feet at the
+    # FAR baseline's px/ft scale, not pixel literals, because a court spanning
+    # 149 px of depth and one spanning 200+ need different pixel margins.
 
     walk_ball_veto_s: float = 5.0
     # "walk-ball" rule A.  How long the ball must have been unseen before an

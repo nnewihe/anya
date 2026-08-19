@@ -51,12 +51,29 @@ def main(argv=None):
     ap.add_argument("--post-roll", type=float, default=None, help="Tail seconds")
     ap.add_argument("--point-max", type=float, default=None,
                     help="Cap on point length when no walk interval is found")
-    ap.add_argument("--end-policy", choices=("walk-ball", "legacy"), default=None,
+    ap.add_argument("--end-policy",
+                    choices=("walk-ball", "trace", "confidence", "legacy"),
+                    default=None,
                     help="How point ends combine the two dead-time signals: "
                          "'walk-ball' (default) makes walking primary and lets "
                          "a visible ball veto it, with ball silence alone "
                          "ending the point where walking is silent; 'legacy' "
-                         "is the old union of walk onsets and gated ball-quiet")
+                         "is the old union of walk onsets and gated "
+                         "ball-quiet; 'trace' ends on IMM-tracked in-court ball "
+                         "trace instead of ball presence; 'confidence' ends "
+                         "where the dead-time accumulator crosses threshold")
+    ap.add_argument("--segments-suffix", default=None,
+                    help="Write the segments JSON under this suffix instead of "
+                         "_rally_segments.json, so eval_point_end.py --arm can "
+                         "compare two runs without copying files by hand")
+    ap.add_argument("--trace-ball-fps", type=float, default=None)
+    ap.add_argument("--trace-walk-confirm", type=float, default=None)
+    ap.add_argument("--trace-walk-stamp", type=float, default=None)
+    ap.add_argument("--trace-quiet", type=float, default=None)
+    ap.add_argument("--trace-quiet-stamp", type=float, default=None)
+    ap.add_argument("--trace-court-pad-ft", type=float, default=None)
+    ap.add_argument("--no-trace-court-gate", action="store_true",
+                    help="Ablate the in-court gate on the trace policy")
     ap.add_argument("--walk-ball-veto", type=float, default=None,
                     help="walk-ball rule A: seconds the ball must be unseen "
                          "before an active walk ends the point (default 1.0)")
@@ -99,6 +116,17 @@ def main(argv=None):
         cfg.ball_quiet_mode = args.ball_quiet_mode
     if args.end_policy is not None:
         cfg.end_policy = args.end_policy
+    for arg, field in (("trace_ball_fps", "trace_ball_fps"),
+                       ("trace_walk_confirm", "trace_walk_confirm_s"),
+                       ("trace_walk_stamp", "trace_walk_stamp_s"),
+                       ("trace_quiet", "trace_quiet_s"),
+                       ("trace_quiet_stamp", "trace_quiet_stamp_s"),
+                       ("trace_court_pad_ft", "trace_court_pad_ft")):
+        v = getattr(args, arg, None)
+        if v is not None:
+            setattr(cfg, field, v)
+    if args.no_trace_court_gate:
+        cfg.trace_court_gate = False
     if args.walk_ball_veto is not None:
         cfg.walk_ball_veto_s = args.walk_ball_veto
     if args.no_walk_quiet is not None:
@@ -124,7 +152,7 @@ def main(argv=None):
     segments, out = build_reel(
         args.video, cfg=cfg, output_path=args.output,
         force_telemetry=args.force_telemetry, device=args.device,
-        dry_run=args.dry_run,
+        dry_run=args.dry_run, segments_suffix=args.segments_suffix,
     )
     for s in segments:
         print(f"  [{s.index:02d}] {s.side:>4}  {s.start:7.2f}s - {s.end:7.2f}s "
