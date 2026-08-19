@@ -43,7 +43,7 @@ from ..utilities import Config, init_court, create_highlights_ffmpeg, probe_vide
 from .config import ReelConfig
 from .points import (build_segments, enforce_service_runs,
                      merge_serve_starts, usable_walk_intervals, walk_onsets)
-from .deadtime_confidence import score_deadtime
+from .deadtime_confidence import deadtime_onsets, score_deadtime
 
 ANALYSIS_SIZE = (960, 540)
 SEGMENTS_SUFFIX = "_rally_segments.json"
@@ -489,7 +489,20 @@ def build_reel(video_path: str,
         _emit(on_progress, 5)   # predict_video returns only when done
         walks, walk_result = _walk_intervals(video_path, device=device,
                                              return_result=True)
-    if cfg.end_policy == "walk-ball":
+    # One ball stream for every consumer below.  `_ball_stream` exists so that a
+    # difference between point-end policies is never a difference in what counts
+    # as a ball, and the confidence score is now one of those consumers.
+    ball_records, is_ball = None, None
+    if cfg.end_policy in ("walk-ball", "confidence") or cfg.ball_quiet_mode != "off":
+        _, ball_records, is_ball = _ball_stream(end_telemetry)
+
+    if cfg.end_policy == "confidence":
+        # Scored in stage 6, where `starts` exists: the accumulator resets at
+        # every point start, so it cannot be built before they are known.
+        dead_onsets = []
+        print(f"[REEL]   walk intervals: {len(walks)} -> confidence policy "
+              f"(threshold {cfg.deadtime_score_threshold})")
+    elif cfg.end_policy == "walk-ball":
         print(f"[REEL]   walk intervals: {len(walks)} -> "
               f"{len(usable_walk_intervals(walks, cfg))} usable")
         dead_onsets = _walk_ball_onsets(end_telemetry, walks, cfg)
@@ -520,8 +533,16 @@ def build_reel(video_path: str,
             if cfg.drop_side_conflicts:
                 starts = [p for p in starts if not p.side_conflict]
 
+    confidence_rows = []
+    if ball_records is not None:
+        confidence_rows = score_deadtime(starts, duration, walk_result,
+                                         ball_records, is_ball, cfg)
+    if cfg.end_policy == "confidence":
+        dead_onsets = deadtime_onsets(confidence_rows, cfg)
+        print(f"[REEL]   dead-time onsets: {len(dead_onsets)} confidence "
+              f"crossing(s) from {len(starts)} start(s)")
+
     segments = build_segments(starts, dead_onsets, duration, cfg)
-    confidence_rows = score_deadtime(starts, duration, walk_result, end_telemetry, cfg)
 
     seg_path = _stem_path(video_path, SEGMENTS_SUFFIX)
     with open(seg_path, "w") as fh:

@@ -26,19 +26,18 @@ from types import SimpleNamespace
 from typing import Dict, List, Sequence
 
 from .anya_end_telemetry import end_dets_path_for, end_pose_path_for
-from .anya_far_serve import load_telemetry
 from .rally_reel.config import ReelConfig
 from .rally_reel.deadtime_confidence import (score_deadtime_from_evidence,
                                              telemetry_evidence_by_second,
                                              walking_evidence_by_second)
-from .rally_reel.reel import _walk_intervals, _walk_model_path
+from .rally_reel.reel import _ball_stream, _walk_intervals, _walk_model_path
 
 
 def _load_clip(directory: Path, cfg: ReelConfig):
     video = directory / "snippet.mp4"
     telemetry = directory / "snippet_anya_end_telemetry.jsonl"
     labels = json.loads((directory / "ground_truth.json").read_text())["rallies"]
-    meta, _ = load_telemetry(str(telemetry))
+    meta, records, is_ball = _ball_stream(str(telemetry))
     fps = float(meta["fps"])
     starts = [SimpleNamespace(t=float(r["start"]) / fps) for r in labels]
     _, walk_result = _walk_intervals(
@@ -50,7 +49,7 @@ def _load_clip(directory: Path, cfg: ReelConfig):
         "starts": starts,
         "duration": duration,
         "walk": walking_evidence_by_second(walk_result),
-        "telemetry": telemetry_evidence_by_second(str(telemetry)),
+        "telemetry": telemetry_evidence_by_second(records, is_ball),
         "ends": [float(label["end"]) / fps for label in labels],
     }
 

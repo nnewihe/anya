@@ -11,7 +11,7 @@ ball-free second would make patchy detection the strongest dead-time signal
 we have, which is exactly backwards.
 """
 
-from typing import Dict, List, Sequence
+from typing import Callable, Dict, List, Sequence
 
 import numpy as np
 
@@ -30,29 +30,25 @@ def walking_evidence_by_second(walk_result: Dict) -> Dict[int, Dict[str, float]]
     return out
 
 
-def telemetry_evidence_by_second(telemetry_path: str) -> Dict[int, Dict[str, float]]:
+def telemetry_evidence_by_second(records: Sequence[Dict],
+                                 is_ball: Callable[[Dict], bool]) -> Dict[int, Dict[str, float]]:
     """Filtered ball-trace coverage per second.
 
-    The ball definition is intentionally the same filtered stream used by the
-    existing ball-quiet logic.
+    Takes the caller's ball stream rather than building one.  `reel._ball_stream`
+    already constructs exactly this — confidence floor, rescaled exclusion zones,
+    self-calibrated static blobs — for the onset rules, and it exists so that a
+    difference between two point-end policies is never a difference in what
+    counts as a ball.  Rebuilding a second detector here would reintroduce the
+    divergence it was factored out to prevent; the duplicated parse was only
+    ~0.1 s, so the drift was always the real cost.
     """
-    from ..anya_far_serve import (FarServeDetector, FarServeDetectorConfig,
-                                  calibrate_static_blobs, load_telemetry,
-                                  scale_exclusion_zones)
-
-    meta, records = load_telemetry(telemetry_path)
-    detector = FarServeDetector(FarServeDetectorConfig())
-    detector.set_exclusion_zones(
-        scale_exclusion_zones(meta.get("exclusion_zones", []), meta))
-    detector.set_static_cells(calibrate_static_blobs(records, detector.cfg))
-
     bins: Dict[int, Dict[str, List[float]]] = {}
     for record in records:
         t = float(record["t"])
         second = int(t)
         bucket = bins.setdefault(second, {"ball": []})
         if record.get("bn", True):
-            bucket["ball"].append(float(bool(detector._filter_balls(record.get("all_balls", [])))))
+            bucket["ball"].append(float(bool(is_ball(record))))
 
     out: Dict[int, Dict[str, float]] = {}
     for second, values in bins.items():
@@ -65,10 +61,11 @@ def telemetry_evidence_by_second(telemetry_path: str) -> Dict[int, Dict[str, flo
 
 
 def score_deadtime(starts: Sequence, duration: float, walk_result: Dict,
-                   telemetry_path: str, cfg: ReelConfig) -> List[Dict]:
+                   records: Sequence[Dict], is_ball: Callable[[Dict], bool],
+                   cfg: ReelConfig) -> List[Dict]:
     """Return monotonic confidence samples for intervals between point starts."""
     walk = walking_evidence_by_second(walk_result)
-    evidence = telemetry_evidence_by_second(telemetry_path)
+    evidence = telemetry_evidence_by_second(records, is_ball)
     return score_deadtime_from_evidence(starts, duration, walk, evidence, cfg)
 
 
@@ -111,3 +108,23 @@ def score_deadtime_from_evidence(starts: Sequence, duration: float,
             })
             elapsed_second += 1
     return rows
+
+
+def deadtime_onsets(rows: Sequence[Dict], cfg: ReelConfig) -> List[tuple]:
+    """First threshold crossing per point, as (t, "confidence") dead onsets.
+
+    Emitting onsets rather than ends keeps `find_point_end` in the loop, so the
+    confidence policy inherits point_min_s, point_max_s and next_serve_guard_s
+    unchanged instead of quietly reimplementing them.  A point whose score never
+    reaches the threshold contributes nothing and falls through to those guards,
+    which is the honest reading: the evidence never became convincing.
+    """
+    onsets: List[tuple] = []
+    seen = set()
+    for row in rows:
+        i = row["point_index"]
+        if i in seen or row["confidence"] < cfg.deadtime_score_threshold:
+            continue
+        seen.add(i)
+        onsets.append((float(row["timestamp_s"]), "confidence"))
+    return onsets

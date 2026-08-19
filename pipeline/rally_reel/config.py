@@ -170,7 +170,7 @@ class ReelConfig:
     # False on a 30 Hz pose pass (pose_fps 30 costs 20.28 ms/frame against
     # 12.84), where the shipped model is the matched one.
 
-    end_policy: str = "walk-ball"      # "walk-ball" | "legacy"
+    end_policy: str = "walk-ball"      # "walk-ball" | "confidence" | "legacy"
     # How the two dead-time signals combine into point ends.
     #
     #   "legacy"     walk onsets UNION gated ball-quiet onsets, first one after
@@ -185,6 +185,44 @@ class ReelConfig:
     #                the point continues — players walk mid-rally all the time.
     #                Where walking is silent, no_walk_quiet_s of ball silence
     #                ends the point on its own.
+    #
+    # MEASURED against "walk-ball" (2026-08-19, eval_point_end.py, 11 trusted
+    # clips / 135 labelled ends, both arms built from DETECTED starts):
+    #
+    #                  walk-ball   confidence
+    #   recall             29%         30%
+    #   precision          50%         38%
+    #   event med       -0.03s      +1.16s
+    #   point med       +8.59s      +3.29s
+    #   truncations          5           6
+    #   mid-rally FP         5           7   (0.23 -> 0.33 per live-minute)
+    #
+    # "confidence" is NOT the default, because truncations were the gate and it
+    # did not clear them — 5 -> 6, with precision down 12 points and mid-rally
+    # false fires up.  It emits an onset for every point that crosses, so it
+    # fires 104 times against 78 and buys its recall with false positives.
+    #
+    # What it does win is over-retention: point-level median error falls from
+    # +8.59s to +3.29s, so segments stop running ~8.6s past the point.  Choose
+    # it when reel tightness matters more than truncation safety.  Per clip it
+    # is genuinely mixed rather than uniformly worse: clip 25 goes 7% -> 40%
+    # recall at 25% -> 86% precision and clip 50 (never seen by the tuner) 0% ->
+    # 14%, while 21/22/23/24/26 all regress.
+    #
+    # Note the weights were tuned from LABELLED rally starts, where the score
+    # scored MAE 3.13s and 9/128 early cuts.  That did not transfer to detected
+    # starts, which is the gap between the two evaluations and the reason this
+    # measurement exists rather than an assumption that it would.
+    #
+    #   "confidence" the dead-time accumulator decides.  Ends where the
+    #                monotonic score first reaches deadtime_score_threshold,
+    #                emitted as an onset so find_point_end still applies
+    #                point_min_s, point_max_s and next_serve_guard_s.  Unlike
+    #                the rule-based policies it cannot flip back and forth: the
+    #                score only rises or holds between two starts, so a brief
+    #                ball miss cannot end a live point on its own.  A point
+    #                whose score never crosses contributes no onset and falls
+    #                through to the guards.
     #
     # "walk-ball" makes the near-blind gate redundant: the gate existed to keep
     # ball-quiet from speaking where walking was informative, and that is now
