@@ -300,8 +300,8 @@ class ReelConfig:
     # classifier: between two starts the score can only rise or hold.  This
     # makes it useful to review *when* the evidence for dead time became
     # convincing without allowing a brief ball miss to undo an earlier call.
-    deadtime_base_per_s: float = 0.12
-    deadtime_walking_weight: float = 0.20
+    deadtime_base_per_s: float = 0.06
+    deadtime_walking_weight: float = 0.34
     deadtime_ball_trace_weight: float = 0.24
     deadtime_max_increment_per_s: float = 0.25
     deadtime_score_threshold: float = 0.70
@@ -310,6 +310,16 @@ class ReelConfig:
     # that retain a filtered ball.  Seconds with no ball-model look at all hold
     # the score rather than incrementing it, so patchy detection cannot
     # manufacture confidence.
+    #
+    # These four came off `tune_deadtime_confidence.py --leave-one-out` over ten
+    # labelled clips (Data/21,22,23,24,25,26,36,38,40,43 — 128 rallies, 53 near
+    # / 75 far) on 2026-08-19: all ten folds picked this config, and pooled
+    # held-out loss matched full-corpus loss, so it is not a training-set
+    # argmin.  Nothing here is at a sweep edge.  Against the previous defaults
+    # (.12/.20/.24) MAE is UNCHANGED at 3.13 s while early cuts drop 32/128 ->
+    # 9/128: the tuning buys direction, not accuracy.  Do not re-tune on fewer
+    # than ~8 clips — at four the walking weight fits to 1.00, three times the
+    # value 128 rallies settle on, and at three the folds disagree outright.
     #
     # The cap is what sets the floor on how fast dead time can be called:
     # threshold / cap seconds, so 0.70 / 0.25 means no point can be declared
