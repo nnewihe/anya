@@ -264,6 +264,34 @@ class ReelConfig:
     #     source fps   stride @10   stride @30   effective
     #       29.97          3            1         29.97 Hz
     #       59.94          6            2         29.97 Hz
+    trace_ball_imgsz: int = 1920
+    # Ball model input size under this policy, against the global default 960.
+    #
+    # config.py has said since 2026-08-14 that 960 -> 1920 buys recall that is
+    # "98% background noise" — but that a real gain exists "when gated to the
+    # court's own pixel band", and that ball_imgsz stays at 960 "until that
+    # lands".  The court gate above IS that gate, so both halves were finally
+    # measurable.  On Data/23 (2026-08-19), rally-second trace coverage:
+    #
+    #                        rally-cov   dead-cov   contrast
+    #     960  gated            28.0%       0.5%        56x
+    #     1920 gated            49.9%       2.5%        20x
+    #     1920 UNGATED          70.4%      35.1%         2x
+    #
+    # So the earlier reading was right on both counts: ungated 1920 tracks
+    # clutter through dead time and is useless, while gated 1920 nearly doubles
+    # rally coverage and stays specific.  The gate is not an optimisation here,
+    # it is what makes the resolution usable at all.
+    #
+    # It also buys a cleaner regime: at 960 the merge gap kept buying coverage
+    # out to 2.0 s (bridging sampling holes, which couples badly with a 4.0 s
+    # quiet trigger), while at 1920 it saturates by 0.8 s — the remaining gaps
+    # are genuine absence rather than missed looks.
+    #
+    # Cost: 26.32 ms/source-frame on Data/23 against fast_end's documented
+    # 12.84, and the ball model is 86% of it.  Strictly a trace-policy setting;
+    # as a global default it would gut fast_end's economics.
+
     trace_min_ball_fps: float = 20.0
     # Below this the policy REFUSES rather than degrading.  A near-empty trace
     # makes rule 1 confirm everywhere and rule 2 fire continuously, which looks

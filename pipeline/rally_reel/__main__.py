@@ -67,6 +67,7 @@ def main(argv=None):
                          "_rally_segments.json, so eval_point_end.py --arm can "
                          "compare two runs without copying files by hand")
     ap.add_argument("--trace-ball-fps", type=float, default=None)
+    ap.add_argument("--trace-ball-imgsz", type=int, default=None)
     ap.add_argument("--trace-walk-confirm", type=float, default=None)
     ap.add_argument("--trace-walk-stamp", type=float, default=None)
     ap.add_argument("--trace-quiet", type=float, default=None)
@@ -117,6 +118,7 @@ def main(argv=None):
     if args.end_policy is not None:
         cfg.end_policy = args.end_policy
     for arg, field in (("trace_ball_fps", "trace_ball_fps"),
+                       ("trace_ball_imgsz", "trace_ball_imgsz"),
                        ("trace_walk_confirm", "trace_walk_confirm_s"),
                        ("trace_walk_stamp", "trace_walk_stamp_s"),
                        ("trace_quiet", "trace_quiet_s"),

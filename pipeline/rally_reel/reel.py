@@ -506,7 +506,9 @@ def build_reel(video_path: str,
             # lets both rates coexist, so an A/B does not re-extract per flip.
             ecfg = EndExtractorConfig()
             ecfg.ball_fps = cfg.trace_ball_fps
-            end_out = end_telemetry_path_for(video_path, cfg.trace_ball_fps)
+            ecfg.ball_imgsz = cfg.trace_ball_imgsz
+            end_out = end_telemetry_path_for(video_path, cfg.trace_ball_fps,
+                                             cfg.trace_ball_imgsz)
         end_telemetry = extract_end_telemetry(
             video_path, force=force_telemetry, cfg=ecfg, out_path=end_out,
             progress_cb=lambda cur, tot: _emit(on_progress, 5,

@@ -181,19 +181,25 @@ class EndExtractorConfig:
 
 
 def end_telemetry_path_for(video_path: str,
-                           ball_fps: Optional[float] = None) -> str:
-    """Cache path, keyed by ball rate when it is not the default.
+                           ball_fps: Optional[float] = None,
+                           ball_imgsz: Optional[int] = None) -> str:
+    """Cache path, keyed by ball rate and resolution when either is non-default.
 
-    The trace policy needs a denser ball stream than anything else does, and
-    re-extracting on every policy flip would make an A/B unaffordable.  Keying
-    the non-default rate into the filename lets both live on disk at once.
+    The trace policy needs a denser and higher-resolution ball stream than
+    anything else does, and re-extracting on every policy flip would make an
+    A/B unaffordable.  Keying the non-default settings into the filename lets
+    every variant live on disk at once.
     """
     d = os.path.dirname(os.path.abspath(video_path))
     stem = os.path.splitext(os.path.basename(video_path))[0]
     base = os.path.join(d, f"{stem}{END_TELEMETRY_SUFFIX}")
-    if ball_fps is None or abs(float(ball_fps) - EndExtractorConfig().ball_fps) < 1e-6:
-        return base
-    return base[:-len(".jsonl")] + f"_b{int(round(float(ball_fps)))}.jsonl"
+    defaults = EndExtractorConfig()
+    tag = ""
+    if ball_fps is not None and abs(float(ball_fps) - defaults.ball_fps) > 1e-6:
+        tag += f"_b{int(round(float(ball_fps)))}"
+    if ball_imgsz is not None and int(ball_imgsz) != int(defaults.ball_imgsz):
+        tag += f"_i{int(ball_imgsz)}"
+    return base if not tag else base[:-len(".jsonl")] + tag + ".jsonl"
 
 
 def end_dets_path_for(video_path: str) -> str:
@@ -628,14 +634,16 @@ def _rate_matches(out_path: str, cfg: Optional["EndExtractorConfig"]) -> bool:
     would hand the tracker a stream it cannot confirm on, or make a cheap run
     pay for a dense one.
     """
-    want = (cfg or EndExtractorConfig()).ball_fps
+    c = cfg or EndExtractorConfig()
     try:
         with open(out_path) as fh:
             meta = json.loads(fh.readline()).get("meta", {})
         fps, stride = float(meta["fps"]), int(meta["ball_stride"])
+        imgsz = int(meta.get("ball_imgsz", c.ball_imgsz))
     except Exception:
         return True                  # unreadable meta is the version gate's problem
-    return abs(fps / max(1, stride) - fps / max(1, round(fps / want))) < 0.05
+    rate_ok = abs(fps / max(1, stride) - fps / max(1, round(fps / c.ball_fps))) < 0.05
+    return rate_ok and imgsz == int(c.ball_imgsz)
 
 
 def extract_end_telemetry(video_path: str, force: bool = False,
