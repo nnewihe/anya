@@ -142,6 +142,58 @@ def _near_box_lookup(records: Sequence[Dict], pose_tol_s: float):
     return lookup
 
 
+FOLD_GAP_S = 0.6
+# Sub-sampling-hole folding only, inside alive_intervals.  Distinct from
+# cfg.trace_merge_gap_s, which is the decision-relevant BRIDGE applied after
+# micro-blips have been removed — see assemble_intervals.
+
+
+def assemble_intervals(replay, cfg: ReelConfig) -> Tuple[List[Tuple[float, float]], Dict]:
+    """Alive intervals -> decision-ready trace intervals.
+
+    Order matters, and getting it wrong is a real bug rather than a preference.
+    Folding at the bridge width FIRST absorbs micro-blips into their neighbours,
+    after which no length filter can remove them: at a 2.0 s bridge a 0.1 s
+    bounce blip 1.5 s after a rally's last real trace becomes part of that
+    rally's interval and silently extends it to the next serve.  So:
+
+      1 fold sampling holes only (FOLD_GAP_S)
+      2 drop micro-intervals — blips die HERE, before they can anchor a bridge
+      3 bridge the survivors, but only where BOTH neighbours are long enough to
+        be credible ball flight (trace_bridge_min_span_s)
+      4 drop again, to keep the invariant
+
+    Step 3's both-neighbours condition is the anti-bounce guard.  A server
+    bouncing the ball before a serve produces a ~1-2 Hz chain of short in-court
+    traces — genuinely moving balls, so nothing upstream rejects them — and an
+    unconditional bridge at 2.0 s would merge that chain into one interval
+    running from the rally's last trace all the way to the next serve, so the
+    gap never opens and the point never ends.
+    """
+    from ..point_segmenter import alive_intervals
+
+    raw = alive_intervals(replay, FOLD_GAP_S)
+    kept = [(a, b) for a, b in raw if b - a >= cfg.trace_min_interval_s]
+
+    bridged: List[List[float]] = []
+    bridged_s = 0.0
+    for a, b in kept:
+        if bridged:
+            gap = a - bridged[-1][1]
+            prev_len = bridged[-1][1] - bridged[-1][0]
+            if (0 <= gap <= cfg.trace_merge_gap_s
+                    and prev_len >= cfg.trace_bridge_min_span_s
+                    and b - a >= cfg.trace_bridge_min_span_s):
+                bridged_s += gap
+                bridged[-1][1] = max(bridged[-1][1], b)
+                continue
+        bridged.append([a, b])
+
+    out = [(a, b) for a, b in bridged if b - a >= cfg.trace_min_interval_s]
+    return out, {"n_raw": len(raw), "n_pre_bridge": len(kept),
+                 "n_post_bridge": len(out), "bridged_s": round(bridged_s, 2)}
+
+
 def trace_intervals(meta: Dict, records: Sequence[Dict], filter_balls: Callable,
                     court_cache_path: str, cfg: ReelConfig
                     ) -> Tuple[List[Tuple[float, float]], Dict]:
@@ -197,20 +249,17 @@ def trace_intervals(meta: Dict, records: Sequence[Dict], filter_balls: Callable,
 
     scfg = SegmenterConfig()
     scfg.frame_height_px = float((meta.get("analysis_size") or [960, 540])[1])
-    scfg.alive_merge_gap_s = cfg.trace_merge_gap_s
+    scfg.alive_merge_gap_s = FOLD_GAP_S
 
     replay = replay_ball_tracker(match, 0.0, match.duration + 1.0, scfg)
-    ivals = alive_intervals(replay, scfg.alive_merge_gap_s)
-    # Drop micro-blips.  One confirmed frame of clutter mid-dead-time otherwise
-    # resets rule 2's quiet clock; SegmenterConfig.far_trace_min_interval_s
-    # exists for the same reason on the far-serve path.
-    ivals = [(a, b) for a, b in ivals if b - a >= cfg.trace_min_interval_s]
+    ivals, istats = assemble_intervals(replay, cfg)
 
     stats = {
         "looks": n_looks, "dets": n_det, "in_court": n_gated,
         "gate_rate": (n_gated / n_det) if n_det else 1.0,
         "intervals": len(ivals),
         "alive_s": float(sum(b - a for a, b in ivals)),
+        **istats,
     }
     if n_det and stats["gate_rate"] < 0.20:
         print(f"[TRACE]   WARN court gate passed only {stats['gate_rate']:.0%} of "
@@ -271,27 +320,34 @@ def _merge_spans(spans: Sequence[Tuple[float, float]],
 # ── the two rules ────────────────────────────────────────────────────────
 
 def trace_onsets(intervals: Sequence[Tuple[float, float]],
-                 walks: Sequence[Dict], duration: float, cfg: ReelConfig,
+                 walks: Sequence[Dict], cfg: ReelConfig,
                  look_times: Optional[Sequence[float]] = None,
-                 last_record_t: Optional[float] = None) -> List[Tuple[float, str]]:
-    """Point ends under end_policy="trace".  Returns [(t, source)].
+                 last_record_t: Optional[float] = None,
+                 window: Optional[Tuple[float, float]] = None
+                 ) -> Tuple[List[Tuple[float, str]], List[Dict]]:
+    """Point ends under end_policy="trace".  Returns ([(t, source)], details).
 
-      1  "walk-trace"   a walk span starts at w0 and NO trace appears in
-                        [w0, w0 + trace_walk_confirm_s].  Stamped at
-                        w0 + trace_walk_stamp_s — the point stopped when the
-                        player turned away, and the lookahead is confirmation,
-                        not duration.
-      2  "trace-quiet"  trace_quiet_s with no trace at all, where no usable walk
-                        span covers the TRIGGER INSTANT.  Stamped at the gap's
-                        start + trace_quiet_stamp_s, measured from the last
-                        trace rather than from the confirmation.
+    The trace is PRIMARY and walking CORROBORATES.  Every gap in the in-court
+    ball trace is a candidate end; how long it must run depends on whether the
+    near player was seen walking in it:
 
-    Emitting onsets rather than ends keeps `find_point_end` in the loop, so this
-    policy inherits point_min_s, point_max_s and next_serve_guard_s instead of
-    quietly reimplementing them.
+      trace-walk   >= trace_gap_walk_s of no trace AND a usable walk span began
+                   inside the gap.  The two signals agree, so less trace
+                   evidence is needed.                          confidence high
+      trace-gap    >= trace_quiet_s of no trace, no walking.    confidence medium
+
+    Both stamp at gap_start + trace_stamp_s.  Onsets stay (t, source) so
+    find_point_end keeps applying point_max_s and next_serve_guard_s; the graded
+    detail travels in the second return value rather than in the tuple.
+
+    Walking is required to BEGIN inside the gap (modulo trace_walk_lead_s).  A
+    walk already under way when the trace stops is the mid-rally walking that
+    walk-ball spends its whole veto budget rejecting; admitting it here would
+    fire the short threshold inside a live rally.
     """
     looks = sorted(look_times or [])
-    last_t = duration if last_record_t is None else float(last_record_t)
+    last_t = last_record_t if last_record_t is not None else (
+        intervals[-1][1] if intervals else 0.0)
 
     def enough_looks(t0: float, t1: float) -> bool:
         if not looks:
@@ -300,55 +356,58 @@ def trace_onsets(intervals: Sequence[Tuple[float, float]],
         return n >= cfg.ball_quiet_min_looks
 
     # usable_walk_intervals filters but never MERGES, and the classifier emits
-    # runs split by sub-second gaps.  _walk_ball_onsets collapses them with its
-    # pending_a latch; an interval rule has no such latch and would emit one
-    # onset per fragment inside a single dead period, which costs precision
-    # directly because eval_point_end divides matches by the detection count.
+    # runs split by sub-second gaps; without merging, one dead period presents
+    # several "walk starts" and the earliest wins for no good reason.
     usable = usable_walk_intervals(walks, cfg)
     spans = _merge_spans([(float(w["start_second"]), float(w["end_second"]))
                           for w in usable], cfg.trace_walk_merge_gap_s)
 
+    if not intervals:
+        return [], []
+    lo = intervals[0][1] if window is None else max(window[0], intervals[0][1])
+    hi = last_t if window is None else min(window[1], last_t)
+
     onsets: List[Tuple[float, str]] = []
+    details: List[Dict] = []
+    for g0, g1 in trace_gaps(intervals, lo, hi):
+        walk_start = next((a for a, _b in spans
+                           if g0 - cfg.trace_walk_lead_s <= a <= g1), None)
+        t_quiet = g0 + cfg.trace_quiet_s
+        t_walk = max(walk_start, g0 + cfg.trace_gap_walk_s) if walk_start is not None else None
 
-    # ── rule 1 ──
-    for w0, _w1 in spans:
-        w_end = w0 + cfg.trace_walk_confirm_s
-        # "No trace in the next 3 s" is trivially true past the last record.
-        # Confirming on absence-of-data is the truncation-shaped failure.
-        if w_end > last_t:
-            continue
-        if not enough_looks(w0, w_end):
-            continue
-        if any_trace_in(intervals, w0, w_end):
-            continue
-        onsets.append((w0 + cfg.trace_walk_stamp_s, "walk-trace"))
+        # Whichever confirms FIRST owns the gap, so a walk appearing late inside
+        # a long gap grades medium: the grade describes what actually confirmed
+        # the end, not everything that happened afterwards.
+        if t_walk is not None and t_walk <= t_quiet:
+            t_conf, source, level = t_walk, "trace-walk", "high"
+        else:
+            t_conf, source, level = t_quiet, "trace-gap", "medium"
 
-    # ── rule 2 ──
-    def walk_covers(t: float) -> bool:
-        return any(a <= t <= b for a, b in spans)
+        if t_conf > g1:
+            continue                      # the gap never reaches its own threshold
+        if t_conf > last_t:
+            continue                      # clip edge: never confirm on absent data
+        if not enough_looks(g0, t_conf):
+            continue                      # window too thinly sampled to be silence
 
-    if intervals:
-        # Gaps before the first trace are skipped, mirroring _walk_ball_onsets'
-        # `if last_ball is None: continue` — silence before any ball was ever
-        # seen is not evidence that a point ended.
-        for g0, g1 in trace_gaps(intervals, intervals[0][1], last_t):
-            if g1 - g0 < cfg.trace_quiet_s:
-                continue
-            t_trig = g0 + cfg.trace_quiet_s
-            if not enough_looks(g0, t_trig):
-                continue
-            if walk_covers(t_trig):        # rule 1's territory
-                continue
-            onsets.append((g0 + cfg.trace_quiet_stamp_s, "trace-quiet"))
+        t_end = g0 + cfg.trace_stamp_s
+        onsets.append((t_end, source))
+        details.append({
+            "t": round(t_end, 3), "source": source, "level": level,
+            "reason": "trace gap + walking" if level == "high" else "trace gap only",
+            "gap_start": round(g0, 3), "gap_end": round(g1, 3),
+            "confirm_t": round(t_conf, 3),
+            "walk_start": round(walk_start, 3) if walk_start is not None else None,
+        })
 
-    # Collapse onsets landing in the same moment.  Both rules can legitimately
-    # fire inside one long gap (a walk beginning after the quiet trigger), and
-    # a duplicate is a plain false positive against n_det.  The corroborated
-    # label wins the tie.
-    onsets.sort(key=lambda x: (x[0], x[1] != "walk-trace"))
-    deduped: List[Tuple[float, str]] = []
-    for t, src in onsets:
-        if deduped and t - deduped[-1][0] <= cfg.trace_onset_dedupe_s:
+    # Gaps are disjoint under the global scope, so this is inert there; it is
+    # what keeps a per-point scope honest, where overlapping windows can
+    # re-derive the same gap.
+    keep_o: List[Tuple[float, str]] = []
+    keep_d: List[Dict] = []
+    for (t, src), det in sorted(zip(onsets, details), key=lambda x: x[0][0]):
+        if keep_o and t - keep_o[-1][0] <= cfg.trace_onset_dedupe_s:
             continue
-        deduped.append((t, src))
-    return deduped
+        keep_o.append((t, src))
+        keep_d.append(det)
+    return keep_o, keep_d

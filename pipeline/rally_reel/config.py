@@ -297,18 +297,49 @@ class ReelConfig:
     # makes rule 1 confirm everywhere and rule 2 fire continuously, which looks
     # like a working policy and is a worse ball-quiet.
 
-    trace_walk_confirm_s: float = 3.0
-    trace_walk_stamp_s: float = 0.5
-    # Rule 1.  The lookahead is CONFIRMATION, not duration — the point stopped
-    # when the player turned away, so the stamp is close to the walk onset.
-
     trace_quiet_s: float = 4.0
-    trace_quiet_stamp_s: float = 3.0
-    # Rule 2, and the stamp is measured from the last trace rather than from the
-    # confirmation.  Note alive_intervals anchors interval ends to the last REAL
-    # detection (t - tsd), so last_trace can already sit up to ~1 s before the
-    # ball truly stopped; the +3.0 is the headroom walk-ball bought with a +5.0
-    # trigger and a +1.5 stamp.
+    trace_gap_walk_s: float = 2.0
+    # How long a trace gap must run before it ends the point: trace_quiet_s on
+    # its own, trace_gap_walk_s when a usable walk span BEGINS inside the gap.
+    # That is the whole of "walking is confirmatory" — it does not end a point
+    # by itself, it shortens what the trace has to prove.  Must be >=
+    # trace_merge_gap_s or the shorter threshold is unreachable, since anything
+    # under the bridge is not a gap at all.
+
+    trace_walk_lead_s: float = 0.0
+    # Grace for a walk that began slightly BEFORE the trace stopped.  At 0.0 the
+    # walk must begin after the gap opens, which is deliberate: a walk already
+    # under way when the trace ends is the mid-rally walking that walk-ball
+    # spends its whole veto budget rejecting, and admitting it would fire the
+    # short threshold inside live rallies.  This is the knob that trades
+    # truncation risk against recall on the walk-confirmed branch.
+
+    trace_stamp_s: float = 2.0
+    # Where the end lands, measured from the last trace.  Swept 1.0/1.5/2.0/2.5
+    # on Data/21,22,23 (42 ends): 1.0 costs 2 truncations, 1.5-2.5 cost none,
+    # and 2.0 is the joint best on recall (62%) and precision (76%) with an
+    # event median of +0.01 s — essentially unbiased.  1.5 and 2.0 are within
+    # noise of each other on 42 ends; do not read the third decimal.
+    #
+    # NOT padding:
+    # alive_intervals anchors interval ends to the last REAL detection (t - tsd),
+    # so the gap start already sits up to ~1 s before the ball truly stopped and
+    # this roughly restores it.  The end is stamped EARLIER than it is confirmed,
+    # which is safe — had the trace resumed before the confirmation instant, the
+    # gap would not have qualified at all.
+
+    trace_point_min_s: float = 4.0
+    # Minimum point length under this policy: no end may be stamped before
+    # serve_t + this.  Policy-scoped rather than raising the shared point_min_s
+    # (3.0), so the walk-ball and legacy arms are untouched and an A/B is not
+    # confounded.
+    #
+    # This is the "ignore the first 4 s" rule in END-BLANKING form, and the
+    # distinction matters.  Blanking the EVIDENCE instead would mean a point
+    # whose ball is never traced — real, rally coverage runs 48-76% — presents a
+    # 4 s gap immediately and ends at ~serve_t+5, manufacturing an end out of
+    # absence of data.  Blanking the STAMP makes the same point fall through to
+    # next-serve/cap: over-retention rather than truncation.
 
     trace_walk_merge_gap_s: float = 1.0
     # Merge usable walk spans before taking rule-1 onsets.  usable_walk_intervals
@@ -316,11 +347,39 @@ class ReelConfig:
     # sub-second gaps; without this each fragment emits its own onset inside one
     # dead period.  _walk_ball_onsets gets this for free from its pending latch.
 
-    trace_merge_gap_s: float = 0.6
+    trace_merge_gap_s: float = 2.0
+    # The BRIDGE: gaps this short do not count as gaps.  Applied AFTER
+    # micro-intervals are dropped (see ball_trace.assemble_intervals) — folding
+    # at the bridge width first would absorb a blip into its neighbour where no
+    # length filter can reach it.
+    #
+    # 2.0 was the feared setting, because a server bouncing the ball pre-serve
+    # makes a ~1-2 Hz chain of genuinely moving in-court traces that an
+    # unconditional bridge could merge into one interval running from the
+    # rally's last trace to the next serve.  Measured 2026-08-19 on Data/21,22,23
+    # at ball_fps 30 / imgsz 1920, that does NOT happen — rally coverage rises
+    # and dead-time coverage barely moves:
+    #
+    #     bridge   21 rally/dead   22 rally/dead   23 rally/dead
+    #       0.6      68.5%/12.9%     70.2%/19.0%     48.1%/2.5%
+    #       2.0      73.8%/13.0%     76.3%/21.2%     49.9%/2.5%
+    #
+    # Contrast holds (21 improves 5.3x -> 5.7x, 23 19.3x -> 20.0x, 22 flat), so
+    # the bridge is buying real rally continuity rather than merging bounces.
+
     trace_min_interval_s: float = 0.25
-    # Fold micro-gaps inside a trace, then drop micro-intervals.  One confirmed
-    # frame of clutter mid-dead-time otherwise resets rule 2's quiet clock —
-    # the same failure SegmenterConfig.far_trace_min_interval_s was added for.
+    # Drop intervals shorter than this BEFORE bridging.  One confirmed frame of
+    # clutter mid-dead-time otherwise resets the quiet clock — the same failure
+    # SegmenterConfig.far_trace_min_interval_s was added for.
+
+    trace_bridge_min_span_s: float = 0.25
+    # Both intervals adjacent to a bridged gap must be at least this long — the
+    # anti-bounce lever.  INERT AT THE DEFAULT, and deliberately so: it equals
+    # trace_min_interval_s, which has already removed everything shorter, and a
+    # sweep at 0.0 vs 0.25 on Data/21,22,23 produced byte-identical intervals.
+    # It exists to be RAISED above trace_min_interval_s on a clip where bounce
+    # chains do bridge; measure `bridged_s` and post-bridge dead-time coverage
+    # before reaching for it.
 
     trace_onset_dedupe_s: float = 0.75
     # Both rules can fire inside one long gap (a walk beginning after the quiet

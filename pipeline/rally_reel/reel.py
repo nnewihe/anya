@@ -526,6 +526,7 @@ def build_reel(video_path: str,
     # difference between point-end policies is never a difference in what counts
     # as a ball, and the confidence score is now one of those consumers.
     ball_records, is_ball = None, None
+    trace_details = []
     if cfg.end_policy in ("walk-ball", "trace", "confidence") or cfg.ball_quiet_mode != "off":
         ball_meta, ball_records, filter_balls = _ball_stream(end_telemetry)
         def is_ball(r):
@@ -542,16 +543,16 @@ def build_reel(video_path: str,
             ball_meta, ball_records, filter_balls,
             _stem_path(video_path, "_court_cache.json"), cfg)
         looks = [float(r["t"]) for r in ball_records if r.get("bn")]
-        dead_onsets = ball_trace.trace_onsets(
-            intervals, walks, duration, cfg, look_times=looks,
+        dead_onsets, trace_details = ball_trace.trace_onsets(
+            intervals, walks, cfg, look_times=looks,
             last_record_t=looks[-1] if looks else duration)
-        n_w = sum(1 for _, src in dead_onsets if src == "walk-trace")
-        print(f"[REEL]   trace: {tstats['intervals']} interval(s), "
-              f"{tstats['alive_s']:.1f}s alive; gate passed "
-              f"{tstats['gate_rate']:.0%} of {tstats['dets']} detection(s) "
-              f"over {tstats['looks']} look(s)")
-        print(f"[REEL]   dead-time onsets: {n_w} walk-trace + "
-              f"{len(dead_onsets) - n_w} trace-quiet")
+        n_hi = sum(1 for d in trace_details if d["level"] == "high")
+        print(f"[REEL]   trace: {tstats['n_pre_bridge']} interval(s) -> "
+              f"{tstats['n_post_bridge']} after bridging {tstats['bridged_s']}s "
+              f"at {cfg.trace_merge_gap_s}s; {tstats['alive_s']:.1f}s alive; gate "
+              f"passed {tstats['gate_rate']:.0%} of {tstats['dets']} detection(s)")
+        print(f"[REEL]   dead-time onsets: {n_hi} trace+walk (high) + "
+              f"{len(dead_onsets) - n_hi} trace-only (medium)")
     elif cfg.end_policy == "walk-ball":
         print(f"[REEL]   walk intervals: {len(walks)} -> "
               f"{len(usable_walk_intervals(walks, cfg))} usable")
@@ -592,7 +593,20 @@ def build_reel(video_path: str,
         print(f"[REEL]   dead-time onsets: {len(dead_onsets)} confidence "
               f"crossing(s) from {len(starts)} start(s)")
 
-    segments = build_segments(starts, dead_onsets, duration, cfg)
+    segments = build_segments(
+        starts, dead_onsets, duration, cfg,
+        min_point_s=cfg.trace_point_min_s if cfg.end_policy == "trace" else None)
+
+    # Decorate ends with their graded confidence.  Keyed on the onset instant:
+    # find_point_end returns min(t, hard_cap) and the cap path reports a
+    # different end_method, so a trace-* method implies the exact instant here.
+    by_t = {round(d["t"], 3): d for d in trace_details}
+    for seg in segments:
+        det = by_t.get(round(seg.end_t, 3))
+        if det is not None and seg.end_method.startswith("trace"):
+            seg.end_confidence, seg.end_reason = det["level"], det["reason"]
+        else:
+            seg.end_confidence, seg.end_reason = "", seg.end_method
 
     seg_path = _stem_path(video_path, segments_suffix or SEGMENTS_SUFFIX)
     with open(seg_path, "w") as fh:
@@ -602,6 +616,13 @@ def build_reel(video_path: str,
             "config": cfg.__dict__,
             "n_serve_starts": len(starts),
             "segments": [s.as_dict() for s in segments],
+            "end_confidence": {
+                "policy": cfg.end_policy,
+                "levels": {"high": "trace gap + walking",
+                           "medium": "trace gap only",
+                           "": "guard or cap decided the end"},
+                "samples": trace_details,
+            },
             "deadtime_confidence": {
                 "threshold": cfg.deadtime_score_threshold,
                 "samples": confidence_rows,
