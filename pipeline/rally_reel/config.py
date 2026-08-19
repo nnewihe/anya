@@ -145,6 +145,12 @@ class ReelConfig:
     # `--no-fast-end` restores the full-rate path, and is the arm to run when
     # scoring point ends against ground truth.
     #
+    # NOTE the 12.84 ms/frame above is the ball_fps 10 / imgsz 960 pass.  Under
+    # end_policy="trace" (now the default) stage 5 runs 30 Hz at imgsz 1920 and
+    # costs 26-70 ms/source-frame depending on source rate, so fast_end's 2.5x
+    # win no longer describes a default run.  What still holds is the structural
+    # part — fast_end is what lets stages 1-2 be skipped entirely.
+    #
     # walking.predict was already scoring at 15 Hz — every 2nd frame of a 30
     # fps clip — so the pose beneath it ran at twice the rate anything read.
     # 15 Hz is the floor: the features measure a 0.7-4.0 Hz cadence band, and
@@ -170,7 +176,7 @@ class ReelConfig:
     # False on a 30 Hz pose pass (pose_fps 30 costs 20.28 ms/frame against
     # 12.84), where the shipped model is the matched one.
 
-    end_policy: str = "walk-ball"      # "walk-ball" | "trace" | "confidence" | "legacy"
+    end_policy: str = "trace"          # "trace" | "walk-ball" | "confidence" | "legacy"
     # How the two dead-time signals combine into point ends.
     #
     #   "legacy"     walk onsets UNION gated ball-quiet onsets, first one after
@@ -213,6 +219,28 @@ class ReelConfig:
     # scored MAE 3.13s and 9/128 early cuts.  That did not transfer to detected
     # starts, which is the gap between the two evaluations and the reason this
     # measurement exists rather than an assumption that it would.
+    #
+    # DEFAULT as of 2026-08-19.  Measured over Data/21,22,23 (42 labelled ends)
+    # against the two arms it replaces:
+    #
+    #                    recall  prec  event med  pt med  trunc  midFP
+    #     walk-ball        48%    62%    -0.44     +1.43     1      1
+    #     trace v1         48%    65%    +0.87     +1.95     0      0
+    #     trace (this)     62%    76%    +0.01     +0.82     0      0
+    #
+    # The first policy to beat walk-ball on recall, precision AND point median
+    # while holding truncations at zero — the gate every previous attempt failed.
+    #
+    # IT IS NOT FREE.  It needs trace_ball_fps 30 and trace_ball_imgsz 1920, so
+    # stage 5 costs 26 ms/source-frame on a 59.94 fps clip (stride 2) and
+    # 52-70 ms on a 29.97 fps clip (stride 1), against fast_end's documented
+    # 12.84.  End to end that takes a run from ~1.6x clip length to roughly 3x.
+    # Set end_policy="walk-ball" to trade the accuracy back for the speed.
+    #
+    # Corpus caveat, on the record: 3 clips / 42 ends, below the ~8-clip floor
+    # this project learned the hard way when a 3-clip tuner picked a different
+    # config in every fold.  The direction is robust — every swept stamp beat
+    # both baselines at zero truncations — but the exact values are not pinned.
     #
     #   "trace"      ball TRACE, not ball presence, is the evidence.  A trace is
     #                an IMM-tracked ball that is actually MOVING and inside the
