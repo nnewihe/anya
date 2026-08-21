@@ -665,6 +665,84 @@ class ReelConfig:
     # picked energy_near_missing_weight=0.35.  On footage where the near player
     # stays in frame the term may well earn its keep, and a deleted term cannot
     # be re-measured.  Treat a non-zero value as an experiment, not a default.
+    # ---- near-player point-end signals (pipeline/near_end.py) -----------
+    # Four non-walking near-player signals, each in [0, 1] per pose sample:
+    # `settle` (speed and limb energy collapse and stay collapsed), `turn_away`
+    # (shoulder line rotates to face the camera rather than the net),
+    # `stance_drop` (wrists fall to the hip line, knees straighten out of the
+    # ready crouch), `idle_hands` (hand to pocket for the second ball, hand to
+    # face/cap/hair, or hands on hips with the elbows flared).
+    #
+    # They exist because walking answers ONE question — "is this person going
+    # somewhere" — and a great many points end without the feet moving at all:
+    # the winner hit standing still, the turn to the back fence, the racket hand
+    # dropping.  `walk_prob` reads zero through all of it.
+    #
+    # THEY ENTER THE BAR THE WAY WALKING DOES — as terms on the ball-silence
+    # multiplier, not as drains of their own:
+    #
+    #     drain = ball_weight * (1 - trace) * (1 + walk_boost * walk + idle)
+    #     idle  = min(near_signal_cap, sum(weight_i * signal_i))
+    #
+    # so with the ball visibly in play they drain nothing however confident they
+    # are.  Each of these fires during live tennis too — a player is briefly
+    # still between shots, turns their back chasing a lob, wipes their face
+    # during a long point — and an additive term would end points on that, which
+    # is the exact failure the walk boost's shape already exists to avoid.
+    #
+    # DEFAULTS AS OF 2026-08-21, swept over the four weights alone with every
+    # other energy knob held at the values above — the question being what these
+    # terms ADD to a bar that already works, not what a bar refitted around them
+    # looks like.  Over Data/21,22,23,24,43 (62 labelled ends, DETECTED starts):
+    #
+    #                              recall  prec  pt med  trunc  midFP
+    #     all four at zero           61%    73%   +1.38    0      0
+    #     best on the training set   66%    77%   +1.04    0      0
+    #     LEAVE-ONE-CLIP-OUT         65%    77%   +1.10    0      0
+    #
+    # The middle row is the usual five-clip fit and means little on its own.  The
+    # THIRD row is why these ship non-zero: held out, the signals still buy
+    # +4 pp recall, +4 pp precision and 0.28 s of timing with the truncation gate
+    # intact — and the folds agree, four of five picking this exact
+    # configuration.  That is the thing the existing energy weights could not do
+    # (all five folds disagreed there), and it is the whole basis for adopting
+    # these rather than leaving them as an experiment.
+    #
+    # Each signal alone also improves on the baseline — recall 63-65%, zero
+    # truncations — so this is not one term carrying three passengers.  The one
+    # truncation produced anywhere in the 256-configuration grid came from
+    # energy_stance_drop_weight at 1.5, which is why its grid stops at 1.5 and
+    # its default sits below it.
+    energy_settle_weight: float = 0.0       # OFF, and NOT because it fails: on
+                                            # its own it is the best of the four
+                                            # (recall 65%, loss 0.385).  It is
+                                            # redundant WITH them — a player who
+                                            # has turned away and dropped the
+                                            # racket has also stopped moving —
+                                            # and the sweep zeroes it whenever
+                                            # the other three are on.  Kept as a
+                                            # knob for cameras where the pose
+                                            # track is good enough to make
+                                            # stillness the reliable one.
+    energy_turn_away_weight: float = 0.5    # the cleanest separator of the four
+                                            # (post/live 1.4-102x) but a coarse
+                                            # one: it saturates on any turn, so a
+                                            # small weight is all it can carry
+    energy_stance_drop_weight: float = 1.0
+    energy_idle_hands_weight: float = 1.0
+    energy_near_signal_cap: float = 3.0     # ceiling on the four together.
+                                            # Four saturated signals at a
+                                            # walk-boost-sized weight each would
+                                            # otherwise put ~4x walking's
+                                            # authority on one step and drive the
+                                            # drain into energy_max_drop_per_s,
+                                            # where the weights stop being
+                                            # separable at all.  3.0 is twice
+                                            # the shipped walk boost: enough
+                                            # room for two strong signals to
+                                            # outvote walking, not enough for the
+                                            # cap to become the policy.
+
     energy_max_rise_per_s: float = 0.30     # one lucky trace step cannot undo a
                                             # real drain
     energy_max_drop_per_s: float = 0.90     # with start 0.5 this floors

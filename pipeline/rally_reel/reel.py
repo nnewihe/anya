@@ -159,6 +159,36 @@ def _walk_intervals(video_path: str, device: str = "mps",
     return (intervals, res) if return_result else intervals
 
 
+def _near_end_signals(video_path: str, walk_result: Dict, cfg: ReelConfig):
+    """The four near_end signals, or None when every weight on them is zero.
+
+    They are pure arithmetic over the pose track the walking classifier just
+    read, so this costs no perception and a fraction of a second.  Three of the
+    four ship non-zero, so on a default run this always computes; the guard is
+    for an ablation arm (`--energy-turn-away-weight 0 ...`), where computing
+    evidence no term reads would be pure overhead.
+
+    A failure here is NOT fatal.  These signals are additive evidence on a
+    policy that shipped without them, so a bad pose cache should cost the reel
+    the extra terms, not the reel.
+    """
+    from ..near_end import SIGNAL_NAMES, signals_for_video
+
+    if not any(getattr(cfg, f"energy_{n}_weight", 0.0) for n in SIGNAL_NAMES):
+        return None
+    try:
+        sigs = signals_for_video(video_path, pose_npz=end_pose_path_for(video_path)
+                                 if cfg.fast_end else None,
+                                 sig=walk_result.get("sig"))
+    except Exception as e:
+        print(f"[REEL]   WARN: near-end signals unavailable ({e}); the energy "
+              f"bar falls back to walking alone")
+        return None
+    print("[REEL]   near-end signals: " + ", ".join(
+        f"{n} {float(sigs[n].mean()):.2f}" for n in SIGNAL_NAMES))
+    return sigs
+
+
 def _near_blind_mask(records: List[Dict], fps: float,
                      cfg: ReelConfig) -> List[bool]:
     """Per-record: is the walking classifier uninformative right now?
@@ -577,8 +607,9 @@ def build_reel(video_path: str,
             # resets at every point start, so it cannot be built before the
             # starts are known.
             dead_onsets = []
+            near_sigs = _near_end_signals(video_path, walk_result, cfg)
             energy_evidence = energy_policy.build_evidence(
-                ball_meta, ball_records, walk_result, intervals)
+                ball_meta, ball_records, walk_result, intervals, near=near_sigs)
             print(f"[REEL]   energy: start {cfg.energy_start} hold "
                   f"{cfg.energy_hold_s}s step {cfg.energy_step_s}s")
         else:

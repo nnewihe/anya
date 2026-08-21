@@ -10,19 +10,25 @@ A bar starts at `energy_start` at every detected serve, holds flat through
 `energy_hold_s` while the serve, the bounce and the first exchange make every
 drain unreliable, and is then integrated forward in `energy_step_s` steps.
 Rally activity charges it; the absence of an in-court ball trace discharges it;
-walking makes that discharge steeper; a missing near player discharges it
-separately.  The point ends the first time the bar sits at the floor for
-`energy_confirm_s`.  Two of those terms — the reversal cue and the
-missing-player drain — tuned to zero on the corpus and ship off; see
-ReelConfig for what was measured and why they are kept as knobs anyway.
+walking makes that discharge steeper; so do three near-player signals that are
+not walking (`pipeline/near_end.py` — turning away from the net, dropping out of
+the ready stance, reaching into a pocket for the second ball); a missing near
+player discharges it separately.  The point ends the first time the bar sits at
+the floor for `energy_confirm_s`.  Three of those terms — the reversal cue, the
+missing-player drain and the `settle` signal — tuned to zero on the corpus and
+ship off; see ReelConfig for what was measured and why they are kept as knobs.
 
 Four decisions carry the design:
 
-  * WALKING MULTIPLIES THE BALL-SILENCE DRAIN — it is not an additive drain of
-    its own.  With the ball visibly in play, walking drains nothing however
-    confident the classifier is.  An additive walk term would reintroduce
-    exactly the mid-rally-walking failure that `walk_ball_veto_s` exists to
-    suppress, and mid-rally walking is common.
+  * EVERY NEAR-PLAYER TERM MULTIPLIES THE BALL-SILENCE DRAIN — none of them is
+    an additive drain of its own.  With the ball visibly in play they drain
+    nothing, however confident they are.  An additive walk term would
+    reintroduce exactly the mid-rally-walking failure that `walk_ball_veto_s`
+    exists to suppress, and mid-rally walking is common; the same holds for
+    every near_end signal, since a player turns away, stands up and stops
+    moving during live tennis too.  This is the load-bearing decision in the
+    file — it is what lets more near-player evidence be added without each
+    addition being a new way to cut a live rally in half.
 
   * THE MOTION GAIN IS THE NON-WALKING SHARE OF MOTION, `(1 - walk_prob)`
     gated.  Walking is player motion, so an ungated gain and the walk-amplified
@@ -52,10 +58,19 @@ one knob.  It is the same construction as the trace policy's
 The bar to clear is that same arm: over Data/21,22,23 it scores recall 62%,
 precision 76%, point median +0.82 s and ZERO truncations.  Truncations are the
 acceptance gate — an energy arm that buys recall with a truncation is a
-regression, however good the other columns look.  As tuned this clears it at
-64% / 75% / +0.92 with truncations still at zero, and is the default from
-2026-08-21.  ReelConfig carries the full table, including the leave-one-out
-result the adoption was made in spite of.
+regression, however good the other columns look.  As tuned this cleared it at
+64% / 75% / +0.92 and became the default on 2026-08-21.
+
+Adding the near_end signals the same day moves it again, over the wider
+Data/21,22,23,24,43 (62 ends, detected starts):
+
+    ball + walking only        61% / 73% / +1.38 / 0 truncations
+    + near-player signals      66% / 77% / +1.04 / 0 truncations
+
+and, unlike the weights above, that gain survives leave-one-clip-out (65% / 77%
+/ 0, four of five folds picking the same configuration).  ReelConfig carries
+both tables, including the leave-one-out result the ORIGINAL adoption was made
+in spite of.
 """
 
 from dataclasses import dataclass
@@ -63,6 +78,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..near_end import SIGNAL_NAMES as NEAR_SIGNALS
 from .config import ReelConfig
 
 
@@ -85,6 +101,12 @@ class EnergyEvidence:
     walk_fps: float
     intervals: List[Tuple[float, float]]        # in-court IMM trace spans
     interval_starts: np.ndarray
+    # The four near-player point-end signals (pipeline/near_end.py), each [N] in
+    # [0, 1] on the SAME rows as walk_prob — both are per near-player pose
+    # sample — so they are indexed with walk_fps and need no timeline of their
+    # own.  Empty when the module was not run, which is what makes them
+    # optional to every caller.
+    near: Dict[str, np.ndarray]
 
 
 def _kinematics(meta: Dict, records: Sequence[Dict]):
@@ -124,20 +146,45 @@ def _kinematics(meta: Dict, records: Sequence[Dict]):
 
 
 def build_evidence(meta: Dict, records: Sequence[Dict], walk_result: Dict,
-                   intervals: Sequence[Tuple[float, float]]) -> EnergyEvidence:
-    """Everything the bar reads, from one telemetry pass and one walking pass."""
+                   intervals: Sequence[Tuple[float, float]],
+                   near: Optional[Dict[str, np.ndarray]] = None) -> EnergyEvidence:
+    """Everything the bar reads, from one telemetry pass and one walking pass.
+
+    `near` is `pipeline.near_end.near_signals`' output — the four non-walking
+    near-player signals.  Optional, and absent it the bar behaves exactly as it
+    did before they existed, which is what lets an A/B be a weight change rather
+    than a code path.
+    """
     pose_t = np.asarray([float(r["t"]) for r in records if r.get("pn")], dtype=float)
     pose_near = np.asarray([bool(r.get("np")) for r in records if r.get("pn")], dtype=bool)
     look_t = np.asarray([float(r["t"]) for r in records if r.get("bn")], dtype=float)
     speed_t, speed, reversals = _kinematics(meta, records)
     ivals = [(float(a), float(b)) for a, b in intervals]
+    walk_prob = np.asarray(walk_result["prob"], dtype=float)
+    near_arrays: Dict[str, np.ndarray] = {}
+    for name in NEAR_SIGNALS:
+        arr = None if near is None else near.get(name)
+        if arr is None:
+            continue
+        arr = np.asarray(arr, dtype=float)
+        if len(arr) != len(walk_prob):
+            # The two come off the same pose npz, so a mismatch means they came
+            # off DIFFERENT ones — a stale cache, most likely.  Silently
+            # truncating would leave every signal offset from the walking it is
+            # supposed to complement, and an offset signal still scores.
+            raise ValueError(
+                f"near_end signal '{name}' has {len(arr)} rows against "
+                f"{len(walk_prob)} of walking: they must come from the same "
+                f"near-player pose pass")
+        near_arrays[name] = arr
     return EnergyEvidence(
         pose_t=pose_t, pose_near=pose_near,
         speed_t=speed_t, speed=speed, reversals=reversals, look_t=look_t,
-        walk_prob=np.asarray(walk_result["prob"], dtype=float),
+        walk_prob=walk_prob,
         walk_fps=float(walk_result["fps"]),
         intervals=ivals,
-        interval_starts=np.asarray([a for a, _ in ivals], dtype=float))
+        interval_starts=np.asarray([a for a, _ in ivals], dtype=float),
+        near=near_arrays)
 
 
 def _overlap(ev: EnergyEvidence, a: float, b: float) -> float:
@@ -152,6 +199,20 @@ def _overlap(ev: EnergyEvidence, a: float, b: float) -> float:
             break
         total += max(0.0, min(e, b) - max(s, a))
     return total
+
+
+def _pose_rate_mean(arr: np.ndarray, fps: float, a: float, b: float) -> float:
+    """Mean of a per-pose-sample array over [a, b) seconds.
+
+    Every array on that timeline — walk_prob and the four near_end signals —
+    is indexed the same way, by construction: they all come off the rows of one
+    near-player pose npz.  One helper so a change to the indexing cannot apply
+    to walking and miss the signals meant to complement it.
+    """
+    i0 = int(round(a * fps))
+    i1 = max(i0 + 1, int(round(b * fps)))
+    seg = arr[min(i0, len(arr)):min(i1, len(arr))]
+    return float(seg.mean()) if seg.size else 0.0
 
 
 def bin_point(ev: EnergyEvidence, start_t: float, stop_t: float,
@@ -173,6 +234,9 @@ def bin_point(ev: EnergyEvidence, start_t: float, stop_t: float,
     near_miss = np.empty(n)
     n_looks = np.empty(n, dtype=int)
     n_pose = np.empty(n, dtype=int)
+    # Zeros where the module was not run, so every downstream reader sees the
+    # full set of keys and a weight on an absent signal is simply inert.
+    near_sig = {name: np.zeros(n) for name in NEAR_SIGNALS}
 
     pose_lo = np.searchsorted(ev.pose_t, edges[:-1], side="left")
     pose_hi = np.searchsorted(ev.pose_t, edges[1:], side="left")
@@ -190,10 +254,11 @@ def bin_point(ev: EnergyEvidence, start_t: float, stop_t: float,
         n_looks[k] = int(look_hi[k] - look_lo[k])
         n_pose[k] = int(pose_hi[k] - pose_lo[k])
 
-        i0 = int(round(a * ev.walk_fps))
-        i1 = max(i0 + 1, int(round(b * ev.walk_fps)))
-        seg = ev.walk_prob[min(i0, len(ev.walk_prob)):min(i1, len(ev.walk_prob))]
-        walk[k] = float(seg.mean()) if seg.size else 0.0
+        walk[k] = _pose_rate_mean(ev.walk_prob, ev.walk_fps, a, b)
+        for name in NEAR_SIGNALS:
+            arr = ev.near.get(name)
+            if arr is not None:
+                near_sig[name][k] = _pose_rate_mean(arr, ev.walk_fps, a, b)
 
         s = ev.speed[sp_lo[k]:sp_hi[k]]
         speed[k] = float(s.mean()) if s.size else 0.0
@@ -213,7 +278,7 @@ def bin_point(ev: EnergyEvidence, start_t: float, stop_t: float,
     return {
         "t": edges[:-1], "dt": dt, "n": n,
         "trace": trace, "walk": walk, "motion": motion, "speed": speed,
-        "reversal": rev, "near_miss": near_miss,
+        "reversal": rev, "near_miss": near_miss, **near_sig,
         "n_looks": n_looks, "n_pose": n_pose,
         # A step the ball model never looked at is not evidence of silence, so
         # it holds the BALL TERM ONLY.  `deadtime_confidence` freezes the whole
@@ -234,6 +299,8 @@ class PointEnergy:
     gain: np.ndarray
     drain_ball: np.ndarray
     drain_near: np.ndarray
+    idle: np.ndarray             # the near_end signals' combined, capped
+                                 # contribution to the silence multiplier
     drain_start: np.ndarray      # start time of the current non-positive run
     floor_since: np.ndarray      # when the current floor visit began; nan if not
     n: int                       # steps actually integrated (see `stop_at_end`)
@@ -258,6 +325,15 @@ def integrate(bins: Dict, cfg: ReelConfig, stop_at_end: bool = False) -> PointEn
     w_motion, w_rev = float(cfg.energy_motion_weight), float(cfg.energy_reversal_weight)
     w_ball, boost = float(cfg.energy_ball_weight), float(cfg.energy_walk_boost)
     w_near = float(cfg.energy_near_missing_weight)
+    # The four near_end signals boost the silence drain exactly as walking does,
+    # each with its own weight, and their combined contribution is capped.
+    # Without the cap four saturated signals could add ~4x the walk boost's
+    # authority to a single step and drive the drain straight into
+    # energy_max_drop_per_s, at which point the weights stop being separable —
+    # the same identifiability trap the boost/cap pair already has.
+    near_w = [(name, float(getattr(cfg, f"energy_{name}_weight", 0.0)))
+              for name in NEAR_SIGNALS]
+    near_cap = float(cfg.energy_near_signal_cap)
     up, down = float(cfg.energy_max_rise_per_s), float(cfg.energy_max_drop_per_s)
     confirm_s = float(cfg.energy_confirm_s)
 
@@ -266,6 +342,7 @@ def integrate(bins: Dict, cfg: ReelConfig, stop_at_end: bool = False) -> PointEn
     gain_a = np.zeros(n)
     dball_a = np.zeros(n)
     dnear_a = np.zeros(n)
+    idle_a = np.zeros(n)
     dstart_a = np.full(n, np.nan)
     fsince_a = np.full(n, np.nan)
 
@@ -278,13 +355,16 @@ def integrate(bins: Dict, cfg: ReelConfig, stop_at_end: bool = False) -> PointEn
     for k in range(n):
         tk = float(t[k])
         if (k + 1) * dt <= hold_s:
-            gain = dball = dnear = 0.0
+            gain = dball = dnear = idle = 0.0
             de = 0.0
             drain_start = t0 + hold_s
         else:
             gain = w_motion * float(motion[k]) + w_rev * float(rev[k])
+            idle = min(near_cap, sum(w * float(bins[name][k])
+                                     for name, w in near_w if w))
             dball = 0.0 if ball_held[k] else (
-                w_ball * (1.0 - float(trace[k])) * (1.0 + boost * float(walk[k])))
+                w_ball * (1.0 - float(trace[k]))
+                * (1.0 + boost * float(walk[k]) + idle))
             dnear = 0.0 if near_held[k] else w_near * float(near_miss[k])
             rate = max(-down, min(up, gain - dball - dnear))
             de = rate * dt
@@ -305,6 +385,7 @@ def integrate(bins: Dict, cfg: ReelConfig, stop_at_end: bool = False) -> PointEn
         gain_a[k] = gain
         dball_a[k] = dball
         dnear_a[k] = dnear
+        idle_a[k] = idle
         dstart_a[k] = np.nan if drain_start is None else drain_start
         fsince_a[k] = np.nan if floor_since is None else floor_since
 
@@ -312,7 +393,7 @@ def integrate(bins: Dict, cfg: ReelConfig, stop_at_end: bool = False) -> PointEn
             used = k + 1
             break
 
-    return PointEnergy(energy, delta, gain_a, dball_a, dnear_a,
+    return PointEnergy(energy, delta, gain_a, dball_a, dnear_a, idle_a,
                        dstart_a, fsince_a, used)
 
 
@@ -337,13 +418,29 @@ def point_end(bins: Dict, res: PointEnergy, start_t: float,
         t_end = min(tk, max(anchor, start_t + cfg.energy_hold_s) + cfg.energy_stamp_s)
         lo = max(0, k - int(round(cfg.energy_confirm_s / bins["dt"])) - 1)
         walking = float(np.mean(bins["walk"][lo:k + 1])) if k >= lo else 0.0
-        level = "high" if walking >= 0.5 else "medium"
+        # The non-walking near-player evidence promotes an end the same way
+        # walking does, measured in walking's own units: `idle` and the walk
+        # boost multiply the same drain, so half-confident walking is the
+        # natural bar for "the player has visibly stopped playing".  With the
+        # near_end weights at their default zero this term is zero and the
+        # grading is bit-for-bit what it was before the signals existed.
+        idle = float(np.mean(res.idle[lo:k + 1])) if k >= lo else 0.0
+        # `idle > 0` is not redundant: with energy_walk_boost swept to zero the
+        # bar to clear would otherwise be zero, and every end would grade high
+        # on no evidence at all.
+        idle_high = idle > 0.0 and idle >= 0.5 * float(cfg.energy_walk_boost)
+        level = "high" if (walking >= 0.5 or idle_high) else "medium"
+        reason = "energy drained"
+        if walking >= 0.5:
+            reason += ", walking"
+        if idle_high:
+            reason += ", near player idle"
         return {
             "t": round(float(t_end), 3),
             "source": "energy",
             "level": level,
-            "reason": ("energy drained, walking" if level == "high"
-                       else "energy drained"),
+            "reason": reason,
+            "idle": round(idle, 4),
             "drain_start_s": round(float(anchor), 3),
             "cross_s": round(tk, 3),
             "min_energy": round(float(res.energy[:k + 1].min()), 4),
@@ -372,6 +469,8 @@ def score_energy(starts: Sequence, duration: float, ev: EnergyEvidence,
             continue
         for k in range(res.n):
             rows.append({
+                **{name: round(float(bins[name][k]), 4) for name in NEAR_SIGNALS},
+                "idle": round(float(res.idle[k]), 4),
                 "point_index": i,
                 "point_start_s": round(start_t, 3),
                 "elapsed_s": round(k * bins["dt"], 3),

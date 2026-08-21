@@ -696,3 +696,100 @@ One implementation bug worth recording because it hid behind the default:
 `post["hi"]`, while `train.py` had a dispatch over all three kinds the sweep can
 pick. Every predict call died the moment a tune chose a threshold. `apply_post`
 now lives in `walking/evaluate.py` and both import it.
+
+### 8.7 Near-player point-end signals (`pipeline/near_end.py`)
+
+The energy policy reads exactly one near-player signal: the walking classifier.
+That answers one question — *is this person going somewhere* — and a large
+share of points end without the feet moving at all. The winner hit standing
+still, the turn to the back fence, the racket hand dropping, the reach into a
+pocket for the second ball: `walk_prob` reads zero through all of it.
+
+Four more signals, model-free geometry over the *same* near-player pose track
+the walking classifier already reads, so they cost no perception:
+
+| signal | what it measures |
+|---|---|
+| `settle` | court speed and limb energy both collapse, and stay collapsed |
+| `turn_away` | shoulder line rotates to face the camera rather than the net |
+| `stance_drop` | wrists fall to the hip line **and** knees straighten out of the ready crouch |
+| `idle_hands` | hand to the pocket for the second ball |
+
+They enter the bar the way walking does — as terms on the ball-silence
+multiplier, `drain = w_ball · (1 − trace) · (1 + boost·walk + idle)` — so with
+the ball visibly in play they drain nothing however confident they are. Every
+one of them also fires during live tennis (a player is briefly still between
+shots, turns their back chasing a lob), and an additive term would end points on
+that, which is the failure `energy_walk_boost`'s shape already exists to avoid.
+
+#### Four constructions were wrong, and the corpus said so
+
+Each signal was first built from the obvious argument and then measured as
+post/live separation — mean over tracked samples 1–4 s after each labelled
+rally end, against 4–1 s before it — over Data/21,22,23,24,43. In all four
+cases the first construction was beaten, twice by its own opposite:
+
+| signal | first construction | measured | adopted | measured |
+|---|---|---|---|---|
+| `settle` | `min(feet, limbs)` — a settle is both | 1.27 1.38 1.82 **0.94** 1.56 | `mean` | 2.18 1.38 1.51 1.22 1.67 |
+| `stance_drop` | `mean(hands, knees)` — two independent tells | 1.65 1.20 1.27 1.69 1.59 | `min` | 2.81 1.50 2.22 6.65 3.43 |
+| `turn_away` | shoulder order + ¼ vote on a visible face | 4.56 2.61 1.49 2.57 4.73 | shoulder order alone | 11.9 4.50 1.43 3.26 102 |
+| `idle_hands` | max(pocket, face/cap, hands-on-hips) | 1.51 1.43 1.31 1.58 **0.65** | pocket alone | 3.12 3.09 2.28 10.0 7.63 |
+
+The two that flipped between `min` and `mean` flipped for a reason that is the
+same reason stated twice. At 15 Hz off a 540p proxy the channels fail
+*independently*, so for `settle` — where each channel is real evidence on its
+own — `min` throws away whichever half survived a dropped keypoint. For
+`stance_drop`, straight legs alone are not evidence of anything (a player stands
+upright constantly while the ball is at the far end), so the knee term has to
+veto rather than vote; `min` beats hands-alone on four clips of five, which is
+what says the term is real.
+
+`to_head` (hand to face, cap, hair) is not weak, it is **backwards** — 0.26,
+0.00, 0.07, 0.00, 0.00 — and no radius fixes it. At this resolution the wrist
+that comes near the head is the racket arm at the top of a swing or a serve
+toss, which is live play; a genuine cap adjust between points is a handful of
+frames per clip. `akimbo` is closer to real but negative on one clip and flat on
+another, and loosening its flare threshold raises its level 4x while moving
+separation the wrong way. Both are still computed and returned under `cue_`
+keys: they cost two array ops, and a deleted cue cannot be re-measured on a
+camera that sees the near player better.
+
+#### Three of the four ship on
+
+Separating on every clip is not the same claim as improving the reel, so the
+four weights were swept alone, with every other energy knob held at its shipped
+value. The question is what these terms *add* to a bar that already works, not
+what a bar refitted around them looks like. Over Data/21,22,23,24,43 — 62
+labelled ends, detected starts, scored through `eval_point_end`:
+
+| arm | recall | precision | pt median | truncations | mid-rally FP |
+|---|---|---|---|---|---|
+| all four at zero | 61% | 73% | +1.38 | 0 | 0 |
+| best on the training set | 66% | 77% | +1.04 | 0 | 0 |
+| **leave-one-clip-out** | **65%** | **77%** | **+1.10** | **0** | **0** |
+
+The middle row is the usual five-clip fit and means little by itself. The third
+row is the reason these ship non-zero: held out, the signals still buy +4 pp
+recall, +4 pp precision and 0.28 s of timing with the truncation gate intact,
+and **four of the five folds pick the same configuration**. That is precisely
+what the existing energy weights could not do — all five folds disagreed there,
+which is why 8.6 adopted them "with a known weakness". Fold agreement on a
+corpus this small is the strongest evidence available here, and it is the whole
+basis for the adoption.
+
+Each signal alone also beats the baseline (recall 63–65%, zero truncations), so
+this is not one term carrying three passengers. The single truncation produced
+anywhere in the 256-configuration grid came from `stance_drop` at 1.5, which is
+why its default sits below that.
+
+Shipped: `turn_away` 0.5, `stance_drop` 1.0, `idle_hands` 1.0, `settle` **0.0**.
+`settle` is off despite being the best of the four *on its own* (recall 65%,
+the lowest single-signal loss) — it is redundant *with* the others, since a
+player who has turned away and dropped the racket has also stopped moving, and
+the sweep zeroes it whenever the other three are on. It stays a knob for cameras
+whose pose track is good enough to make stillness the reliable one.
+
+The caveats from 8.6 carry over unchanged: five clips, one camera height, and
+Data/43 is at 17% recall under every configuration in the grid. The gate is
+still truncations, and a signal that buys recall with one is still a regression.

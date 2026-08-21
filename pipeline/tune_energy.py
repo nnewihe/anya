@@ -52,6 +52,7 @@ from .anya_far_telemetry import far_telemetry_path_for
 from .anya_near_serve import events_path_for
 from .anya_near_telemetry import near_telemetry_path_for
 from .eval_point_end import score_ends, _agg
+from .near_end import signals_for_video
 from .parse_ground_truth import load_rallies
 from .rally_reel import ball_trace, energy
 from .rally_reel.config import ReelConfig
@@ -76,6 +77,17 @@ GRIDS = {
     "energy_stamp_s":             (1.0, 1.5, 2.0, 2.5, 3.0, 4.0),
     "energy_confirm_s":           (0.0, 0.25, 0.5, 1.0),
     "energy_max_drop_per_s":      (0.40, 0.60, 0.90, 1.40),
+    # The four near_end signals.  Their grids are DELIBERATELY COARSER than the
+    # weights above and they top out at the shipped walk boost of 1.5: nothing
+    # here has ever been fitted, the corpus is the same five clips that could
+    # not pin the existing weights, and a fine grid on an unmeasured term is a
+    # way of manufacturing an argmin, not of finding one.  0.0 is first in every
+    # tuple so the sweep's tie-breaking prefers the ablation — a signal has to
+    # EARN a non-zero weight here, not merely fail to hurt.
+    "energy_settle_weight":       (0.0, 0.5, 1.0, 1.5),
+    "energy_turn_away_weight":    (0.0, 0.5, 1.0, 1.5),
+    "energy_stance_drop_weight":  (0.0, 0.5, 1.0, 1.5),
+    "energy_idle_hands_weight":   (0.0, 0.5, 1.0, 1.5),
 }
 # These grids are where widening STOPS PAYING, not where the edges disappear.
 # One further round (boost to 14, near to 0.80, hold to 6.0, stamp to 5.0)
@@ -91,6 +103,20 @@ STAGES = (("energy_ball_weight", "energy_walk_boost"),
           ("energy_motion_weight", "energy_reversal_weight"),
           ("energy_near_missing_weight", "energy_hold_s"),
           ("energy_stamp_s", "energy_confirm_s"),
+          ("energy_walk_boost", "energy_max_drop_per_s"),
+          # The near-player signals come LAST and in two pairs.  Last, because
+          # they are additive evidence on a policy that already works without
+          # them and the honest question is what they add to a fitted bar, not
+          # what a bar fitted around them looks like.  Paired settle/stance and
+          # turn/hands, because those are the pairs that co-occur — a player who
+          # has settled has usually also stood up, and the turn to the fence is
+          # where the hand goes to the pocket — so they are the pairs a
+          # coordinate descent would otherwise walk a ridge between.
+          ("energy_settle_weight", "energy_stance_drop_weight"),
+          ("energy_turn_away_weight", "energy_idle_hands_weight"),
+          # …then one more pass at the drain the four of them multiply, since
+          # the boost/cap pair is only identifiable given how much OTHER
+          # evidence is loading the same multiplier.
           ("energy_walk_boost", "energy_max_drop_per_s"))
 
 TRUNC_PENALTY = 4.0
@@ -142,7 +168,12 @@ def _load_clip(directory: Path, cfg: ReelConfig, labelled_starts: bool) -> Dict:
         pose_npz=end_pose_path_for(video), model_path=_walk_model_path(cfg),
         return_result=True)
 
-    ev = energy.build_evidence(meta, records, walk_result, intervals)
+    # Always built here, unlike in the reel, which skips them when every weight
+    # is zero: a sweep that varies those weights is precisely the case where
+    # they are not.
+    near = signals_for_video(video, pose_npz=end_pose_path_for(video),
+                             sig=walk_result.get("sig"))
+    ev = energy.build_evidence(meta, records, walk_result, intervals, near=near)
     fps = float(meta["fps"])
     n_frames = int(meta["total_frames"])
     duration = n_frames / fps

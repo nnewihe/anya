@@ -106,6 +106,22 @@ def main(argv=None):
                     help="Cap on how fast the bar can recover, per second")
     ap.add_argument("--energy-confirm", type=float, default=None,
                     help="Seconds the bar must sit at the floor to end a point")
+    # The four near_end signals.  All ship at zero, so these flags are how an
+    # arm gets turned on at all; see ReelConfig for what each one measures.
+    ap.add_argument("--energy-settle-weight", type=float, default=None,
+                    help="Near-player stillness as a multiplier on the ball-"
+                         "silence drain (0 = off, the shipped default)")
+    ap.add_argument("--energy-turn-away-weight", type=float, default=None,
+                    help="Near player turning to face the camera rather than "
+                         "the net, same units")
+    ap.add_argument("--energy-stance-drop-weight", type=float, default=None,
+                    help="Loss of the ready stance (hands down, legs straight), "
+                         "same units")
+    ap.add_argument("--energy-idle-hands-weight", type=float, default=None,
+                    help="Between-point hand rituals — pocket, face/cap, hands "
+                         "on hips — same units")
+    ap.add_argument("--energy-near-signal-cap", type=float, default=None,
+                    help="Ceiling on the four near-player signals combined")
     ap.add_argument("--no-energy-debug-rows", action="store_true",
                     help="Omit the per-step energy samples from the segments JSON")
     ap.add_argument("--walk-ball-veto", type=float, default=None,
@@ -169,7 +185,12 @@ def main(argv=None):
                        ("energy_step", "energy_step_s"),
                        ("energy_confirm", "energy_confirm_s"),
                        ("energy_max_drop", "energy_max_drop_per_s"),
-                       ("energy_max_rise", "energy_max_rise_per_s")):
+                       ("energy_max_rise", "energy_max_rise_per_s"),
+                       ("energy_settle_weight", "energy_settle_weight"),
+                       ("energy_turn_away_weight", "energy_turn_away_weight"),
+                       ("energy_stance_drop_weight", "energy_stance_drop_weight"),
+                       ("energy_idle_hands_weight", "energy_idle_hands_weight"),
+                       ("energy_near_signal_cap", "energy_near_signal_cap")):
         # setattr on a dataclass instance accepts anything, so a stale mapping
         # would be silently inert — the worst failure mode for an A/B arm.
         if not hasattr(cfg, field):
