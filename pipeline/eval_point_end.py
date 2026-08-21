@@ -131,14 +131,15 @@ def _pct(a: int, b: int) -> str:
 
 # ── per-clip scoring ─────────────────────────────────────────────────────
 
-def score_clip(clip_dir: str, run_path: str, tol_s: float = TOL_S,
-               trunc_s: float = TRUNC_S) -> Optional[Dict]:
-    rallies = load_rallies(clip_dir)
-    if not rallies:
-        return None
-    ends, meta = load_run(run_path)
-    fps = _fps_for(clip_dir)
-    n_frames = _n_frames(clip_dir) or (rallies[-1]["end"] + 1)
+def score_ends(rallies: Sequence[Dict], ends: Sequence[Dict], fps: float,
+               n_frames: int, tol_s: float = TOL_S,
+               trunc_s: float = TRUNC_S) -> Dict:
+    """The three views, over ends already in memory.
+
+    Split out of `score_clip` so a tuner can optimise against exactly what this
+    file reports, instead of a proxy loss that happens to correlate with it on
+    the corpus it was written against.  `score_clip` is this plus file loading.
+    """
 
     # Only rallies that are followed by real dead time are live->dead
     # transitions; back-to-back rallies would otherwise demand an end that no
@@ -183,15 +184,28 @@ def score_clip(clip_dir: str, run_path: str, tol_s: float = TOL_S,
         by_method[e["method"] or "?"] = by_method.get(e["method"] or "?", 0) + 1
 
     return {
-        "clip": os.path.basename(clip_dir.rstrip("/")),
         "n_gt": len(gt_t), "n_det": len(det_t), "n_match": len(pairs),
         "recall": len(pairs) / len(gt_t) if gt_t else 0.0,
         "precision": len(pairs) / len(det_t) if det_t else 0.0,
         "err": err, "point_err": np.array(per_point),
         "truncations": truncations, "uncovered": uncovered,
         "mid_rally_fp": mid, "live_min": live_min,
-        "by_method": by_method, "config": meta.get("config", {}),
+        "by_method": by_method,
     }
+
+
+def score_clip(clip_dir: str, run_path: str, tol_s: float = TOL_S,
+               trunc_s: float = TRUNC_S) -> Optional[Dict]:
+    rallies = load_rallies(clip_dir)
+    if not rallies:
+        return None
+    ends, meta = load_run(run_path)
+    fps = _fps_for(clip_dir)
+    n_frames = _n_frames(clip_dir) or (rallies[-1]["end"] + 1)
+    out = score_ends(rallies, ends, fps, n_frames, tol_s, trunc_s)
+    out["clip"] = os.path.basename(clip_dir.rstrip("/"))
+    out["config"] = meta.get("config", {})
+    return out
 
 
 def _agg(rows: List[Dict]) -> Dict:

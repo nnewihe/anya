@@ -730,6 +730,18 @@ def extract_events(frames: List[Dict], threshold: float,
     return events
 
 
+def events_path_for(telemetry_path: str) -> str:
+    """Where `score_telemetry` writes its events, without running it.
+
+    Factored out so a caller that only wants the cached events — the energy
+    tuner rebuilding the production start timeline — derives the path from the
+    same expression score_telemetry does, instead of a second copy that drifts.
+    """
+    stem = telemetry_path[:-len(".jsonl")] if telemetry_path.endswith(".jsonl") \
+        else os.path.splitext(telemetry_path)[0]
+    return stem + EVENTS_SUFFIX
+
+
 def score_telemetry(telemetry_path: str, cfg: Optional[NearServeConfig] = None,
                     prob_path: Optional[str] = None,
                     events_path: Optional[str] = None) -> Tuple[str, str]:
@@ -777,7 +789,7 @@ def score_telemetry(telemetry_path: str, cfg: Optional[NearServeConfig] = None,
     stem = telemetry_path[:-len(".jsonl")] if telemetry_path.endswith(".jsonl") \
         else os.path.splitext(telemetry_path)[0]
     prob_path   = prob_path   or (stem + PROB_SUFFIX)
-    events_path = events_path or (stem + EVENTS_SUFFIX)
+    events_path = events_path or events_path_for(telemetry_path)
 
     out_meta = {
         "source_telemetry": os.path.basename(telemetry_path),

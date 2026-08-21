@@ -33,7 +33,8 @@ class RallySegment:
     end_t: float
     start: float           # serve_t - pre_roll, clamped
     end: float             # end_t + post_roll, clamped
-    end_method: str        # "walk" | "trace-walk" | "trace-gap" | "next-serve" | "cap"
+    end_method: str        # "walk" | "trace-walk" | "trace-gap" | "energy"
+                           #   | "confidence" | "next-serve" | "cap"
     confidence: str        # SERVE-START provenance, from PointStart
     end_confidence: str = ""   # END confidence: "high" | "medium" | "" (guard/cap)
     end_reason: str = ""       # human-readable why, for review

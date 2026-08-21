@@ -176,7 +176,8 @@ class ReelConfig:
     # False on a 30 Hz pose pass (pose_fps 30 costs 20.28 ms/frame against
     # 12.84), where the shipped model is the matched one.
 
-    end_policy: str = "trace"          # "trace" | "walk-ball" | "confidence" | "legacy"
+    end_policy: str = "energy"         # "energy" | "trace" | "walk-ball"
+                                       #   | "confidence" | "legacy"
     # How the two dead-time signals combine into point ends.
     #
     #   "legacy"     walk onsets UNION gated ball-quiet onsets, first one after
@@ -220,8 +221,9 @@ class ReelConfig:
     # starts, which is the gap between the two evaluations and the reason this
     # measurement exists rather than an assumption that it would.
     #
-    # DEFAULT as of 2026-08-19.  Measured over Data/21,22,23 (42 labelled ends)
-    # against the two arms it replaces:
+    # DEFAULT from 2026-08-19 to 2026-08-21, superseded by "energy" (below).
+    # Measured over Data/21,22,23 (42 labelled ends) against the two arms it
+    # replaced:
     #
     #                    recall  prec  event med  pt med  trunc  midFP
     #     walk-ball        48%    62%    -0.44     +1.43     1      1
@@ -236,6 +238,7 @@ class ReelConfig:
     # 52-70 ms on a 29.97 fps clip (stride 1), against fast_end's documented
     # 12.84.  End to end that takes a run from ~1.6x clip length to roughly 3x.
     # Set end_policy="walk-ball" to trade the accuracy back for the speed.
+    # "energy" inherits this cost unchanged — it reads the same stream.
     #
     # Corpus caveat, on the record: 3 clips / 42 ends, below the ~8-clip floor
     # this project learned the hard way when a 3-clip tuner picked a different
@@ -256,6 +259,20 @@ class ReelConfig:
     #                    +trace_quiet_stamp_s.
     #                Requires ball sampling at trace_ball_fps — see that field,
     #                the rate is a CORRECTNESS precondition, not a nicety.
+    #
+    #   "energy"     a non-monotonic ENERGY BAR per point.  It starts at
+    #                energy_start, holds through energy_hold_s, then charges on
+    #                near-player rally motion and discharges on the absence of an
+    #                in-court trace, on walking (which MULTIPLIES that discharge
+    #                rather than adding its own), and on a missing near player.
+    #                The point ends where the bar sits at the floor, stamped back
+    #                at the drain that emptied it.  It integrates the same
+    #                evidence "trace" windows, so a rally fading across several
+    #                partial dropouts can end without any single gap reaching
+    #                trace_quiet_s, and a rally with one long dropout but
+    #                continuing player activity can survive it.  Requires the
+    #                same trace_ball_fps stream "trace" does.  See
+    #                rally_reel/energy.py.
     #
     #   "confidence" the dead-time accumulator decides.  Ends where the
     #                monotonic score first reaches deadtime_score_threshold,
@@ -532,6 +549,147 @@ class ReelConfig:
     # 41% of the time, so there is rarely a position to call stationary.
     # The untracked clause is what earns the improvement.  Kept for cameras
     # that hold the near player more reliably.
+
+    # ---- energy point-end policy (end_policy="energy") ------------------
+    # A non-monotonic bar per point: it charges on rally activity and
+    # discharges on its absence, instead of ending the point on a fixed window
+    # of ball silence the way "trace" does.  rally_reel/energy.py carries the
+    # update equation and the reasoning behind its shape.
+    #
+    # DEFAULT as of 2026-08-21.  Tuned by tune_energy.py against DETECTED
+    # starts over Data/21,22,23,24,43 (62 labelled ends — the five clips with
+    # the 30 Hz / 1920 ball telemetry the trace needs), then scored two ways.
+    #
+    # eval_point_end.py as it stands, against the arm it replaces:
+    #
+    #   Data/21,22,23 (42 ends)   recall  prec  event med  pt med  trunc  midFP
+    #     trace                     62%    76%    +0.01     +0.82     0      0
+    #     energy                    64%    75%    +0.46     +0.92     0      0
+    #
+    #   Data/21,22,23,24,43 (62 ends)
+    #     trace                     55%    69%    +0.19     +1.51     0      0
+    #     energy                    61%    73%    +0.69     +1.38     0      0
+    #
+    # And under a BOUNDARY-TOLERANT reading, which is the one that matches what
+    # a reel is for: an end is on time unless it is early by more than 2 s or
+    # overruns by more than 2 s INTO A GAP WORTH CUTTING.  Retaining the dead
+    # time between two closely-spaced serves is not an error — there was
+    # nothing there to remove — and the fixed +-2 s window scores it as one.
+    # Over Data/21,22,23,24,43, with "dead kept" the labelled dead seconds
+    # retained per live minute:
+    #
+    #                on-time  trunc  midcut  live kept  dead kept  ovr p90
+    #     energy       71%      0       0       91%      23.2s/m     5.5s
+    #     legacy       71%      6       7       86%      19.9s/m     7.9s
+    #     trace        65%      0       0       91%      26.9s/m     9.4s
+    #     walk-ball    60%      2       2       91%      27.9s/m    12.3s
+    #     confidence   48%      2       2       91%      29.0s/m     7.8s
+    #
+    # It is the best of the arms that hold the truncation gate, on both corpora
+    # and under both readings, and it wins the tiebreakers a highlight reel
+    # cares about: ~4 s/min less retained dead time than "trace" and a much
+    # tighter overrun tail (p90 5.5 s against 9.4 s — trace's misses are long
+    # overruns, which is precisely the footage the reel exists to drop).
+    # "legacy" ties it on on-time only by ending early: 6 truncations, 7
+    # mid-rally cuts, and the only arm that loses live tennis (86%).
+    #
+    # ADOPTED WITH A KNOWN WEAKNESS, deliberately and on the record.  The
+    # margin is +2 pp on three clips and +6 pp on five, and leave-one-clip-out
+    # picks a DIFFERENT configuration in all five folds (50% held-out recall,
+    # 5 truncations).  The SHAPE generalises; these nine numbers are a
+    # five-clip fit.  Extract the 30 Hz telemetry for Data/25,26,36,38 and
+    # re-run `tune_energy --leave-one-out` before treating any of them as
+    # settled — if the folds converge the default is confirmed, and if the
+    # margin evaporates "trace" is still here and still costs the same.
+    #
+    # Worth knowing before optimising this further: every arm retains 20-31 s
+    # of dead time per live minute, and the spread between the best and worst
+    # policy is smaller than what pre_roll_s/post_roll_s and the next-serve and
+    # cap fallbacks contribute (3 of 62 ends never fired at all under either
+    # trace policy).  The point-end rule is not the biggest lever left.
+    #
+    # Every weight below is PER SECOND and is multiplied by energy_step_s in the
+    # update, so the step is a resolution knob and not a strength knob.  Apply
+    # one per step and the whole fitted set silently becomes step-dependent.
+    energy_start: float = 0.5           # the bar's level at the serve
+    energy_floor: float = 0.0           # empty; the point ends here
+    energy_max: float = 1.0             # ceiling, so a long rally cannot bank
+                                        # reserve it would take seconds to spend
+    # energy_start and energy_floor are FROZEN and must not be swept: scaling
+    # every weight by k with both levels fixed is identical to rescaling
+    # time-to-drain by 1/k, so they are unidentifiable together and a sweep over
+    # both is mostly duplicate configurations — which then manufacture fold
+    # disagreement out of nothing.
+    energy_hold_s: float = 2.0          # quiet period after the serve, bar
+                                        # frozen; the serve, bounce and first
+                                        # exchange are where all three drains
+                                        # lie.  Swept, and 2.0 won.
+    energy_step_s: float = 0.25         # ~7.5 ball looks and ~3.7 pose samples
+                                        # per step at ball_fps 30 / pose_fps 15,
+                                        # and 8x finer than the 2 s eval tolerance
+    energy_ball_weight: float = 0.28    # drain per second under full trace
+                                        # silence: 0.5 empties in 1.8 s, so an
+                                        # end lands near serve+3.8 s against the
+                                        # trace policy's trace_quiet_s of 4.0
+    energy_walk_boost: float = 1.5      # walking makes that ~0.7 s, landing near
+                                        # serve+2.7 s against trace_gap_walk_s
+    # The boost MULTIPLIES the silence drain rather than adding a drain of its
+    # own.  With the ball visibly in play (1 - trace_frac) is zero and walking
+    # drains nothing, however confident the classifier is.  An additive walk
+    # term ends points on mid-rally walking, which is common and is the exact
+    # failure walk_ball_veto_s was invented to suppress.  Note the boost is only
+    # identifiable up to energy_max_drop_per_s: past ~1.2 here the cap binds and
+    # the two knobs stop being separable, which is why they are swept together.
+    energy_motion_weight: float = 0.15      # recharge per second at full
+                                            # non-walking motion.  Swept down
+                                            # from a hand-set 0.30: the recovery
+                                            # term is real but weak, because npw
+                                            # is present on a minority of frames
+    energy_motion_ref_ft_s: float = 6.0     # world speed that counts as full
+                                            # rally movement
+    energy_reversal_weight: float = 0.0     # OFF.  Direction reversals are the
+                                            # discriminative rally cue in
+                                            # principle — "absent from
+                                            # ball-retrieval walking" — but at
+                                            # 15 Hz pose they are too sparse to
+                                            # populate a 0.25 s step, and every
+                                            # non-zero value cost recall
+    energy_reversal_ref_hz: float = 2.0     # reversal rate that saturates it
+    energy_near_missing_weight: float = 0.0     # OFF.  The near player is off
+                                                # camera 59% of Data/23, so this
+                                                # term drains live rallies and
+                                                # was the source of every
+                                                # truncation the fit produced
+    # Both zero-weight terms are kept as knobs rather than deleted, because the
+    # corpus that zeroed them is five clips and the folds do not agree: one fold
+    # picked energy_near_missing_weight=0.35.  On footage where the near player
+    # stays in frame the term may well earn its keep, and a deleted term cannot
+    # be re-measured.  Treat a non-zero value as an experiment, not a default.
+    energy_max_rise_per_s: float = 0.30     # one lucky trace step cannot undo a
+                                            # real drain
+    energy_max_drop_per_s: float = 0.90     # with start 0.5 this floors
+                                            # time-to-end at hold + 0.56 s, the
+                                            # analogue of
+                                            # deadtime_max_increment_per_s
+    energy_confirm_s: float = 0.5           # the bar must SIT at the floor: a
+                                            # non-monotonic score chatters there,
+                                            # and every chatter is a truncation
+    energy_stamp_s: float = 3.0             # end offset from the START OF THE
+                                            # DRAIN, not from the crossing.  The
+                                            # point stopped when the evidence
+                                            # did; stamping at the crossing makes
+                                            # the reported end a function of the
+                                            # drain rate and couples timing to
+                                            # every other weight
+    energy_point_min_s: float = 4.0         # matches trace_point_min_s
+    energy_min_looks_per_step: int = 3      # below this the step's silence is
+                                            # sampling noise, so the ball term
+                                            # holds instead of draining
+    energy_debug_rows: bool = True          # 0.25 s rows are ~4x the dead-time
+                                            # confidence samples; off for
+                                            # production runs
+    # `tune_energy.py` sweeps the weights against labelled clips without
+    # rerunning perception, which is the only reason they are config values.
 
     # ---- output segments ----------------------------------------------
     # ---- dead-time confidence ------------------------------------------

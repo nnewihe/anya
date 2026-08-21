@@ -45,6 +45,7 @@ from .config import ReelConfig
 from .points import (build_segments, enforce_service_runs,
                      merge_serve_starts, usable_walk_intervals, walk_onsets)
 from .deadtime_confidence import deadtime_onsets, score_deadtime
+from . import energy as energy_policy
 from . import ball_trace
 
 ANALYSIS_SIZE = (960, 540)
@@ -84,6 +85,19 @@ def _stem_path(video_path: str, suffix: str) -> str:
     d = os.path.dirname(os.path.abspath(video_path))
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{suffix}")
+
+
+def _min_point_s(cfg: ReelConfig):
+    """Per-policy floor on point length, or None for the shared cfg.point_min_s.
+
+    The trace-based policies want a 4 s floor while walk-ball and legacy keep
+    3 s; raising the shared value instead would confound any A/B between them.
+    """
+    if cfg.end_policy == "trace":
+        return cfg.trace_point_min_s
+    if cfg.end_policy == "energy":
+        return cfg.energy_point_min_s
+    return None
 
 
 def _walk_model_path(cfg: ReelConfig) -> Optional[str]:
@@ -410,6 +424,15 @@ def build_reel(video_path: str,
     needs_full = ((wants_ball_end and not cfg.fast_end)
                   or (cfg.use_far and not cfg.fast_far)
                   or not cfg.fast_near)
+    if cfg.end_policy in ("trace", "energy") and not cfg.fast_end:
+        # Both policies read an IMM trace, and the trace needs the dense ball
+        # stream only anya_end_telemetry can be asked for.  The shared full pass
+        # samples the ball far too slowly; failing here beats failing inside
+        # trace_intervals with the sample rate as the proximate cause.
+        raise ValueError(
+            f"end_policy={cfg.end_policy!r} requires fast_end: its ball trace "
+            f"needs the {cfg.trace_ball_fps:.0f} Hz stream from "
+            f"anya_end_telemetry, which --no-fast-end does not produce.")
 
     # ── Stage 1: telemetry ──────────────────────────────────────────────
     telemetry = None
@@ -499,11 +522,13 @@ def build_reel(video_path: str,
         _emit(on_progress, 5)   # opens with a possible one-time proxy build
         ecfg = None
         end_out = None
-        if cfg.end_policy == "trace":
-            # The trace policy is the only consumer that needs a dense ball
-            # stream, so it requests one per-run rather than raising the global
-            # default and slowing every other path down.  Its own cache path
-            # lets both rates coexist, so an A/B does not re-extract per flip.
+        if cfg.end_policy in ("trace", "energy"):
+            # The two trace-based policies are the only consumers that need a
+            # dense ball stream, so they request one per-run rather than
+            # raising the global default and slowing every other path down.
+            # Their own cache path lets both rates coexist, so an A/B does not
+            # re-extract per flip — and "energy" reuses the same cache file as
+            # "trace", so flipping between them costs nothing.
             ecfg = EndExtractorConfig()
             ecfg.ball_fps = cfg.trace_ball_fps
             ecfg.ball_imgsz = cfg.trace_ball_imgsz
@@ -527,7 +552,8 @@ def build_reel(video_path: str,
     # as a ball, and the confidence score is now one of those consumers.
     ball_records, is_ball = None, None
     trace_details = []
-    if cfg.end_policy in ("walk-ball", "trace", "confidence") or cfg.ball_quiet_mode != "off":
+    if (cfg.end_policy in ("walk-ball", "trace", "confidence", "energy")
+            or cfg.ball_quiet_mode != "off"):
         ball_meta, ball_records, filter_balls = _ball_stream(end_telemetry)
         def is_ball(r):
             return bool(filter_balls(r))
@@ -538,21 +564,31 @@ def build_reel(video_path: str,
         dead_onsets = []
         print(f"[REEL]   walk intervals: {len(walks)} -> confidence policy "
               f"(threshold {cfg.deadtime_score_threshold})")
-    elif cfg.end_policy == "trace":
+    elif cfg.end_policy in ("trace", "energy"):
         intervals, tstats = ball_trace.trace_intervals(
             ball_meta, ball_records, filter_balls,
             _stem_path(video_path, "_court_cache.json"), cfg)
-        looks = [float(r["t"]) for r in ball_records if r.get("bn")]
-        dead_onsets, trace_details = ball_trace.trace_onsets(
-            intervals, walks, cfg, look_times=looks,
-            last_record_t=looks[-1] if looks else duration)
-        n_hi = sum(1 for d in trace_details if d["level"] == "high")
         print(f"[REEL]   trace: {tstats['n_pre_bridge']} interval(s) -> "
               f"{tstats['n_post_bridge']} after bridging {tstats['bridged_s']}s "
               f"at {cfg.trace_merge_gap_s}s; {tstats['alive_s']:.1f}s alive; gate "
               f"passed {tstats['gate_rate']:.0%} of {tstats['dets']} detection(s)")
-        print(f"[REEL]   dead-time onsets: {n_hi} trace+walk (high) + "
-              f"{len(dead_onsets) - n_hi} trace-only (medium)")
+        if cfg.end_policy == "energy":
+            # Scored in stage 6 for the same reason "confidence" is: the bar
+            # resets at every point start, so it cannot be built before the
+            # starts are known.
+            dead_onsets = []
+            energy_evidence = energy_policy.build_evidence(
+                ball_meta, ball_records, walk_result, intervals)
+            print(f"[REEL]   energy: start {cfg.energy_start} hold "
+                  f"{cfg.energy_hold_s}s step {cfg.energy_step_s}s")
+        else:
+            looks = [float(r["t"]) for r in ball_records if r.get("bn")]
+            dead_onsets, trace_details = ball_trace.trace_onsets(
+                intervals, walks, cfg, look_times=looks,
+                last_record_t=looks[-1] if looks else duration)
+            n_hi = sum(1 for d in trace_details if d["level"] == "high")
+            print(f"[REEL]   dead-time onsets: {n_hi} trace+walk (high) + "
+                  f"{len(dead_onsets) - n_hi} trace-only (medium)")
     elif cfg.end_policy == "walk-ball":
         print(f"[REEL]   walk intervals: {len(walks)} -> "
               f"{len(usable_walk_intervals(walks, cfg))} usable")
@@ -585,7 +621,10 @@ def build_reel(video_path: str,
                 starts = [p for p in starts if not p.side_conflict]
 
     confidence_rows = []
-    if ball_records is not None:
+    if ball_records is not None and cfg.end_policy != "energy":
+        # Skipped under "energy": the accumulator is passive telemetry on every
+        # other policy, but here the energy rows are the score worth reading and
+        # this pass would be pure overhead.
         confidence_rows = score_deadtime(starts, duration, walk_result,
                                          ball_records, is_ball, cfg)
     if cfg.end_policy == "confidence":
@@ -593,9 +632,18 @@ def build_reel(video_path: str,
         print(f"[REEL]   dead-time onsets: {len(dead_onsets)} confidence "
               f"crossing(s) from {len(starts)} start(s)")
 
+    energy_rows = []
+    if cfg.end_policy == "energy":
+        energy_rows, trace_details = energy_policy.score_energy(
+            starts, duration, energy_evidence, cfg)
+        dead_onsets = energy_policy.energy_onsets(trace_details)
+        n_hi = sum(1 for d in trace_details if d["level"] == "high")
+        print(f"[REEL]   dead-time onsets: {len(dead_onsets)} energy drain(s) "
+              f"from {len(starts)} start(s) ({n_hi} with walking)")
+
     segments = build_segments(
         starts, dead_onsets, duration, cfg,
-        min_point_s=cfg.trace_point_min_s if cfg.end_policy == "trace" else None)
+        min_point_s=_min_point_s(cfg))
 
     # Decorate ends with their graded confidence.  Keyed on the onset instant:
     # find_point_end returns min(t, hard_cap) and the cap path reports a
@@ -603,7 +651,7 @@ def build_reel(video_path: str,
     by_t = {round(d["t"], 3): d for d in trace_details}
     for seg in segments:
         det = by_t.get(round(seg.end_t, 3))
-        if det is not None and seg.end_method.startswith("trace"):
+        if det is not None and seg.end_method == det["source"]:
             seg.end_confidence, seg.end_reason = det["level"], det["reason"]
         else:
             seg.end_confidence, seg.end_reason = "", seg.end_method
@@ -626,6 +674,12 @@ def build_reel(video_path: str,
             "deadtime_confidence": {
                 "threshold": cfg.deadtime_score_threshold,
                 "samples": confidence_rows,
+            },
+            "energy": {
+                "start": cfg.energy_start,
+                "floor": cfg.energy_floor,
+                "step_s": cfg.energy_step_s,
+                "samples": energy_rows,
             },
         }, fh, indent=2)
 

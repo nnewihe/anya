@@ -52,16 +52,18 @@ def main(argv=None):
     ap.add_argument("--point-max", type=float, default=None,
                     help="Cap on point length when no walk interval is found")
     ap.add_argument("--end-policy",
-                    choices=("walk-ball", "trace", "confidence", "legacy"),
+                    choices=("walk-ball", "trace", "confidence", "energy",
+                             "legacy"),
                     default=None,
-                    help="How point ends combine the two dead-time signals: "
-                         "'walk-ball' (default) makes walking primary and lets "
-                         "a visible ball veto it, with ball silence alone "
-                         "ending the point where walking is silent; 'legacy' "
-                         "is the old union of walk onsets and gated "
-                         "ball-quiet; 'trace' ends on IMM-tracked in-court ball "
-                         "trace instead of ball presence; 'confidence' ends "
-                         "where the dead-time accumulator crosses threshold")
+                    help="How point ends read the dead-time signals: "
+                         "'energy' (default) integrates in-court ball trace, "
+                         "walking and player motion into a per-point energy "
+                         "bar and ends where it drains; 'trace' ends on a fixed "
+                         "window of IMM-tracked in-court ball silence; "
+                         "'walk-ball' makes walking primary and lets a visible "
+                         "ball veto it; 'confidence' ends where the dead-time "
+                         "accumulator crosses threshold; 'legacy' is the old "
+                         "union of walk onsets and gated ball-quiet")
     ap.add_argument("--segments-suffix", default=None,
                     help="Write the segments JSON under this suffix instead of "
                          "_rally_segments.json, so eval_point_end.py --arm can "
@@ -82,6 +84,30 @@ def main(argv=None):
     ap.add_argument("--trace-court-pad-ft", type=float, default=None)
     ap.add_argument("--no-trace-court-gate", action="store_true",
                     help="Ablate the in-court gate on the trace policy")
+    ap.add_argument("--energy-ball-weight", type=float, default=None,
+                    help="Drain per second under full ball-trace silence")
+    ap.add_argument("--energy-walk-boost", type=float, default=None,
+                    help="How much walking multiplies that silence drain")
+    ap.add_argument("--energy-motion-weight", type=float, default=None,
+                    help="Recharge per second at full non-walking motion")
+    ap.add_argument("--energy-reversal-weight", type=float, default=None,
+                    help="Recharge per second at a saturating reversal rate")
+    ap.add_argument("--energy-near-weight", type=float, default=None,
+                    help="Drain per second while the near player is missing")
+    ap.add_argument("--energy-hold", type=float, default=None,
+                    help="Quiet period after the serve, bar frozen")
+    ap.add_argument("--energy-stamp", type=float, default=None,
+                    help="End offset from the start of the drain")
+    ap.add_argument("--energy-step", type=float, default=None,
+                    help="Integration step (resolution, not strength)")
+    ap.add_argument("--energy-max-drop", type=float, default=None,
+                    help="Cap on how fast the bar can fall, per second")
+    ap.add_argument("--energy-max-rise", type=float, default=None,
+                    help="Cap on how fast the bar can recover, per second")
+    ap.add_argument("--energy-confirm", type=float, default=None,
+                    help="Seconds the bar must sit at the floor to end a point")
+    ap.add_argument("--no-energy-debug-rows", action="store_true",
+                    help="Omit the per-step energy samples from the segments JSON")
     ap.add_argument("--walk-ball-veto", type=float, default=None,
                     help="walk-ball rule A: seconds the ball must be unseen "
                          "before an active walk ends the point (default 1.0)")
@@ -132,7 +158,18 @@ def main(argv=None):
                        ("trace_point_min", "trace_point_min_s"),
                        ("trace_merge_gap", "trace_merge_gap_s"),
                        ("trace_walk_lead", "trace_walk_lead_s"),
-                       ("trace_court_pad_ft", "trace_court_pad_ft")):
+                       ("trace_court_pad_ft", "trace_court_pad_ft"),
+                       ("energy_ball_weight", "energy_ball_weight"),
+                       ("energy_walk_boost", "energy_walk_boost"),
+                       ("energy_motion_weight", "energy_motion_weight"),
+                       ("energy_reversal_weight", "energy_reversal_weight"),
+                       ("energy_near_weight", "energy_near_missing_weight"),
+                       ("energy_hold", "energy_hold_s"),
+                       ("energy_stamp", "energy_stamp_s"),
+                       ("energy_step", "energy_step_s"),
+                       ("energy_confirm", "energy_confirm_s"),
+                       ("energy_max_drop", "energy_max_drop_per_s"),
+                       ("energy_max_rise", "energy_max_rise_per_s")):
         # setattr on a dataclass instance accepts anything, so a stale mapping
         # would be silently inert — the worst failure mode for an A/B arm.
         if not hasattr(cfg, field):
@@ -140,6 +177,8 @@ def main(argv=None):
         v = getattr(args, arg, None)
         if v is not None:
             setattr(cfg, field, v)
+    if args.no_energy_debug_rows:
+        cfg.energy_debug_rows = False
     if args.no_trace_court_gate:
         cfg.trace_court_gate = False
     if args.walk_ball_veto is not None:
