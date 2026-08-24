@@ -37,41 +37,83 @@ mis-reacquire it. So a player off court is still *tracked*, just not *eligible*.
 
 ## Near-side serve — results
 
-Scored against `ground_truth.json` with `eval.py`, ±2.0 s, greedy one-to-one.
-**Nine trusted clips carrying a near serve; clip 58 (44 more) is the holdout.**
+Scored against `ground_truth.json` with `eval.py`, ±2.0 s, greedy one-to-one,
+restricted to each clip's labelled span. **All 12 trusted clips, 102 near
+serves.**
 
-| | recall | precision | bias |
+| clip | labelled | recall | precision |
 |---|---|---|---|
-| seed, ported as-is | 50.0% | 55.8% | +1.45 s |
-| + calibrated point-start | 79.3% | 100% | +0.04 s |
-| + trophy dilation, threshold 0.70 | **100% (58/58)** | **93.5%** | +0.10 s |
+| 21 | 11 | 90.9% | 90.9% |
+| 22 | 11 | 100% | 91.7% |
+| 23 | 0 | — | **0 fires** |
+| 24 | 2 | 100% | 66.7% |
+| 25 (doubles) | 5 | 100% | 100% |
+| 26 | 2 | 100% | 100% |
+| 36 | 8 | 100% | 100% |
+| 38 | 8 | 100% | 100% |
+| 40 (doubles) | 0 | — | **0 fires** |
+| 43 | 6 | 100% | 100% |
+| 50 | 5 | 100% | 71.4% |
+| **58 (holdout)** | **44** | **65.9%** | **55.8%** |
+| pooled | 102 | 84.3% | 75.4% |
 
-Per clip: 21, 24, 25, 26, 36, 38, 43, 50 all at 100% recall; 22 at 100%. Four
-false positives total (22:1, 24:1, 50:2). **Clips 23 and 40 have no near serves
-at all and the detector fires zero times on either** — including 40, which is
-doubles, so two near players stand at the baseline through 13 far-serve rallies
-without producing a start.
+Nine of eleven scored clips are at 100% recall. **Clips 23 and 40 have no near
+serves and the detector fires zero times on either** — 40 being doubles, so two
+near players stand at the baseline through 13 far-serve rallies without
+producing a start.
 
-Three things got it there, in order of how much they mattered:
+### How it got there
+
+Three fixes, in order of how much they mattered. The first two are defects in
+the seed that eyeball review could not have found, because both are invisible
+without labels.
 
 1. **The trophy is a phase, not an instant.** The seed multiplies three shape
    terms sample-by-sample. On Data/38's five missed serves every term clears its
    threshold comfortably — `hi_head` +0.19…+0.27 against a 0.10 line — while the
    product never exceeds 0.30, because the tossing arm reaches full extension a
    sample or two before the racket arm settles. Each term is now dilated ±0.20 s
-   before the product. This alone took recall 79% → 100%.
+   before the product. Recall 79% → 100% on the nine short clips.
 
-2. **Trophy onset is not the point start.** The seed reported it, and it lands
-   +1.63 s after the label. Walking back to the last instant of the ready stance
-   (hands still together on the grip) gets to +1.13 s; the rest is a labelling
-   convention — `start` is marked before the server's hands move, so no
-   definition taken from the serve motion can reach it. Corrected as one fitted
-   constant, validated leave-one-clip-out: **44/45 (98%)**.
+2. **Trophy onset is not the point start**, and lands +1.63 s late. Walking back
+   to the last instant of the ready stance gets to +1.13 s; the rest is a
+   labelling convention. Two other anchors were tried and are worse — starting
+   the ready run scores sd 2.46–2.68 against the hand split's 1.41.
 
-3. **The eval was scoring unlabelled regions.** Clip 38 is labelled to 206 s and
-   then stops, leaving 214 s unlabelled — where all three of its apparent false
-   positives lived. `eval.py` now restricts scoring to the labelled span and
-   reports what fell outside it.
+3. **The eval was scoring unlabelled regions.** Clip 38 is labelled to 206 s of
+   420 s, and all three of its apparent false positives lived in the tail.
+
+### What clip 58 showed, and why it was worth holding out
+
+Clip 58 is a 55-minute match; the other eleven are 7-minute snippets. Every
+parameter was fixed before its perception pass finished. It scores 65.9% / 55.8%
+against ~100% / ~93% on the clips used for tuning, and the gap decomposes into
+two findings, neither of which is a threshold problem:
+
+**The label lead does not transfer.** Fitted on the nine short clips the
+hand-split lead is 1.13 s; clip 58 wants 2.4 s. Per-clip leads genuinely span
+0.9–2.4 s, and at a ±2.0 s tolerance no constant satisfies both ends: at 1.13
+clip 21 scores 100% and clip 58 57%; at 2.00 clip 21 falls to 91% and clip 58
+reaches 68%. Clips 22–50 do not move at all. `SERVE_LEAD_S` is now the median
+over all ten clips (1.63) — a compromise, and worth only ~9 points on clip 58.
+**A tighter tolerance would need a per-clip lead estimated from the clip's own
+detections, not this constant.**
+
+**The rest is overheads, and pose cannot fix it.** Of clip 58's 24 false
+positives, **23 fall inside a labelled rally** rather than in dead time — and
+all 23 are struck from *inside the serve zone*, at the same court depth as real
+serves (median court_y −0.62 m for both). These are baseline overheads and high
+defensive balls during a point. The seed predicted this exactly: a smash and a
+serve are not different at the joints, and the court gate is the only ball-free
+separator there is. It has nothing left to give here, because the player really
+is standing where a server stands.
+
+That is not a tuning problem, and no threshold will move it. **The fix is
+structural: do not look for a serve while a point is live.** The detector
+already declares this — `Requirement(windows="between_points")` — and honouring
+it is the composition layer's job, once the point-end detector exists. Expect
+most of clip 58's precision gap to close then, and treat 55.8% as the floor a
+detector reaches with no knowledge of whether a point is in progress.
 
 ## Usage
 
@@ -84,9 +126,11 @@ python -m pipeline.anya2.eval --mode near_serve --arm anya2:_anya2_near_serve.js
 
 ## Known gaps
 
-- **Clip 58 is unscored** — 44 of the 102 labelled near serves. Its perception
-  pass had not finished when this was written, and until it has, every number
-  above is over 58 of 102 serves.
+- **Precision on a full match is gated by the composition layer**, not by this
+  detector — see clip 58 above. Until a point-end detector exists there is no
+  way to suppress mid-rally overheads, and 55.8% is the floor.
+- **The lead is a compromise across clips** and should become a per-clip
+  estimate if the tolerance ever tightens below ±2 s.
 - **The far ROI is built but unused.** `perceive.far` derives the band from the
   homography and grows it upward by 2.8 m of court scale (a ground-strip band is
   ~55 px on a 4K clip and clips the server's raised arm). Nothing reads it yet.

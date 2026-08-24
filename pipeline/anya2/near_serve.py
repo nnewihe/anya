@@ -280,8 +280,21 @@ REFRACT_S = 3.0           # as anya_near_serve.event_refract_s
 # it is right within the tolerance the corpus is scored at.  A detector asked
 # to hit a tighter tolerance than 2 s would need a per-clip estimate, and this
 # constant should be refitted, not trusted, if the labelling convention changes.
-SERVE_LEAD_S = 1.13       # subtracted from the hands-together time
-TROPHY_LEAD_S = 1.63      # ...and from the trophy onset, when the hands were
+# 1.63 is the MEDIAN OVER ALL TEN labelled clips carrying a near serve.  Fitted
+# on the nine short clips alone it was 1.13, and clip 58 -- a full 55-minute
+# match, held out until its perception pass finished -- wanted 2.4.  That is
+# the honest headline of this constant: the per-clip lead genuinely spans
+# 0.9-2.4 s, and no single value satisfies both ends at a +/-2.0 s tolerance.
+# Measured directly: at 1.13 clip 21 scores 100% and clip 58 57%; at 2.00 clip
+# 21 drops to 91% and clip 58 reaches 68%.  Clips 22-50 do not move at all.
+#
+# So this is a compromise, not a fit, and it is a small effect: the lead is
+# worth about nine points of recall on clip 58 and the remaining third of that
+# clip's misses are a different problem (see the README).  A detector required
+# to hold a tighter tolerance would need a PER-CLIP lead, estimated from the
+# clip's own detections rather than from this constant.
+SERVE_LEAD_S = 1.63       # subtracted from the hands-together time
+TROPHY_LEAD_S = 2.13      # ...and from the trophy onset, when the hands were
                           # never seen together (occluded grip).  Fitted on the
                           # same 46 detections, so both paths land on the same
                           # convention rather than one silently drifting.
