@@ -133,12 +133,19 @@ the holdout and its far pass is still running.
 | 21 | 1 | 0% | 0% (14 fires) |
 | 22 | 4 | 75% | 18.8% |
 | 50 | 2 | 0% | 0 fires |
-| pooled | 77 | 94.8% | 57.0% |
+| 38 | 0 | — | 9 fires |
+| 43 | 0 | — | 3 fires |
+| pooled | 77 | 94.8% | 52.1% |
 
-Bias +0.07 s. **Every far serve on every far-dominant clip is found.** The three
-clips that look terrible are near-dominant — 1, 4 and 2 far serves against 11, 11
-and 5 near ones — where the far player spends the clip RETURNING, and a return
-is a serve motion the detector has no way to place in a point.
+Bias +0.07 s. **Every far serve on every far-dominant clip is found.** The clips
+that look terrible are near-dominant — 1, 4 and 2 far serves against 11, 11 and 5
+near ones, and clips 38 and 43 with NO far serves at all — where the far player
+spends the whole clip RETURNING, and a return is a serve motion the detector has
+no way to place inside a point.
+
+Clips 38 and 43 are the cleanest statement of that: zero labelled far serves, and
+the detector fires 9 and 3 times inside their labelled spans. There is no
+threshold that fixes this, because the motion really is a serve motion.
 
 ### Why it is not the near detector with a flag
 
@@ -203,15 +210,16 @@ far player's ordinary play looks like a serve from that viewpoint).
 
 ### The residual is structural, and it is the same one the near detector has
 
-Of the far detector's false positives, **80% fall in a live point** — 77%
-in-rally, 3% the far player reacting to a near serve — against 20% idle raises
-in dead time. The shipped `anya_far_serve` measured the same taxonomy at 56%
-over 14 clips; ours is more concentrated because recall is higher.
+Over all 67 false positives inside labelled spans on eleven clips, **79% fall in
+a live point** — 75% in-rally, 4% the far player reacting to a near serve —
+against 21% idle raises in dead time. The shipped `anya_far_serve` measured the
+same taxonomy at 56% over 14 clips; ours is more concentrated because recall is
+higher.
 
 None of that is visible from inside a far-player pose crop. The module declares
 `Requirement(windows="between_points")` and leaves the arbitration to the
 composition layer, which will have the near serves and the point ends that
-settle it. **Treat 57% pooled precision as the floor for a serve detector with
+settle it. **Treat 52% pooled precision as the floor for a serve detector with
 no knowledge of whether a point is in progress** — and note that the near
 detector bottomed out at 55.8% for exactly the same reason.
 
