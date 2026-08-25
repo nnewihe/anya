@@ -145,13 +145,36 @@ READY_BACK_MIN_S, READY_BACK_MAX_S = 0.20, 6.00
 # ── combination ──────────────────────────────────────────────────────────
 W_TROPHY, W_READY = 0.45, 0.20
 SWING_FLOOR = 0.45
-THRESHOLD = 0.55
+# Swept on the nine clips carrying a far serve.  Over the six FAR-DOMINANT
+# clips (70 of the 77 labelled far serves) the curve reads:
+#
+#     thr    recall   precision
+#     0.55   100.0%     65.4%
+#     0.90   100.0%     71.4%      <-- here
+#     0.95    98.6%     73.4%
+#     0.999   94.3%     76.7%
+#
+# 0.90 is the last threshold that keeps every labelled serve, so it is the
+# knee rather than a point chosen for a favourable F1 -- everything above it
+# buys precision with recall, and for a POINT START that is the wrong trade:
+# a missed serve loses a whole point from the reel, while an extra start is
+# something the composition layer can arbitrate.
+#
+# Chosen on the same clips it is scored on.  Clip 58's 37 far serves are the
+# holdout, and on the near side that is exactly where the tuning-clip numbers
+# stopped holding.
+THRESHOLD = 0.90
 REFRACT_S = 3.0
 
 # The label lead, as on the near side: `ground_truth.json`'s `start` is a point
 # boundary marked before the server moves, so it is corrected as a constant.
-# Fitted below on the far corpus -- see the README for the per-clip spread.
-SERVE_LEAD_S = 1.63
+# The far anchor is the TROPHY ONSET, not the hands-together instant the near
+# detector uses -- the hand split is not measurable on a 30 px body (see the
+# module docstring), so there is no earlier anchor to walk back to.  Swept over
+# the far corpus, the lead is almost inert: 0.9, 1.2 and 1.6 all produce
+# identical matches at a +/-2.0 s tolerance, and only below ~0.6 does it start
+# costing hits.  0.90 sits in the middle of that flat region.
+SERVE_LEAD_S = 0.90
 
 REQUIREMENT = Requirement(roi=ROI_FAR, pose_fps=15.0, needs_ball=False,
                           windows=W_BETWEEN)

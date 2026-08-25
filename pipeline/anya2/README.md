@@ -7,7 +7,7 @@ untouched so every number below is A/B-able against them.
 | detector | question | status |
 |---|---|---|
 | `near_serve.py` | did a point start with a near-side serve? | **built** |
-| `far_serve.py` | did a point start with a far-side serve? | not yet |
+| `far_serve.py` | did a point start with a far-side serve? | **built** |
 | `point_end.py` | did the point end? | not yet |
 
 ## Substrate
@@ -115,13 +115,118 @@ it is the composition layer's job, once the point-end detector exists. Expect
 most of clip 58's precision gap to close then, and treat 55.8% as the floor a
 detector reaches with no knowledge of whether a point is in progress.
 
+## Far-side serve — results
+
+Same scoring: ±2.0 s, greedy one-to-one, restricted to the labelled span.
+**Nine clips carry a far serve; 77 of the corpus' 114.** Clip 58's other 37 are
+the holdout and its far pass is still running.
+
+| clip | labelled | recall | precision |
+|---|---|---|---|
+| 23 | 15 | 100% | 78.9% |
+| 24 | 12 | 100% | 92.3% |
+| 25 (doubles) | 10 | 100% | 71.4% |
+| 26 | 11 | 100% | 45.8% |
+| 36 | 9 | 100% | 75.0% |
+| 40 (doubles) | 13 | 100% | 81.2% |
+| **six far-dominant clips** | **70** | **100%** | **71.4%** |
+| 21 | 1 | 0% | 0% (14 fires) |
+| 22 | 4 | 75% | 18.8% |
+| 50 | 2 | 0% | 0 fires |
+| pooled | 77 | 94.8% | 57.0% |
+
+Bias +0.07 s. **Every far serve on every far-dominant clip is found.** The three
+clips that look terrible are near-dominant — 1, 4 and 2 far serves against 11, 11
+and 5 near ones — where the far player spends the clip RETURNING, and a return
+is a serve motion the detector has no way to place in a point.
+
+### Why it is not the near detector with a flag
+
+Two of the near trophy's three terms do not survive the change of viewpoint and
+scale. Measured on Data/23's 15 far serves, per pose sample, against every
+non-serve sample in the clip:
+
+| term | serve | non-serve |
+|---|---|---|
+| wrist above head | 13% | **0%** (p99 = +0.002) |
+| lower wrist near the shoulder | 11% | 2% |
+| **hand split** | 35% | **58% — inverted** |
+
+The hand split is the sharpest cue the near detector has and is worse than
+useless here: at the trophy the far player's arms extend VERTICALLY, so their
+horizontal separation is small exactly when the near view has it large, while
+ordinary walking swings the arms apart. The far trophy is elevation-only and
+never reads `gap`.
+
+The serve-zone court band is dropped too. A far player's ground point is 22-32
+px up the frame, where two pixels of box-bottom error is metres of court: their
+`court_y` spans 19.7-28.6 m while really moving about three, and sits a median
+4 m behind the baseline they are standing on.
+
+### Three substrate defects it exposed
+
+Each was found by measurement, and each was costing recall outright:
+
+1. **Crop-truncated boxes were projected as ground points.** A person straddling
+   the bottom of the far band is cut off, so their box bottom is the *crop
+   boundary*, not their feet. 23–61% of far-band detections are truncated this
+   way — and being closest to the camera they carry systematically *higher*
+   confidence than the real far player (0.82 vs 0.54 on Data/40). They won every
+   competition for the two far slots and pushed the server out of the tracks:
+   clip 40's serve trophy was present at full strength in the band for all 13
+   labelled serves while the tracks caught six. Fixing it took clip 40 from
+   46% to 100% recall.
+
+2. **`FAR_BACK_M` was deleting a third of clip 23's far detections** — real
+   players rejected for standing where the homography said they were. Clip 23
+   went 66.7% → 100% on that alone. Re-measured after the truncation fix: the
+   spread is genuine homography noise, so 12 m stands.
+
+3. **The claim score preferred the biggest box**, which is a *depth* proxy and is
+   side-specific. On the near side bigger means closer to the near baseline, so
+   it was accidentally right; on the far side bigger means closer to the net, and
+   the server is by definition the deepest player. Replaced with proximity to the
+   player's own baseline — right on both sides at once. Clip 25 went 30% → 100%,
+   with no near-side regression.
+
+### Measured dead ends — do not retry these
+
+Two local cues were tested for separating far serves from far false positives,
+because if one worked it would fix the near-dominant clips without any context:
+
+  box height / that slot's clip median   **AUC 51%** — no separation at all
+  projected court_y at the trophy        AUC 66% — real, far too weak to gate on
+
+So there is no local depth cue. This agrees with every previous far-side attempt
+(DESIGN.md's velocity dead end, and the far-gate taxonomy's finding that the
+far player's ordinary play looks like a serve from that viewpoint).
+
+### The residual is structural, and it is the same one the near detector has
+
+Of the far detector's false positives, **80% fall in a live point** — 77%
+in-rally, 3% the far player reacting to a near serve — against 20% idle raises
+in dead time. The shipped `anya_far_serve` measured the same taxonomy at 56%
+over 14 clips; ours is more concentrated because recall is higher.
+
+None of that is visible from inside a far-player pose crop. The module declares
+`Requirement(windows="between_points")` and leaves the arbitration to the
+composition layer, which will have the near serves and the point ends that
+settle it. **Treat 57% pooled precision as the floor for a serve detector with
+no knowledge of whether a point is in progress** — and note that the near
+detector bottomed out at 55.8% for exactly the same reason.
+
 ## Usage
 
 ```bash
 python -m pipeline.anya2.perceive /Volumes/Anya/Data/21/snippet.mp4 --roi near
-python -m pipeline.anya2.tracks   /Volumes/Anya/Data/21/snippet.mp4
+python -m pipeline.anya2.perceive /Volumes/Anya/Data/21/snippet.mp4 --roi far
+python -m pipeline.anya2.tracks   /Volumes/Anya/Data/21/snippet.mp4 \
+    --dets   /Volumes/Anya/Data/21/snippet_anya2_near_dets.npz \
+    --far-dets /Volumes/Anya/Data/21/snippet_anya2_far_dets.npz
 python -m pipeline.anya2.near_serve /Volumes/Anya/Data/21/snippet.mp4
+python -m pipeline.anya2.far_serve  /Volumes/Anya/Data/21/snippet.mp4
 python -m pipeline.anya2.eval --mode near_serve --arm anya2:_anya2_near_serve.json
+python -m pipeline.anya2.eval --mode far_serve  --arm anya2:_anya2_far_serve.json
 ```
 
 ## Known gaps
