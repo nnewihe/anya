@@ -58,6 +58,7 @@ import argparse
 import os
 import sys
 
+import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
@@ -98,6 +99,25 @@ NEAR_BACK_M = 6.0      # ...and behind the near baseline
 # frame, not the thing deciding who is a player.
 FAR_BACK_M = 12.0
 
+# ── height must agree with depth ─────────────────────────────────────────
+# A person standing on the court has a PREDICTABLE pixel height: the court's own
+# width at their depth gives px-per-metre there, and a player is ~1.75 m.  The
+# ratio of observed to expected height is tight -- across four clips and both
+# sides its median is 0.82-1.06 and its p90 never exceeds 1.24.
+#
+# A candidate whose box is far larger than its projected depth allows is not a
+# player at that depth; it is a CLOSER player whose ground point has been
+# mis-projected.  Found by rendering a frame: on Data/21 at t=60.3 s the near
+# player, having moved forward, appeared inside the far-band crop and was
+# tracked as a FAR player with a box of 69 px where the far baseline allows 26.
+#
+# The bound is one-sided.  A box SMALLER than expected is ordinary -- a crouched
+# player, a partial detection, a crop clipping the head -- and rejecting those
+# would cost real tracking.  Only "too big for where you claim to be standing"
+# is a contradiction.
+HEIGHT_MAX_RATIO = 1.40    # observed / expected; p90 is 1.24
+PLAYER_HEIGHT_M = 1.75
+
 LOST_FRAMES = 60       # keep a lost slot's anchor this long before freeing it
 MAX_SPEED = 9.0        # m/s; faster than a sprint means a different human
 
@@ -135,6 +155,28 @@ def tracks_path(video_path, suffix="_anya2_tracks.npz"):
     d = os.path.dirname(os.path.abspath(video_path))
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{suffix}")
+
+
+def _px_per_m(H_inv, cy):
+    """Image px per court metre at depth `cy`, from the court's width there."""
+    p = cv2.perspectiveTransform(
+        np.array([[[0.0, cy]], [[C.COURT_W, cy]]], dtype=np.float64), H_inv
+    ).reshape(-1, 2)
+    return float(np.hypot(*(p[1] - p[0]))) / C.COURT_W
+
+
+def _height_plausible(h, cy, H_inv):
+    """Is a box of height `h` consistent with standing at depth `cy`?
+
+    One-sided -- see HEIGHT_MAX_RATIO.  Unknown depth passes: this rule catches
+    one specific contradiction, it is not another way to lose a player.
+    """
+    if not (np.isfinite(h) and np.isfinite(cy)):
+        return True
+    exp = PLAYER_HEIGHT_M * _px_per_m(H_inv, float(cy))
+    if exp < 1.0:
+        return True
+    return h <= HEIGHT_MAX_RATIO * exp
 
 
 def _homeness(cy, side):
@@ -342,6 +384,7 @@ def build(video, dets_npz=None, far_npz=None, out=None, verbose=True):
     kp_all, box_all, conf_all, fps, z = _stack(dets_npz, far_npz)
     n, k = conf_all.shape
     H = C.load_homography(video)
+    H_inv = np.linalg.inv(H)
 
     kp_out = np.full((n, N_SLOTS, N_KP, 3), np.nan, dtype=np.float32)
     bb_out = np.full((n, N_SLOTS, 4), np.nan, dtype=np.float32)
@@ -364,6 +407,8 @@ def build(video, dets_npz=None, far_npz=None, out=None, verbose=True):
             cx, cy = C.project(H, box)
             sd = C.NEAR if C.is_near(cy) else C.FAR
             if not _trackable(cx, cy, sd):
+                continue
+            if not _height_plausible(h, cy, H_inv):
                 continue
             by_side[sd].append({"i": i, "court": (float(cx), float(cy)),
                                 "conf": float(cf), "h": h,

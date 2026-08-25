@@ -104,6 +104,17 @@ class ReelConfig:
                                      # games to merge.  3 is the smallest run
                                      # that still rejects an isolated flip.
     enforce_runs: bool = True
+    drop_side_conflicts: bool = False
+    # Tested and rejected.  The idea was that on a near service game a lone far
+    # detection is a phantom rather than a mislabel -- the far player is
+    # RETURNING, and a return is a serve motion -- so it should be dropped, not
+    # relabelled.  Measured over the corpus it changes almost nothing (whole
+    # points 207 -> 206, reel 61.6% -> 60.9%) and it does not fix the case that
+    # motivated it: on Data/21, where 9 of 21 merged starts are spurious far
+    # detections, the reel is identical at 3 segments either way, because the
+    # phantoms cluster into runs of 2-3 that any min_service_run of 3-5 accepts
+    # as a legitimate game.  Left off, so the rule "structure relabels, it never
+    # drops a point" holds without exception.
 
     # ── pairing starts with ends ─────────────────────────────────────────
     min_point_s: float = 2.5         # an end this soon after the serve is the
@@ -142,12 +153,10 @@ class ReelConfig:
     # 3.5/4.0 is chosen for the brief's stated priority -- viewing experience
     # first, dead time second.  Lower both to tighten the reel; the table above
     # is the exchange rate.
-    pre_roll_s: float = 3.5          # before the serve: the ritual and the toss,
-                                     # so a cut lands on a beat rather than
-                                     # mid-motion
-    post_roll_s: float = 4.0         # after the end: the ball settling and the
-                                     # players' reaction, which is where a point
-                                     # actually feels finished
+    # Set to 1.0/1.0 at the user's direction, tightening the reel.  The table
+    # above is what that costs against the corpus; re-measured at 1.0/1.0 below.
+    pre_roll_s: float = 1.0
+    post_roll_s: float = 1.0
     merge_gap_s: float = 6.0         # segments closer than this are joined
                                      # rather than cut apart
     min_segment_s: float = 4.0       # anything shorter is a flash, not a point
@@ -308,6 +317,8 @@ def enforce_service_runs(starts: List[PointStart], cfg: ReelConfig) -> List[Poin
         ps.detected_side = ps.side
         ps.side_conflict = ps.side not in (side, "both")
         ps.side = side
+    if cfg.drop_side_conflicts:
+        starts = [p for p in starts if not p.side_conflict]
     return starts
 
 

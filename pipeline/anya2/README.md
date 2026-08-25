@@ -351,6 +351,61 @@ occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and cl
   bounded experiment for precision, but only if it can be shown to earn its cost
   on clay.
 
+## Roll tightened to 1 s, and a far-side leak found (2026-08-25)
+
+**Roll is now 1.0 s / 1.0 s** at the user's direction. Corpus effect:
+
+| | pre/post 3.5/4.0 | **1.0/1.0** |
+|---|---|---|
+| points whole | 207 | **143** |
+| partial | 22 | **85** |
+| live retained | 95.3% | **89.5%** |
+| reel | 61.6% of source | **47.5% of source** |
+
+### Debugging Data/21's far false positives
+
+Clip 21 has **11 near serves and 1 far**, and the far detector fired **14 times
+at confidence 0.92–1.00** — while missing the one real far serve entirely. The
+14 split into two unrelated causes:
+
+**Three were a near player occupying a far slot.** Rendering the frame settled
+it: at t=60.3 s the near player had moved forward, appeared inside the far-band
+crop, and was tracked as a far player with a **69 px box where the far baseline
+allows 26**. The existing crop-truncation filter missed them because their boxes
+sit just inside the crop edge rather than on it.
+
+The fix is geometric, in `tracks._height_plausible`. A person on the court has a
+predictable pixel height — the court's own width at their depth gives
+px-per-metre, and a player is ~1.75 m. Measured across four clips and both sides
+the observed/expected ratio has median 0.82–1.06 and **p90 never above 1.24**, so
+a box beyond 1.40× is a contradiction: not a player at that depth, but a closer
+one mis-projected. The bound is one-sided — a box *smaller* than expected is
+ordinary (crouching, partial detection, a clipped head) and rejecting those would
+cost real tracking.
+
+**Corpus effect: far precision 47.3% → 51.0% for 0.8 points of recall.** Near is
+untouched.
+
+**The other eleven are the far player returning a near serve** — genuinely the
+far player, genuinely a serve-like motion, in a live point. Those are contextual
+and the orchestrator's live gate is the only thing that can see them. It is set
+at 0.80 and catches 3 of the 11; their median live score is 0.72 against 0.17 for
+the dead-time ones, so a gate at 0.35 would catch 9 of 14 on this clip — but
+corpus-wide that costs far recall 82% → 54%. **Not worth it**, and recorded here
+so it is not retried:
+
+| live gate | far recall | far precision |
+|---|---|---|
+| 0.80 (current) | 79.1% | 54.0% |
+| 0.60 | 76.0% | 56.3% |
+| 0.50 | 71.3% | 59.0% |
+| 0.40 | 62.8% | 60.0% |
+
+Also tested and rejected on this clip: dropping starts that contradict the
+service run, and raising `min_service_run` to 4 or 5 — **neither changed clip 21
+at all**, because the phantoms cluster into runs of 2–3 that any game-length
+minimum accepts as legitimate.
+
 ## Agent 4 — the orchestrator
 
 Takes the three event streams and produces the reel. It detects nothing; it
