@@ -81,7 +81,22 @@ MIN_H_PX = 12.0        # below this is a spectator on another court, or noise.
 X_TRACK_PAD = 6.0      # metres outside the singles lines that a tracked person
                        # may wander (ball carts, walkways, the bench)
 NEAR_BACK_M = 6.0      # ...and behind the near baseline
-FAR_BACK_M = 8.0       # ...and behind the far one
+# ...and behind the far one.  12 m is not "8 m plus slack" -- it is sized from
+# the MEASURED projection error at far-court depth, and it is large because that
+# error is large and mostly systematic.  A far player's ground point is 22-32 px
+# up the frame, where two pixels of box-bottom error is metres of court, and the
+# box bottom sits above the true feet more often than below.  Across Data/23, 24
+# and 25 (34k far-band detections) the projected court_y of a player standing ON
+# the far baseline exceeds it by a MEDIAN of 4 m, with p90 at 5.7 and p99 at
+# 12.8.  At 8 m the bound was silently deleting a third of clip 23's far
+# detections -- real players, rejected for standing where the homography said
+# they were.  12 m keeps 98.7%.
+#
+# The looseness costs less than it looks: far detections come from the far-band
+# crop, which already bounds the region physically, and the lateral doubles+3ft
+# gate still applies.  This bound is a backstop against a spectator high in the
+# frame, not the thing deciding who is a player.
+FAR_BACK_M = 12.0
 
 LOST_FRAMES = 60       # keep a lost slot's anchor this long before freeing it
 MAX_SPEED = 9.0        # m/s; faster than a sprint means a different human
@@ -90,13 +105,50 @@ MAX_SPEED = 9.0        # m/s; faster than a sprint means a different human
 W_CONT = 2.0           # continuity bonus scale, exp(-d / CONT_SCALE)
 CONT_SCALE = 2.0       # metres
 W_CONF = 0.6
-H_REF_PX = 250.0       # box height contributing 1.0 to the claim score
+W_HOME = 1.0           # weight on proximity to the player's OWN baseline
+
+# THE CLAIM SCORE PREFERS PLAYERS NEAR THEIR OWN BASELINE, replacing an earlier
+# box-height term that was quietly side-specific.
+#
+# Box height is a DEPTH proxy, not a quality one.  On the near side bigger means
+# closer to the camera, hence closer to the near baseline -- so preferring the
+# biggest box happened to prefer the right people, and the near detector reached
+# 100% recall with it.  On the far side the same term is exactly backwards:
+# bigger means closer to the NET, and the server is by definition the deepest
+# player on their side.
+#
+# Measured on Data/25 (doubles), at every one of the seven missed far serves
+# three candidates competed for two far slots, and the server was every time the
+# DEEPEST (court_y 22.1-27.6 against 17.7-19.7) and also the LOWEST-confidence
+# (0.73-0.79 against 0.85-0.92).  The height term handed both slots to the two
+# shallowest and dropped the server -- while that serve's trophy shape was
+# present at full strength in the band, in all ten serves.  Ranking by
+# confidence instead would have dropped the server too.
+#
+# Proximity to one's own baseline is the rule that is right on both sides at
+# once: near players are nearest y=0, far players nearest y=COURT_L, and the
+# candidate least likely to belong to a side is the one closest to mid-court --
+# which is also where a mis-projected player from the OTHER side lands.
 
 
 def tracks_path(video_path, suffix="_anya2_tracks.npz"):
     d = os.path.dirname(os.path.abspath(video_path))
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{suffix}")
+
+
+def _homeness(cy, side):
+    """1.0 at the side's own baseline, 0.0 at mid-court (and beyond). NaN -> 0.
+
+    Clipped above 1.0 rather than rewarded: the far player's ground point
+    routinely projects several metres PAST the baseline they are standing on
+    (median +4 m -- see FAR_BACK_M), so "even deeper" is noise, not evidence.
+    """
+    if not np.isfinite(cy):
+        return 0.0
+    if side == C.NEAR:
+        return float(np.clip(1.0 - cy / C.MID_Y, 0.0, 1.0))
+    return float(np.clip((cy - C.MID_Y) / (C.COURT_L - C.MID_Y), 0.0, 1.0))
 
 
 def _trackable(cx, cy, side):
@@ -142,6 +194,47 @@ class _Slot:
         self.court, self.since = court, 1
 
 
+def _shortlist(cands, slots, fps):
+    """Cut a side's candidates down to at most `len(slots)`, by BELONGING.
+
+    The user's rule is at most two players per side, and this is where it is
+    enforced -- as a deliberate choice of WHICH two, rather than as whichever
+    two happened to reach a slot first.
+
+    That distinction is the whole fix.  Assignment alone cannot do it: anchored
+    slots claim before free ones (rightly -- identity is worth more than a
+    stranger's confidence), so once two people hold the slots they hold them
+    forever, however little they belong to that side.  Measured on Data/40
+    (doubles), three or four candidates competed for two far slots at every
+    serve, and the two shallowest held them: the serve's trophy shape was
+    present at FULL STRENGTH in the band for all 13 labelled serves while the
+    tracked slots caught only 6.  Data/25 showed the same thing before the
+    homeness term, and homeness alone fixed 25 but not 40, because on 40 the
+    wrong pair was already anchored.
+
+    Belonging combines three things, and continuity is one of them so that a
+    player who is genuinely mid-court for a moment -- a far player at the net
+    during a rally -- is not dropped in favour of a stranger who happens to be
+    standing deeper.
+    """
+    if len(cands) <= len(slots):
+        return cands
+    scored = []
+    for cd in cands:
+        cont = 0.0
+        for slot in slots:
+            if not slot.anchored:
+                continue
+            d = float(np.hypot(cd["court"][0] - slot.court[0],
+                               cd["court"][1] - slot.court[1]))
+            if d / max(slot.since, 1) * fps > MAX_SPEED:
+                continue
+            cont = max(cont, W_CONT * np.exp(-d / CONT_SCALE))
+        scored.append((-(W_HOME * cd["home"] + W_CONF * cd["conf"] + cont), cd))
+    scored.sort(key=lambda x: x[0])
+    return [cd for _, cd in scored[:len(slots)]]
+
+
 def _assign_side(cands, slots, fps):
     """Assign candidates to this side's slots. Returns {slot_idx: cand_idx}.
 
@@ -183,7 +276,7 @@ def _assign_side(cands, slots, fps):
     free = [si for si in range(len(slots)) if si not in out]
     if free:
         claims = sorted(
-            ((-(W_CONF * cd["conf"] + min(cd["h"], H_REF_PX) / H_REF_PX), ci)
+            ((-(W_CONF * cd["conf"] + W_HOME * cd["home"]), ci)
              for ci, cd in enumerate(cands) if ci not in taken))
         # Strongest claim first, and each one goes to the free slot whose STALE
         # anchor is nearest -- not to the lowest free index.  A slot that never
@@ -203,13 +296,50 @@ def _assign_side(cands, slots, fps):
     return out
 
 
-def build(video, dets_npz=None, out=None, verbose=True):
+def _stack(near_npz, far_npz):
+    """Merge the two ROIs' detections into one per-sample candidate list.
+
+    The near pass and the far pass are separate because ONE POSE PASS CANNOT
+    SEE BOTH ENDS -- at 540p the far player is 20-40 px and the model does not
+    find them at all (measured: 0 of 192 sampled detections on Data/21 project
+    past mid-court).  See perceive.py.
+
+    They are merged rather than kept apart because side membership is decided
+    by the COURT, not by which pass found the person.  A pass is an ROI, not a
+    label: the far band's lower edge catches a near player who has come to the
+    net, and the whole-frame pass catches a far player who has come forward.
+    Trusting the pass would mislabel both.  So everything is pooled here and
+    `court.is_near` decides, exactly as it does for a single pass.
+    """
+    zs = [np.load(p) for p in (near_npz, far_npz) if p]
+    if not zs:
+        raise ValueError("no detections given")
+    if len(zs) == 1:
+        z = zs[0]
+        return z["kp"], z["box"], z["conf"], float(z["fps"]), z
+    a, b = zs
+    # The two passes must be on ONE timeline.  They are extracted at the same
+    # pose_fps from the same source, so they should already agree; a mismatch
+    # means one is stale and silently interleaving them would shift every event
+    # by an unknown amount.  Refuse rather than guess.
+    na, nb = len(a["conf"]), len(b["conf"])
+    if abs(na - nb) > 2 or abs(float(a["fps"]) - float(b["fps"])) > 0.01:
+        raise ValueError(
+            f"near dets ({na} @ {float(a['fps']):.3f} fps) and far dets "
+            f"({nb} @ {float(b['fps']):.3f} fps) are not the same timeline -- "
+            "re-run perceive for whichever is stale")
+    n = min(na, nb)
+    kp = np.concatenate([a["kp"][:n], b["kp"][:n]], axis=1)
+    box = np.concatenate([a["box"][:n], b["box"][:n]], axis=1)
+    conf = np.concatenate([a["conf"][:n], b["conf"][:n]], axis=1)
+    return kp, box, conf, float(a["fps"]), a
+
+
+def build(video, dets_npz=None, far_npz=None, out=None, verbose=True):
     from walking.extract_pose import dets_path
 
     dets_npz = dets_npz or dets_path(video)
-    z = np.load(dets_npz)
-    kp_all, box_all, conf_all = z["kp"], z["box"], z["conf"]
-    fps = float(z["fps"])
+    kp_all, box_all, conf_all, fps, z = _stack(dets_npz, far_npz)
     n, k = conf_all.shape
     H = C.load_homography(video)
 
@@ -236,10 +366,11 @@ def build(video, dets_npz=None, out=None, verbose=True):
             if not _trackable(cx, cy, sd):
                 continue
             by_side[sd].append({"i": i, "court": (float(cx), float(cy)),
-                                "conf": float(cf), "h": h})
+                                "conf": float(cf), "h": h,
+                                "home": _homeness(cy, sd)})
 
         for sd in (C.NEAR, C.FAR):
-            cands = by_side[sd]
+            cands = _shortlist(by_side[sd], slots[sd], fps)
             picked = _assign_side(cands, slots[sd], fps) if cands else {}
             for local, slot in enumerate(slots[sd]):
                 g = slot_ids[sd][local]
@@ -293,7 +424,11 @@ def load(video, path=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[3])
     ap.add_argument("video")
-    ap.add_argument("--dets", default=None)
+    ap.add_argument("--dets", default=None, help="near-ROI detections npz")
+    ap.add_argument("--far-dets", default=None,
+                    help="far-ROI detections npz (perceive --roi far). Without "
+                         "it the far slots stay empty -- the whole-frame pass "
+                         "does not see the far player.")
     ap.add_argument("--out", default=None)
     ap.add_argument("--report", action="store_true",
                     help="Re-print the occupancy report for an existing npz")
@@ -301,7 +436,7 @@ def main():
     if a.report and os.path.isfile(a.out or tracks_path(a.video)):
         _report(a.out or tracks_path(a.video))
         return
-    build(a.video, a.dets, a.out)
+    build(a.video, a.dets, a.far_dets, a.out)
 
 
 if __name__ == "__main__":
