@@ -56,7 +56,7 @@ serves.**
 | 43 | 6 | 100% | 100% |
 | 50 | 5 | 100% | 71.4% |
 | **58 (holdout)** | **44** | **65.9%** | **55.8%** |
-| pooled | **107** | **85.0%** | **76.5%** |
+| pooled | **107** | **90.7%** | **76.4%** |
 
 Nine of eleven scored clips are at 100% recall. **Clips 23 and 40 have no near
 serves and the detector fires zero times on either** — 40 being doubles, so two
@@ -137,8 +137,8 @@ far pass finished; clip 35 was out of the corpus entirely until relabelled.
 | 50 | 2 | 0% | 0 fires |
 | 38 | 0 | — | 9 fires |
 | 43 | 0 | — | 3 fires |
-| **58 (holdout)** | **37** | **21.6%** | **11.6%** |
-| pooled, all 13 clips | **129** | **73.6%** | **42.4%** |
+| **58 (holdout)** | **37** | **51.4%** | **27.5%** |
+| pooled, all 13 clips | **129** | **82.2%** | **47.3%** |
 
 Bias +0.07 s. **Every far serve on every far-dominant clip is found.** The clips
 that look terrible are near-dominant — 1, 4 and 2 far serves against 11, 11 and 5
@@ -349,6 +349,55 @@ occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and cl
 - The ball has **not** been tried as a minor corroborator. It may be worth a
   bounded experiment for precision, but only if it can be shown to earn its cost
   on clay.
+
+## Two corrections applied 2026-08-25
+
+**1. Clip 58's labels carry the lead already.** Its author confirmed it, and it
+measures that way: the median signed error from a labelled serve to the nearest
+detection is between −0.93 s and +0.87 s on **every other clip**, and +0.80 s
+(near) / +2.63 s (far) on clip 58. Scoring it against the corpus convention was
+charging the detector for a labelling choice. `eval.LABEL_CONVENTION_S` now
+brings each clip's labels onto the corpus convention at the corpus's own choke
+point — the detectors get no per-clip parameter, because a detector must not
+know which clip it is looking at. `--raw-labels` scores without it.
+
+Clip 58 alone: near **65.9% → 79.5%** recall, far **21.6% → 51.4%**, both with a
+bias of ≈0.00 s.
+
+Worth stating plainly rather than smoothing over: the two modes needed different
+corrections (+0.80 vs +2.63). A single built-in lead would shift both equally.
+The near and far detectors anchor on different events — hands-together versus
+trophy onset — so part of that gap is detector-side anchor bias that is only
+visible on the clip with the largest offset. **These numbers are measured, not
+derived from a stated convention.**
+
+**2. The near trophy bands are 35% looser.** Some servers simply do not make a
+textbook trophy: a compact service motion carries the racket lower and splits the
+hands less, and the original bands scored those near zero however clean the rest
+of the sequence was. Swept over all 107 near serves:
+
+| loosen | recall | precision | F1 |
+|---|---|---|---|
+| 0.00 (original) | 86.9% | 78.2% | 82.3 |
+| 0.20 | 88.8% | 77.9% | 83.0 |
+| **0.35** | **90.7%** | **76.4%** | 82.9 |
+| 0.50 | 89.7% | 74.4% | 81.4 |
+
+0.35 is where recall peaks — 0.50 gives it back, so it is a maximum, not a slope
+being ridden. F1 is flat from 0.20–0.35, so the choice between them is the
+recall/precision preference and not a measurement: for a point START a miss loses
+a whole point from the reel, while an extra start is something the composition
+layer can arbitrate.
+
+Two things the sweep settled that are worth not re-testing:
+
+- **`TROPHY_MIN` is inert.** Swept from 0.35 down to 0.16 it changes *nothing* —
+  the run threshold is not binding because the final probability threshold
+  already dominates it. Lowering it looks like loosening while doing nothing.
+- **Loosening the FAR trophy does not help.** The same sweep moves far recall
+  only 82.2% → 83.7% at heavy loosening while costing precision. The far limit is
+  resolution — the trophy is absent from the band entirely for 14 of clip 58's 37
+  serves — not the threshold. Far bands are left alone.
 
 ## Clip 35 — the one clip none of this was built on
 

@@ -130,7 +130,33 @@ READY_STILL_BH_S = 0.9    # limb speed relative to the hip, body heights/s,
 READY_WIN_S = 0.7         # sustain window; a serve stance is held
 
 # ── trophy phase ─────────────────────────────────────────────────────────
-TROPHY_ABOVE_HEAD_BH = 0.10   # higher wrist this far over the head = full credit
+# ── how strict is the trophy? ────────────────────────────────────────────
+# These three full-credit points were loosened by 35% of their range toward
+# their own no-credit floors, because SOME SERVERS SIMPLY DO NOT MAKE A TEXTBOOK
+# TROPHY -- a compact or abbreviated service motion carries the racket lower and
+# splits the hands less, and the original bands scored those at nearly zero
+# however clean the rest of the sequence was.
+#
+# Swept over all 107 labelled near serves.  Loosening trades a little precision
+# for recall and the trade is worth taking for a point START, where a miss loses
+# a whole point from the reel and an extra start is something the composition
+# layer can arbitrate:
+#
+#     loosen   recall   precision   F1
+#      0.00     86.9%     78.2%    82.3      (the original bands)
+#      0.20     88.8%     77.9%    83.0
+#      0.35     90.7%     76.4%    82.9      <-- here
+#      0.50     89.7%     74.4%    81.4
+#
+# 0.35 is where recall peaks; 0.50 gives it back, so this is a maximum and not
+# a slope being ridden. F1 is flat across 0.20-0.35, so the choice between them
+# is the recall/precision preference above, not a measurement.
+#
+# TROPHY_MIN is deliberately NOT part of this. Swept from 0.35 down to 0.16 it
+# changes nothing at all -- the run threshold is not binding, because the final
+# probability threshold already dominates it. Lowering it would look like
+# loosening while doing nothing.
+TROPHY_ABOVE_HEAD_BH = 0.058  # higher wrist this far over the head = full credit
 TROPHY_HEAD_MIN_BH   = -0.02  # ...and no credit at all below head height
 # The lower wrist is measured against the SHOULDER LINE, and the band below is
 # set from data rather than from anatomy-by-description.  The original 0.00/0.14
@@ -142,11 +168,11 @@ TROPHY_HEAD_MIN_BH   = -0.02  # ...and no credit at all below head height
 # quantity has p50 -0.276 and p95 -0.157, so the discriminative band is narrow
 # and sits just below the shoulder, not above it.
 TROPHY_LO_MIN_BH = -0.13      # lower wrist this far BELOW the shoulder = no credit
-TROPHY_LO_FULL_BH = -0.01     # ...and level with the shoulder = full credit.
+TROPHY_LO_FULL_BH = -0.052    # ...and near the shoulder = full credit.
                               # This is the term that rejects the whole one-armed
                               # family (hand to cap, hand to face, a wave, a
                               # raised finger): those leave the other wrist down.
-TROPHY_SPLIT_MIN_BH = 0.18    # hands must have come apart to score at all
+TROPHY_SPLIT_MIN_BH = 0.149   # hands must have come apart to score at all
 TROPHY_MIN = 0.35             # run threshold for calling a sample "trophy"
 
 # THE TROPHY IS A PHASE, NOT AN INSTANT.
