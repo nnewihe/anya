@@ -351,6 +351,36 @@ occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and cl
   bounded experiment for precision, but only if it can be shown to earn its cost
   on clay.
 
+## Can far-player depth be made reliable, and does it help?
+
+**Yes to the first, no to the second, and the second is the one that matters.**
+
+*Reliable:* raw per-frame `court_y` for a far player is noise-dominated — 11.9%
+of consecutive samples imply a speed above 9 m/s, which nobody can run, and the
+p90 implied speed is 12.3 m/s. A 0.7 s median filter fixes it: **impossible
+samples 11.9% to 4.2%, p90 implied speed 12.3 to 3.2 m/s.** So depth *is*
+recoverable, and the box-bottom projection is the better of the two estimators
+available — a box-height proxy is worse (20% impossible against 12%).
+
+*But it does not strengthen the far serve detector.* Every depth-derived
+quantity tested sits at chance for separating a true far serve from a far false
+positive:
+
+| quantity | AUC |
+|---|---|
+| depth at the trophy, relative to the clip median (raw) | 41% |
+| the same, median-filtered 0.5 / 1.5 / 3.0 s | 41 / 46 / 47% |
+| step into the court during the strike | 47% |
+| depth change from −1 s to +2 s | 55% |
+| pre-serve drift, −4 s to −1 s | 47% |
+
+The reason is structural, not a measurement failure: **the false positives are
+the far player RETURNING, and a returner stands at essentially the same depth as
+a server.** Depth cannot separate two things that happen in the same place. What
+*does* separate them is what the player was doing before the racket went up —
+stillness (AUC 78%) and a sustained ready stance (79%) — which is what the
+refinement below uses instead.
+
 ## Far-serve refinement: how the ready phase is read, and pre-serve stillness
 
 Two changes, both from measuring what actually separates a far serve from the
@@ -494,10 +524,12 @@ one segment's tail, while a missed start loses the whole point.
   commits to an early wrong side and never recovers) relabels isolated flips. It
   only ever changes a *label*, never drops a start.
 - **Deuce/ad alternation.** Within a game the server alternates court every
-  point, always. Measured: the server's court-x flips sign across consecutive
-  serves **91% of the time on clip 58's 44 near serves**, 60–80% elsewhere. Too
-  noisy to delete on, so two consecutive same-court serves *flag* a suspected
-  missing point rather than removing a detection.
+  point, always. In the video it is much weaker: re-measured over all 14
+  clip-sides with at least 6 labelled serves, court-x flips sign **a mean of 63%
+  of the time**, from 20% (clip 43 near) to 91% (clip 58 near). An earlier
+  version of this file quoted the 91% as representative — that is the best case,
+  not the corpus. Median-filtering the court track changes it not at all. At 63%
+  it is barely above chance, so it only ever *flags* a suspected missing point.
 - **A point is not live twice.** A serve struck while a point is already running
   is spurious — and agent 3's live score says so. Gating on the median live score
   in the 3 s before a detection drops **26% of far false positives for 4% of true

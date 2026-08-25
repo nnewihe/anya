@@ -30,11 +30,16 @@ WHAT TENNIS KNOWS THAT THE DETECTORS DO NOT
       credit, not whether a segment exists.
 
   DEUCE/AD ALTERNATION.  Within a game the server alternates courts every
-      point, always.  Measured on the corpus, the server's court-x flips sign
-      across consecutive serves 91% of the time on clip 58's 44 near serves and
-      60-80% elsewhere.  It is soft evidence -- keypoint noise at the far
-      baseline is large -- so it is used to FLAG a suspected missing point
-      between two same-court serves, never to delete a detection.
+      point, always.  In the video it is far weaker than that: re-measured over
+      all 14 clip-sides with six or more labelled serves, the server's court-x
+      flips sign across consecutive serves a MEAN OF 63% of the time, spanning
+      20% (clip 43 near) to 91% (clip 58 near).  An earlier note here quoted the
+      91% as representative; it is the best case, not the corpus.  Median-
+      filtering the court track does not improve it at all (63% either way),
+      because the per-serve reading is already a median over three seconds.  At
+      63% this is barely above chance, so it FLAGS a suspected missing point and
+      nothing more -- it must never delete a detection, and the flag should be
+      read as a hint rather than a finding.
 
   A POINT IS NOT LIVE TWICE.  A serve detected while a point is already in
       progress is spurious, and this is where most of the detectors' false
@@ -327,10 +332,9 @@ def annotate_serve_court(starts: List[PointStart], video: str,
     """Record which half of the court each serve was struck from.
 
     Within a game the server alternates deuce/ad EVERY point, without
-    exception, so consecutive serves in one service run should flip sign.
-    Measured on the corpus they flip 91% of the time over clip 58's 44 near
-    serves and 60-80% elsewhere -- real, but far from certain, because the
-    court-x of a far player carries metres of projection error.
+    exception, so consecutive serves in one service run should flip sign.  In
+    the video they flip a mean of 63% of the time across 14 clip-sides, ranging
+    20% to 91% -- weak enough that this is a hint and not a finding.
 
     So this is recorded and used to FLAG, never to delete: a pair of
     consecutive same-court serves inside one service run suggests a point was
