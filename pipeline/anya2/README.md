@@ -38,7 +38,7 @@ mis-reacquire it. So a player off court is still *tracked*, just not *eligible*.
 ## Near-side serve — results
 
 Scored against `ground_truth.json` with `eval.py`, ±2.0 s, greedy one-to-one,
-restricted to each clip's labelled span. **All 12 trusted clips, 102 near
+restricted to each clip's labelled span. **All 13 trusted clips, 107 near
 serves.**
 
 | clip | labelled | recall | precision |
@@ -49,13 +49,14 @@ serves.**
 | 24 | 2 | 100% | 66.7% |
 | 25 (doubles) | 5 | 100% | 100% |
 | 26 | 2 | 100% | 100% |
+| **35 (out-of-sample)** | **5** | **100%** | **100%** |
 | 36 | 8 | 100% | 100% |
 | 38 | 8 | 100% | 100% |
 | 40 (doubles) | 0 | — | **0 fires** |
 | 43 | 6 | 100% | 100% |
 | 50 | 5 | 100% | 71.4% |
 | **58 (holdout)** | **44** | **65.9%** | **55.8%** |
-| pooled | 102 | 84.3% | 75.4% |
+| pooled | **107** | **85.0%** | **76.5%** |
 
 Nine of eleven scored clips are at 100% recall. **Clips 23 and 40 have no near
 serves and the detector fires zero times on either** — 40 being doubles, so two
@@ -118,9 +119,8 @@ detector reaches with no knowledge of whether a point is in progress.
 ## Far-side serve — results
 
 Same scoring: ±2.0 s, greedy one-to-one, restricted to the labelled span.
-**Ten clips carry a far serve.** The table below is the nine short ones (77
-serves); clip 58 (37 more) was held out until its far pass finished and is
-reported separately below.
+**Eleven clips carry a far serve, 129 in all.** Clip 58 was held out until its
+far pass finished; clip 35 was out of the corpus entirely until relabelled.
 
 | clip | labelled | recall | precision |
 |---|---|---|---|
@@ -128,15 +128,17 @@ reported separately below.
 | 24 | 12 | 100% | 92.3% |
 | 25 (doubles) | 10 | 100% | 71.4% |
 | 26 | 11 | 100% | 45.8% |
+| **35 (out-of-sample)** | **15** | **93.3%** | **93.3%** |
 | 36 | 9 | 100% | 75.0% |
 | 40 (doubles) | 13 | 100% | 81.2% |
-| **six far-dominant clips** | **70** | **100%** | **71.4%** |
+| **seven far-dominant clips** | **85** | **98.8%** | **74.3%** |
 | 21 | 1 | 0% | 0% (14 fires) |
 | 22 | 4 | 75% | 18.8% |
 | 50 | 2 | 0% | 0 fires |
 | 38 | 0 | — | 9 fires |
 | 43 | 0 | — | 3 fires |
-| pooled | 77 | 94.8% | 52.1% |
+| **58 (holdout)** | **37** | **21.6%** | **11.6%** |
+| pooled, all 13 clips | **129** | **73.6%** | **42.4%** |
 
 Bias +0.07 s. **Every far serve on every far-dominant clip is found.** The clips
 that look terrible are near-dominant — 1, 4 and 2 far serves against 11, 11 and 5
@@ -275,13 +277,14 @@ request: the shipped policy makes the ball trace primary, and that is not
 dependable on clay, where the ball is low-contrast against the surface for much
 of its flight.
 
-Scored ±2.0 s over all **216 labelled ends on 12 clips**:
+Scored ±2.0 s over all **236 labelled ends on 13 clips**:
 
 | | recall | precision | bias | truncations |
 |---|---|---|---|---|
 | shipped **ball-trace** policy (clips 21/22/23) | 48% | 65% | +0.87 s | 0 |
 | **anya2 pose-only** (same 3 clips) | **57.1%** | 55.8% | −0.24 s | **0** |
-| **anya2 pose-only** (all 12 clips) | 48.6% | 38.7% | −0.25 s | **0** |
+| **anya2 pose-only** (all 13 clips) | 49.6% | 40.2% | −0.27 s | **0** |
+| **anya2 pose-only** (clip 35, out-of-sample) | 60.0% | 60.0% | −0.92 s | **0** |
 
 Better recall than the ball-based policy with no ball at all; behind on
 precision. **Zero truncations on every clip** — no detected end lands more than
@@ -346,6 +349,29 @@ occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and cl
 - The ball has **not** been tried as a minor corroborator. It may be worth a
   bounded experiment for precision, but only if it can be shown to earn its cost
   on clay.
+
+## Clip 35 — the one clip none of this was built on
+
+Clip 35 sat in `parse_ground_truth.EXCLUDED` for the whole of this work (7.0%
+of it was labelled live), so **not one threshold, weight or window in anya2 was
+chosen with any knowledge of it**. It was relabelled on 2026-08-24 — 20 rallies,
+34.8% live, denser than clip 38 which was never excluded — and rejoined the
+corpus. It is also the fastest source in the corpus at 119.88 fps, twice
+anything else, so it exercises the stride logic at 8 rather than the usual 2-4.
+
+| detector | labelled | recall | precision | vs pooled |
+|---|---|---|---|---|
+| near serve | 5 | **100%** | **100%** | above |
+| far serve | 15 | **93.3%** | **93.3%** | well above |
+| point end | 20 | **60.0%** | **60.0%** (0 truncations) | above |
+
+All three land at or above their corpus averages, and the far-serve precision is
+the second-best on any clip. That is the strongest evidence available here that
+the constructions are not fitted to the clips they were built on — with the
+important caveat that 5 near serves is a small sample, and that clip 35 is a
+7-minute snippet, which is the format the detectors do well on. The failure the
+holdouts exposed is specific to FULL-LENGTH MATCHES (clip 58), and clip 35 does
+not test that.
 
 ## Usage
 

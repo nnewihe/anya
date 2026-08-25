@@ -62,7 +62,10 @@ ALLOW_DERIVED = False
 # scan for cache files, not for ground truth, and a stale cache left on disk
 # would otherwise be picked up silently.
 EXCLUDED = {
-    "35": "incompletely labelled (7.0% of the clip marked live)",
+    # 35 was excluded at 7.0% live and was RELABELLED on 2026-08-24: it now
+    # carries 20 rallies over 0-406s of a 420s clip, 34.8% live, with a median
+    # inter-rally gap of 14s. That is denser than clip 38 (17.6%), which was
+    # never excluded, so the reason no longer holds and it rejoins the corpus.
     "37": "incompletely labelled (4.5% marked live)",
     "63": "incompletely labelled (1.4% marked live)",
     "68": "no ground_truth.json — derived labels only, 10/45 bootstrap agreement",
