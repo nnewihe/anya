@@ -118,8 +118,9 @@ detector reaches with no knowledge of whether a point is in progress.
 ## Far-side serve — results
 
 Same scoring: ±2.0 s, greedy one-to-one, restricted to the labelled span.
-**Nine clips carry a far serve; 77 of the corpus' 114.** Clip 58's other 37 are
-the holdout and its far pass is still running.
+**Ten clips carry a far serve.** The table below is the nine short ones (77
+serves); clip 58 (37 more) was held out until its far pass finished and is
+reported separately below.
 
 | clip | labelled | recall | precision |
 |---|---|---|---|
@@ -146,6 +147,50 @@ no way to place inside a point.
 Clips 38 and 43 are the cleanest statement of that: zero labelled far serves, and
 the detector fires 9 and 3 times inside their labelled spans. There is no
 threshold that fixes this, because the motion really is a serve motion.
+
+### Clip 58, the holdout — and what it says about the scoring
+
+Clip 58's far pass finished after the parameters were fixed. It scores **21.6%
+recall / 11.6% precision** on 37 far serves, against 100% on the six clips used
+to tune. That is a worse collapse than the near detector's, and it decomposes
+into two separate things:
+
+**Most of it is the label lead again, not the detector.** 30 of the 37 serves
+have a detection within 12 s; the median nearest-detection error is +2.32 s with
+sd 2.31. An oracle per-clip lead of +2.25 s would give 24/37 = 65%. The threshold
+is not implicated at all — at threshold **zero**, recall is still only 32%.
+
+**The rest is genuine signal absence.** The trophy shape clears its floor
+anywhere in the far band for only 23 of 37 serves. On clips 25 and 40 the same
+diagnostic said 10/10 and 13/13 and the fault was slot assignment; here the
+signal simply is not there for a third of the serves.
+
+### Detection quality vs label-convention alignment
+
+The lead exists only to match a labelling convention — `ground_truth.json`'s
+`start` is a point boundary marked before the server moves. It is an EVALUATION
+alignment parameter, not a product one: a reel needs pre-roll, which is a
+user-facing choice, not an estimate. So it is worth reading recall at a wider
+tolerance and with a per-clip lead removed, which separates "did we find the
+serve" from "did we time it to this labeller's convention":
+
+| | R @±2 s | R @±4 s | R @±2 s, per-clip lead |
+|---|---|---|---|
+| **near**, 9 short clips | 100% | 100% | 100% |
+| **near**, clip 58 | 66% | 86% | 80% |
+| **near**, pooled (102) | 84% | 94% | 91% |
+| **far**, 6 far-dominant clips | 100% | 100% | 100% |
+| **far**, clip 58 | 22% | 54% | 59% |
+| **far**, pooled (114) | 71% | 82% | 83% |
+
+The per-clip-lead column is an upper bound a deployment cannot fit, since it
+needs labels. It is here to attribute error, not to claim performance.
+
+Read that way: **the near detector finds essentially every serve it is shown and
+the residual is convention.** The far detector does the same on far-dominant
+clips, but on a full-length match a third of its serves are genuinely invisible
+to it even with perfect timing — that is the honest limit, and it is the next
+thing to attack on the far side.
 
 ### Why it is not the near detector with a flag
 
