@@ -8,7 +8,7 @@ untouched so every number below is A/B-able against them.
 |---|---|---|
 | `near_serve.py` | did a point start with a near-side serve? | **built** |
 | `far_serve.py` | did a point start with a far-side serve? | **built** |
-| `point_end.py` | did the point end? | not yet |
+| `point_end.py` | did the point end? | **built** (pose only) |
 
 ## Substrate
 
@@ -268,6 +268,85 @@ settle it. **Treat 52% pooled precision as the floor for a serve detector with
 no knowledge of whether a point is in progress** — and note that the near
 detector bottomed out at 55.8% for exactly the same reason.
 
+## Point end — results
+
+**Pose only. The ball is not read anywhere in the module**, at the user's
+request: the shipped policy makes the ball trace primary, and that is not
+dependable on clay, where the ball is low-contrast against the surface for much
+of its flight.
+
+Scored ±2.0 s over all **216 labelled ends on 12 clips**:
+
+| | recall | precision | bias | truncations |
+|---|---|---|---|---|
+| shipped **ball-trace** policy (clips 21/22/23) | 48% | 65% | +0.87 s | 0 |
+| **anya2 pose-only** (same 3 clips) | **57.1%** | 55.8% | −0.24 s | **0** |
+| **anya2 pose-only** (all 12 clips) | 48.6% | 38.7% | −0.25 s | **0** |
+
+Better recall than the ball-based policy with no ball at all; behind on
+precision. **Zero truncations on every clip** — no detected end lands more than
+2 s early, so the harmful error (deleting live tennis from the reel) does not
+occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and clip
+40 (doubles) are the weak ones at ~30–38%.
+
+### Four measurements, in the order they killed the obvious designs
+
+1. **Instantaneous activity does not separate live from dead** — AUC 38–75%
+   per sample, at or below chance on the hardest clips. A rally contains long
+   quiet beats; dead time contains a player walking to the ball. Motion does not
+   stop at the end of a point, it changes character.
+
+2. **Sustained quiet is nearly perfect and useless for timing.** Both players
+   quiet for 1.5 s covers 0.0–1.2% of live play and 7–21% of dead time — close
+   to proof the point is over. But the first such window after a labelled end
+   arrives a **median +78 s** later. Quiet marks changeovers, not point ends.
+
+3. **Walking has the coverage but not the timing.** A walk onset follows 212 of
+   216 ends — essentially every one — but at median +5.1 s, p75 +15.9 s, because
+   the walk is a *consequence* of the end. `near_end`'s four pose signals cover
+   the gap between the last ball and the first step, and their union with
+   walking is far better than any part (clip 58: p75 +6.7 s vs +24.8 s for
+   walking alone) — even though every corroborator is individually *worse* than
+   walking. They are worse on average and earlier where walking is late, which
+   is all a `max()` asks of them.
+
+4. **But the union is a weak live/dead signal on its own** (frame AUC 60%; its
+   parts 48–59%, `settle` below chance). That is not a failure of the signals —
+   it says the question they were built for is not this one. What carries
+   live/dead is **player activity integrated over seconds**:
+
+   | | AUC (live > dead) |
+   |---|---|
+   | near activity, 8 s | 79.5% |
+   | far activity, 8 s | 75.1% |
+   | max(near, far) − union | 82.6% |
+   | **max(near, far) × (1 − union)** | **86.7%** |
+
+   A product, not a sum: the union's job is to **veto** activity, not to be
+   traded against it. A player walking to the ball is active and emphatically
+   not playing, and only a multiplicative term can say so.
+
+   The far-activity term exists only because anya2 tracks the far player —
+   no previous point-end work here could, and memory records "far-serve rallies
+   read as dead" as the biggest error source of the dead/live GRU.
+
+5. **The end is the FALLING EDGE of that score, not the onset of a dead state.**
+   Scored as dead-state onsets the detector emitted 504 candidates for 216 ends,
+   and no local feature separated the good ones (run duration AUC 53%, depth
+   64%, quiet overlap 1%). What does separate them is that a real end is
+   *preceded by play* — which a falling edge encodes and an onset does not.
+
+### Known gaps
+
+- **Precision, and clips 58 and 40.** Half the corpus' ends are on clip 58 and
+  it scores 38.3%/25.0%. The pooled row is dominated by it.
+- **The near-slot shim.** The walking classifier is fed from anya2's near tracks
+  through a shim npz; near coverage varies 42%–88% by clip, and on clip 23 the
+  `settle` and `stance_drop` signals produce no usable onsets at all.
+- The ball has **not** been tried as a minor corroborator. It may be worth a
+  bounded experiment for precision, but only if it can be shown to earn its cost
+  on clay.
+
 ## Usage
 
 ```bash
@@ -279,7 +358,10 @@ python -m pipeline.anya2.tracks   /Volumes/Anya/Data/21/snippet.mp4 \
 python -m pipeline.anya2.near_serve /Volumes/Anya/Data/21/snippet.mp4
 python -m pipeline.anya2.far_serve  /Volumes/Anya/Data/21/snippet.mp4
 python -m pipeline.anya2.eval --mode near_serve --arm anya2:_anya2_near_serve.json
+python -m pipeline.anya2.far_serve  /Volumes/Anya/Data/21/snippet.mp4
+python -m pipeline.anya2.point_end  /Volumes/Anya/Data/21/snippet.mp4
 python -m pipeline.anya2.eval --mode far_serve  --arm anya2:_anya2_far_serve.json
+python -m pipeline.anya2.eval --mode point_end  --arm anya2:_anya2_point_end.json
 ```
 
 ## Known gaps
