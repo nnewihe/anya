@@ -125,6 +125,37 @@ READY_STILL_BH_S = 1.2    # limb speed relative to the hip, body heights/s.
                           # keypoint jitter that the near view does not have.
 READY_WIN_S = 0.7
 
+# ── how the ready phase is READ ──────────────────────────────────────────
+# The original reading -- the MAX of `ready` anywhere in the six seconds before
+# the trophy -- is nearly useless, and measurably so: over 105 true far serves
+# and 101 false positives its median is 1.00 on BOTH, separating them at AUC
+# 62%.  Any six-second window contains some quiet moment, so a returner who
+# stood still once five seconds ago scores a perfect ready.
+#
+# Read instead as the MEAN over a short window ENDING AT THE TROPHY, the
+# separation is AUC 79% (true 0.90, false 0.62).  That is the difference
+# between "was quiet at some point recently" and "was quiet right up until the
+# racket went up", and only the second is what a service stance is.
+READY_MEAN_FROM_S = 2.0   # window start, before the trophy
+READY_MEAN_TO_S = 0.3     # ...and end, stopping short of the toss itself
+
+# ── pre-serve stillness ──────────────────────────────────────────────────
+# A SERVER IS STATIONARY BEFORE SERVING; A RETURNER HAS JUST BEEN RUNNING.
+# That is the single largest thing separating a real far serve from the far
+# player's return, and it is local to this detector -- no other agent needed.
+#
+# Measured as the median of the player's own translation (box centre, in body
+# heights per second) over the window below: true far serves 0.15, false
+# positives 0.31, separating at AUC 78%.  It is the mirror of the ready term
+# and independent of it -- ready is about the ARMS, this is about the FEET.
+#
+# It enters multiplicatively but softened, so it can veto a candidate that is
+# clearly mid-rally without deleting one whose track was noisy.
+STILL_FROM_S, STILL_TO_S = 5.0, 1.0
+STILL_FULL_BH_S = 0.20    # at or below this the player was stationary
+STILL_NONE_BH_S = 0.55    # ...and at or above it they were travelling
+W_STILL = 0.30            # weight of the stillness veto; see THRESHOLD
+
 # ── trophy (elevation only -- see the module docstring) ──────────────────
 TROPHY_HEAD_MIN_BH = -0.02   # higher wrist below head height = no credit
 TROPHY_HEAD_FULL_BH = 0.06   # ...and this far above it = full credit.  Lower
@@ -154,16 +185,23 @@ SWING_FLOOR = 0.45
 #     0.95    98.6%     73.4%
 #     0.999   94.3%     76.7%
 #
-# 0.90 is the last threshold that keeps every labelled serve, so it is the
-# knee rather than a point chosen for a favourable F1 -- everything above it
-# buys precision with recall, and for a POINT START that is the wrong trade:
-# a missed serve loses a whole point from the reel, while an extra start is
-# something the composition layer can arbitrate.
+# RE-SWEPT after the ready and stillness terms were added.  Those two multiply
+# the score down, so the old 0.90 knee no longer sits in the same place; over
+# all 129 labelled far serves on 13 clips:
 #
-# Chosen on the same clips it is scored on.  Clip 58's 37 far serves are the
-# holdout, and on the near side that is exactly where the tuning-clip numbers
-# stopped holding.
-THRESHOLD = 0.90
+#     ready  w_still  thr     recall  precision   F1
+#     max      0.0    0.90     81.4%     51.0%   62.7   <- the previous default
+#     max      0.3    0.85     80.6%     63.0%   70.7
+#     mean     0.3    0.75     79.8%     65.2%   71.8   <- here
+#     mean     0.3    0.85     70.5%     72.8%   71.7
+#     mean     0.5    0.90     56.6%     72.3%   63.5
+#
+# 0.75 with both terms holds recall (-1.6 points) and buys FOURTEEN points of
+# precision.  Pushing to 0.85 buys another 7.6 of precision for 9.3 of recall,
+# which is the wrong direction for a point START -- a missed serve loses a
+# whole point from the reel, an extra one is something the orchestrator can
+# arbitrate.
+THRESHOLD = 0.75
 REFRACT_S = 3.0
 
 # The label lead, as on the near side: `ground_truth.json`'s `start` is a point
@@ -244,6 +282,14 @@ def serve_primitives(kp, bbox, fps: float,
         d[1:] = np.linalg.norm(np.diff(rel, axis=0), axis=1) * fps
         return d
 
+    # The player's own translation across the ground, in body heights per
+    # second.  Box centre rather than a keypoint: at 30 px an individual joint
+    # is noisy, while the box as a whole is what moves when the player runs.
+    cx = 0.5 * (bbox[:, 0] + bbox[:, 2])
+    cy_px = bbox[:, 3]
+    self_move = np.full(n, np.nan)
+    self_move[1:] = np.hypot(np.diff(cx), np.diff(cy_px)) / h[1:] * fps
+
     limb = np.fmax(rel_speed(l_wri), rel_speed(r_wri))
     still = 1.0 - S.ramp(limb, READY_STILL_BH_S * 0.5, READY_STILL_BH_S * 1.6)
     carried = 1.0 - S.ramp(hi_elev, READY_HI_MAX_BH, READY_HI_MAX_BH + 0.14)
@@ -262,7 +308,8 @@ def serve_primitives(kp, bbox, fps: float,
     return {"valid": valid & both, "ready": ready, "trophy": trophy,
             "hi_elev": hi_elev, "lo_elev": lo_elev, "hi_head": hi_head,
             "head_l": head_l, "head_r": head_r, "hi_side": hi_side,
-            "still": still, "on_court": on_court, "fps": np.float64(fps)}
+            "still": still, "self_move": self_move,
+            "on_court": on_court, "fps": np.float64(fps)}
 
 
 def detect_serves(prim, threshold: float = THRESHOLD,
@@ -287,10 +334,25 @@ def detect_serves(prim, threshold: float = THRESHOLD,
         k = lo + int(np.argmax(tro[lo:hi]))
         s_trophy = float(tro[k])
 
-        a, b = max(0, k - back_lo), max(0, k - back_hi)
+        # Ready as a MEAN over a short window ending at the trophy, not a max
+        # over six seconds -- see READY_MEAN_FROM_S for why the max is inert.
+        a = max(0, k - int(round(READY_MEAN_FROM_S * fps)))
+        b = max(1, k - int(round(READY_MEAN_TO_S * fps)))
         rd = ready[a:b]
         rd = rd[np.isfinite(rd)]
-        s_ready = float(rd.max()) if rd.size else 0.0
+        s_ready = float(rd.mean()) if rd.size else 0.0
+
+        # Was this player standing still before the racket went up?
+        sa = max(0, k - int(round(STILL_FROM_S * fps)))
+        sb = max(1, k - int(round(STILL_TO_S * fps)))
+        mv = prim["self_move"][sa:sb]
+        mv = mv[np.isfinite(mv)]
+        # An untracked stretch scores 0.5 rather than 0 or 1: not knowing where
+        # the player was is not evidence either way, and this term must not
+        # delete a serve just because the track had a hole before it.
+        s_still = (1.0 - float(S.ramp(float(np.median(mv)),
+                                      STILL_FULL_BH_S, STILL_NONE_BH_S))
+                   if mv.size else 0.5)
 
         toss_left = prim["hi_side"][k] > 0
         rack_head = prim["head_r"] if toss_left else prim["head_l"]
@@ -306,13 +368,14 @@ def detect_serves(prim, threshold: float = THRESHOLD,
 
         shape = (W_TROPHY * s_trophy + W_READY * s_ready) / (W_TROPHY + W_READY)
         p = shape * (SWING_FLOOR + (1.0 - SWING_FLOOR) * s_swing)
+        p *= (1.0 - W_STILL) + W_STILL * s_still
         if p < threshold:
             continue
         out.append({
             "t": lo / fps - SERVE_LEAD_S,
             "p": round(p, 4),
             "trophy": round(s_trophy, 4), "swing": round(s_swing, 4),
-            "ready": round(s_ready, 4),
+            "ready": round(s_ready, 4), "still": round(s_still, 4),
             "t_trophy": round(k / fps, 3),
             "t_contact": round(t_contact, 3) if t_contact is not None else None,
             "track": track,
@@ -347,7 +410,7 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=FAR_SERVE,
                   track=e["track"],
                   detail={k: e[k] for k in ("trophy", "swing", "ready",
-                                            "t_trophy", "t_contact")})
+                                            "still", "t_trophy", "t_contact")})
             for e in kept]
 
 

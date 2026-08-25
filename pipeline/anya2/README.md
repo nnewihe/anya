@@ -139,7 +139,7 @@ far pass finished; clip 35 was out of the corpus entirely until relabelled.
 | 38 | 0 | — | 9 fires |
 | 43 | 0 | — | 3 fires |
 | **58 (holdout)** | **37** | **51.4%** | **27.5%** |
-| pooled, all 13 clips | **129** | **82.2%** | **47.3%** |
+| pooled, all 13 clips | **129** | **79.8%** | **64.8%** |
 
 Bias +0.07 s. **Every far serve on every far-dominant clip is found.** The clips
 that look terrible are near-dominant — 1, 4 and 2 far serves against 11, 11 and 5
@@ -350,6 +350,59 @@ occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and cl
 - The ball has **not** been tried as a minor corroborator. It may be worth a
   bounded experiment for precision, but only if it can be shown to earn its cost
   on clay.
+
+## Far-serve refinement: how the ready phase is read, and pre-serve stillness
+
+Two changes, both from measuring what actually separates a far serve from the
+far player's *return* — which is where the false positives were.
+
+**1. The ready term was inert.** It read the **max** of `ready` anywhere in the
+6 s before the trophy. Over 105 true far serves and 101 false positives its
+median is **1.00 on both**, separating at AUC 62% — any 6-second window contains
+some quiet moment, so a returner who stood still once five seconds ago scored a
+perfect ready. Read instead as the **mean over `[k−2.0s, k−0.3s]`**, ending at
+the trophy, it separates at **AUC 79%** (true 0.90, false 0.62). The difference
+is "was quiet at some point recently" versus "was quiet right up until the racket
+went up", and only the second is a service stance.
+
+**2. A server is stationary before serving; a returner has just been running.**
+New term, and the largest single discriminator found: the median of the player's
+own translation (box centre, body heights/s) over `[k−5s, k−1s]` is **0.15 for
+true serves and 0.31 for false positives, AUC 78%**. It is the mirror of ready
+and independent of it — **ready is about the arms, this is about the feet** — and
+it is local to this detector, needing no other agent. It enters multiplicatively
+at weight 0.30 so it can veto a candidate that is clearly mid-rally without
+deleting one whose track was noisy; an untracked stretch scores 0.5, because not
+knowing where the player was is not evidence either way.
+
+Threshold re-swept, since both terms multiply the score down:
+
+| ready | stillness | thr | recall | precision | F1 |
+|---|---|---|---|---|---|
+| max-6s | — | 0.90 | 81.4% | 51.0% | 62.7 |
+| max-6s | 0.3 | 0.85 | 80.6% | 63.0% | 70.7 |
+| **mean** | **0.3** | **0.75** | **79.8%** | **64.8%** | **71.8** |
+| mean | 0.3 | 0.85 | 70.5% | 72.8% | 71.7 |
+
+**Corpus: 81.4%/51.0% → 79.8%/64.8%** — 1.6 points of recall for **13.8 of
+precision**. Per clip:
+
+| clip | before | after |
+|---|---|---|
+| **21** (1 far serve) | 0% / 0%, **14 fires** | 0% / —, **0 fires** |
+| 26 | 100% / 45.8% | 100% / 64.7% |
+| 36 | 100% / 75.0% | **100% / 100%** |
+| 25 | 100% / 71.4% | 100% / 83.3% |
+| 24 | 100% / 92.3% | 91.7% / **100%** |
+| 38, 43 (no far serves) | 9 and 3 fires | **2 and 0** |
+
+Clip 21's fourteen phantom far serves — the case this refinement was aimed at —
+are **gone entirely**, and the eleven that were the far player returning are
+exactly the ones the stillness term rejects.
+
+Reel effect is small and in the tightening direction: whole points 143 → 137,
+live retained 89.5% → 87.9%, reel 47.5% → 45.5% of source. Fewer far detections
+means fewer anchors, so a few points lose their start.
 
 ## Roll tightened to 1 s, and a far-side leak found (2026-08-25)
 
