@@ -9,6 +9,7 @@ untouched so every number below is A/B-able against them.
 | `near_serve.py` | did a point start with a near-side serve? | **built** |
 | `far_serve.py` | did a point start with a far-side serve? | **built** |
 | `point_end.py` | did the point end? | **built** (pose only) |
+| `orchestrator.py` | **agent 4** — turn the three streams into a watchable reel | **built** |
 
 ## Substrate
 
@@ -350,6 +351,101 @@ occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and cl
   bounded experiment for precision, but only if it can be shown to earn its cost
   on clay.
 
+## Agent 4 — the orchestrator
+
+Takes the three event streams and produces the reel. It detects nothing; it
+imposes the structure tennis has and the detectors cannot see.
+
+**Over 236 labelled points on 13 clips (133 min of source):**
+
+| | |
+|---|---|
+| points wholly inside a segment | **207 / 236 (88%)** |
+| partially cut | 22 |
+| **missing entirely** | **7 (3.0%)** |
+| **live tennis retained** | **95.3%** |
+| reel length | **61.6% of source** |
+| segments | 135 (≈1.2 cuts/min) |
+| points recovered from live play alone | 14 |
+
+### The measurement that decides the architecture
+
+The three detectors do not have comparable recall — near serve 90.7%, far serve
+82.2%, **point end 49.6%**. So **the reel is built from starts, and ends only
+trim.** A point whose end was never detected still becomes a segment; it runs for
+the clip's own typical point length instead. Requiring a start/end pair would
+silently drop half the points.
+
+That asymmetry also sets the error budget: a missed end costs some dead time at
+one segment's tail, while a missed start loses the whole point.
+
+### What tennis knows that the detectors don't
+
+- **Service runs.** One player serves a whole game, so the side sequence is
+  `NNNNN FFFFF`, never `NNFNN`. A segmental DP (exact, not greedy — a greedy pass
+  commits to an early wrong side and never recovers) relabels isolated flips. It
+  only ever changes a *label*, never drops a start.
+- **Deuce/ad alternation.** Within a game the server alternates court every
+  point, always. Measured: the server's court-x flips sign across consecutive
+  serves **91% of the time on clip 58's 44 near serves**, 60–80% elsewhere. Too
+  noisy to delete on, so two consecutive same-court serves *flag* a suspected
+  missing point rather than removing a detection.
+- **A point is not live twice.** A serve struck while a point is already running
+  is spurious — and agent 3's live score says so. Gating on the median live score
+  in the 3 s before a detection drops **26% of far false positives for 4% of true
+  far serves**. It is applied to the far stream only: on the near stream the same
+  gate is AUC 55% and costs more than it buys, which is the FP taxonomy showing
+  through (79% of far false positives are the returner mid-rally; near ones are
+  the server's own repeated motions in dead time).
+- **Rhythm.** Real start-to-start spacing is median 27 s; only 5% fall under 8 s.
+
+### Recovering points nobody detected
+
+15 of 236 points had no serve detection at all. Nothing in the serve streams can
+recover those, but the live score is a different measurement and does not care
+whether a serve was seen: any sustained run of live play that no segment covers
+is kept, marked `recovered`, with **no side** — there is no detection to say who
+served, and the reel should gain the tennis without inventing a fact about it.
+This runs last, so detected points keep their serve-anchored boundaries.
+
+**Missing points 15 → 7; live retained 88.8% → 93.1%** before roll tuning.
+
+### Smoothness is an output, not a side effect
+
+Two choices a pure accuracy metric would make differently:
+
+- **When in doubt, keep footage.** An extra second of a player walking is barely
+  noticeable; a cut landing mid-rally is jarring and loses the point.
+- **A cut costs something.** Two segments separated by a couple of seconds of
+  dead time are worse to watch than one continuous segment spanning them, so
+  segments closer than `merge_gap_s` are joined and sub-4 s flashes are dropped
+  or padded.
+
+Roll turned out to be the dominant lever — far more than any end-estimation
+tuning (moving the duration percentile from 85 to 97 buys 2 whole points; +1 s of
+post-roll buys 17). The ends are close to right, they were just being cut a
+second early:
+
+| pre / post | whole points | live kept | reel |
+|---|---|---|---|
+| 2.5 / 2.0 | 179 | 93.1% | 54.9% |
+| 2.5 / 3.0 | 196 | 94.6% | 57.3% |
+| 3.0 / 3.5 | 202 | 94.9% | 59.5% |
+| **3.5 / 4.0** | **207** | **95.3%** | **61.6%** |
+| 3.5 / 5.0 | 212 | 95.8% | 63.7% |
+
+That table is the exchange rate — lower both to tighten the reel.
+
+### Caveats
+
+- **Clip 38 reads 189% of span** because its labels stop at 206 s of a 420 s clip
+  while the tennis (and the detectors) continue. That is a labelling gap, not a
+  reel that doubled the match.
+- Clip 58 still carries most of the residue: 16 of the 22 partial points and 4 of
+  the 7 missing.
+- `score_reel` measures the reel, not the detectors — points whole/partial/
+  missing, live retained, dead per point, cuts per minute.
+
 ## Two corrections applied 2026-08-25
 
 **1. Clip 58's labels carry the lead already.** Its author confirmed it, and it
@@ -437,6 +533,7 @@ python -m pipeline.anya2.far_serve  /Volumes/Anya/Data/21/snippet.mp4
 python -m pipeline.anya2.point_end  /Volumes/Anya/Data/21/snippet.mp4
 python -m pipeline.anya2.eval --mode far_serve  --arm anya2:_anya2_far_serve.json
 python -m pipeline.anya2.eval --mode point_end  --arm anya2:_anya2_point_end.json
+python -m pipeline.anya2.orchestrator /Volumes/Anya/Data/21/snippet.mp4
 ```
 
 ## Known gaps
