@@ -1,7 +1,7 @@
 """
 app.py — Anya Tennis desktop GUI (black & yellow)
 
-A thin shell over ``pipeline.rally_reel`` and ``pipeline.scoreboard_reel``:
+A thin shell over ``pipeline.anya2`` and ``pipeline.scoreboard_reel``:
 a QTabWidget hosting two tabs —
 
   * Highlight Reel  — pick a match video, click the four court corners once,

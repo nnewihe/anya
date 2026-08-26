@@ -1,5 +1,5 @@
 # rally_app.spec
-# PyInstaller spec for Anya Tennis (pipeline.rally_reel).
+# PyInstaller spec for Anya Tennis (pipeline.anya2, with rally_reel as fallback).
 #
 # Weights are pulled straight from the repo (pipeline/models, walking/outputs)
 # — nothing to copy by hand.  Destinations mirror the source tree because the
@@ -197,6 +197,32 @@ a = Analysis(
         *_license_datas,
     ],
     hiddenimports=[
+        # anya2 is the primary engine (see desktop/highlight_tab.ENGINE), and
+        # several of its modules import `walking.*` INSIDE functions rather than
+        # at module scope -- deliberately, to keep import time down -- so static
+        # analysis does not reach them.  The legacy rally_reel path is kept
+        # importable too, since ANYA_ENGINE=legacy must still work in a built app.
+        'pipeline.anya2',
+        'pipeline.anya2.run',
+        'pipeline.anya2.config',
+        'pipeline.anya2.orchestrator',
+        'pipeline.anya2.near_serve',
+        'pipeline.anya2.far_serve',
+        'pipeline.anya2.point_end',
+        'pipeline.anya2.perceive',
+        'pipeline.anya2.tracks',
+        'pipeline.anya2.balls',
+        'pipeline.anya2.court',
+        'pipeline.anya2.signals',
+        'pipeline.anya2.contract',
+        'walking',
+        'walking.predict',
+        'walking.features',
+        'walking.court',
+        'walking.extract_pose',
+        'walking.select_near',
+        'walking.evaluate',
+        'near_end',
         # ultralytics dynamic imports
         'ultralytics',
         'ultralytics.nn',
