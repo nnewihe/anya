@@ -93,7 +93,15 @@ def _end_signals(video: str, force: bool = False) -> None:
     if root not in sys.path:
         sys.path.insert(0, root)
     from walking.predict import predict_video
-    import near_end as NE
+    # near_end.py lives in pipeline/, not the repo root -- every other caller
+    # in this codebase imports it as pipeline.near_end (`from ..near_end import
+    # ...` inside pipeline.rally_reel, `from .near_end import ...` inside
+    # pipeline/tune_energy.py).  `import near_end` alone only resolves when the
+    # CALLER has also put pipeline/ itself on sys.path, which the CLI scripts
+    # used to test this module did and this function did not -- the bug
+    # surfaced as "No module named 'near_end'" the first time this ran from the
+    # desktop app rather than from one of those scripts.
+    from pipeline import near_end as NE
 
     z = TR.load(video)
     bb = z["bbox"]
