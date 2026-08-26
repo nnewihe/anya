@@ -151,6 +151,46 @@ READY_MEAN_TO_S = 0.3     # ...and end, stopping short of the toss itself
 #
 # It enters multiplicatively but softened, so it can veto a candidate that is
 # clearly mid-rally without deleting one whose track was noisy.
+# ── the toss ─────────────────────────────────────────────────────────────
+# A SEPARATE SCORE, deliberately never folded into `p`.  It answers a different
+# question -- "did the tossing arm do what a toss does" -- and the orchestrator
+# arbitrates the two, so keeping them apart is what lets it trade precision
+# against recall without this module choosing on its behalf.
+#
+# Read from the TOSSING ARM ONLY, which is the arm carrying the higher wrist at
+# the trophy (`hi_side`).  Four components, each measured against the trophy
+# peak k, each ramped to [0, 1] and then AVERAGED:
+#
+#   low    the wrist STARTED low, below the shoulder, before the rise
+#   lat    at the top the wrist is offset LATERALLY from its own shoulder
+#   hold   the wrist stays above head height for a sustained beat
+#   peak   how far above the head it gets
+#
+# Every one is weak alone -- over 103 true far serves and 56 false positives
+# their individual AUCs are 66%, 66%, 64% and 65% -- and the average of the four
+# reaches AUC 74%, true serves at median 0.72 against 0.33 for false positives.
+#
+# Two findings worth keeping:
+#
+#   THE TOSS ARM IS NOT VERTICAL.  The obvious formulation -- the wrist travels
+#   straight up over its own shoulder -- is BACKWARDS.  True serves have a
+#   LARGER lateral offset than false positives (0.148 vs 0.090 body heights),
+#   because a real toss is released up and forward across the body while a
+#   return's arm stays nearer the shoulder line.  `lat` is scored in the
+#   direction the data gives, not the one anatomy-by-description suggests.
+#
+#   AVERAGE, DO NOT MULTIPLY.  A product of the same four scores the same AUC
+#   (74%) but is degenerate -- most candidates land at exactly zero, so as a
+#   filter it costs 53% of true serves to remove 88% of false positives.  The
+#   mean keeps it graded, which is what a separate signal handed to an
+#   arbitrator has to be.
+TOSS_PRE_FROM_S, TOSS_PRE_TO_S = -1.3, -0.2   # window for the pre-rise low point
+TOSS_TOP_FROM_S, TOSS_TOP_TO_S = -0.3, 0.6    # window for the extended top
+TOSS_LOW_NONE_BH, TOSS_LOW_FULL_BH = -0.22, -0.42
+TOSS_LAT_MIN_BH, TOSS_LAT_FULL_BH = 0.07, 0.17
+TOSS_HOLD_MIN_S, TOSS_HOLD_FULL_S = 0.13, 0.42
+TOSS_PEAK_MIN_BH, TOSS_PEAK_FULL_BH = 0.08, 0.17
+
 STILL_FROM_S, STILL_TO_S = 5.0, 1.0
 STILL_FULL_BH_S = 0.20    # at or below this the player was stationary
 STILL_NONE_BH_S = 0.55    # ...and at or above it they were travelling
@@ -276,6 +316,12 @@ def serve_primitives(kp, bbox, fps: float,
         hi_head = np.where(both, np.fmax(head_l, head_r), np.nan)
     hi_side = np.where(both, np.where(elev_l >= elev_r, 1.0, -1.0), 0.0)
 
+    # Lateral offset of each wrist from ITS OWN shoulder (not the midpoint), in
+    # body heights.  The toss score reads this; see the TOSS block for why it
+    # points the opposite way to the obvious guess.
+    lat_l = np.abs(l_wri[:, 0] - l_sho[:, 0]) / h
+    lat_r = np.abs(r_wri[:, 0] - r_sho[:, 0]) / h
+
     def rel_speed(pt):
         rel = (pt - hip) / h[:, None]
         d = np.full(n, np.nan)
@@ -307,9 +353,50 @@ def serve_primitives(kp, bbox, fps: float,
 
     return {"valid": valid & both, "ready": ready, "trophy": trophy,
             "hi_elev": hi_elev, "lo_elev": lo_elev, "hi_head": hi_head,
+            "elev_l": elev_l, "elev_r": elev_r,
             "head_l": head_l, "head_r": head_r, "hi_side": hi_side,
+            "lat_l": lat_l, "lat_r": lat_r,
             "still": still, "self_move": self_move,
             "on_court": on_court, "fps": np.float64(fps)}
+
+
+def toss_score(prim: Dict[str, np.ndarray], k: int, toss_left: bool) -> Dict:
+    """Did the tossing arm perform a toss?  Independent of the serve score.
+
+    Returns the mean of four ramped components plus the components themselves,
+    so a low score can be attributed rather than merely observed.  Missing
+    keypoints yield None, which a caller must NOT read as zero -- an untracked
+    arm is not evidence of a bad toss.
+    """
+    fps = float(prim["fps"])
+    elev = prim["elev_l"] if toss_left else prim["elev_r"]
+    head = prim["head_l"] if toss_left else prim["head_r"]
+    lat = prim["lat_l"] if toss_left else prim["lat_r"]
+
+    def win(x, a, b):
+        lo = max(0, k + int(round(a * fps)))
+        hi = min(len(x), k + int(round(b * fps)))
+        q = x[lo:hi]
+        return q[np.isfinite(q)]
+
+    pre = win(elev, TOSS_PRE_FROM_S, TOSS_PRE_TO_S)
+    lt = win(lat, TOSS_TOP_FROM_S, TOSS_TOP_TO_S)
+    ab = win(head, TOSS_TOP_FROM_S, TOSS_TOP_TO_S)
+    if not (pre.size and lt.size and ab.size):
+        return {"toss": None, "toss_parts": None}
+
+    parts = {
+        "low": 1.0 - float(S.ramp(float(np.min(pre)),
+                                  TOSS_LOW_FULL_BH, TOSS_LOW_NONE_BH)),
+        "lat": float(S.ramp(float(np.median(lt)),
+                            TOSS_LAT_MIN_BH, TOSS_LAT_FULL_BH)),
+        "hold": float(S.ramp(float(np.sum(ab > 0.0) / fps),
+                             TOSS_HOLD_MIN_S, TOSS_HOLD_FULL_S)),
+        "peak": float(S.ramp(float(np.max(ab)),
+                             TOSS_PEAK_MIN_BH, TOSS_PEAK_FULL_BH)),
+    }
+    return {"toss": round(float(np.mean(list(parts.values()))), 4),
+            "toss_parts": {k2: round(v, 3) for k2, v in parts.items()}}
 
 
 def detect_serves(prim, threshold: float = THRESHOLD,
@@ -376,6 +463,7 @@ def detect_serves(prim, threshold: float = THRESHOLD,
             "p": round(p, 4),
             "trophy": round(s_trophy, 4), "swing": round(s_swing, 4),
             "ready": round(s_ready, 4), "still": round(s_still, 4),
+            **toss_score(prim, k, bool(toss_left)),
             "t_trophy": round(k / fps, 3),
             "t_contact": round(t_contact, 3) if t_contact is not None else None,
             "track": track,
@@ -410,7 +498,8 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=FAR_SERVE,
                   track=e["track"],
                   detail={k: e[k] for k in ("trophy", "swing", "ready",
-                                            "still", "t_trophy", "t_contact")})
+                                            "still", "toss", "toss_parts",
+                                            "t_trophy", "t_contact")})
             for e in kept]
 
 
