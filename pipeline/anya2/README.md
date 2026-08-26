@@ -511,28 +511,50 @@ up and forward across the body), and the four components must be **averaged, not
 multiplied** (the product scores the same AUC but is degenerate, costing 53% of
 true serves to cut 88% of false ones).
 
-### The ball toss tracker — built, measured, not shipped
+### The ball toss tracker — re-aimed, now works, still not shipped
 
-An ROI above the far player's shoulder, −0.2 s to +1.0 s around each far
-detection, ball model at high imgsz on the native-resolution crop. **It does not
-work at far-court range**, and the numbers say so plainly:
+A first attempt concluded the ball was undetectable at far-court range. **That
+was wrong, and for two aiming bugs rather than any limit of the ball model:**
 
-| setting | true serves with ≥2 ball detections | false positives |
-|---|---|---|
-| imgsz 960, conf 0.05 | 25% | 22% |
-| imgsz 960, conf 0.02 | **42%** | 33% |
-| imgsz 1280, conf 0.02 | 25% | **44% — inverted** |
+- **The window was before the toss.** `far_serve`'s event time is lead-corrected
+  to ~0.9 s *before* the trophy, so `[t−0.2, t+1.0]` covered `trophy−1.1s …
+  trophy+0.1s` — while the ball is still in the hand. It is airborne from about
+  `trophy+0.0` to `+0.6`.
+- **The ROI was above the head.** At this range the toss does not rise far above
+  the head in *image* terms; it sits just above the tossing hand.
 
-Median detections per sequence is 0–0.5: the ball simply is not found. The best
-setting separates by 9 points on 12 true and 9 false sequences, and another
-setting reverses the sign — the signature of noise, not signal. A toss ball at
-that distance is a few pixels against a bright sky or a busy fence.
+Re-aimed at the **tossing wrist**, anchored on the **trophy**, at native
+resolution with SAHI tiling (160 px tiles, 30% overlap, imgsz 320, distance NMS):
 
-**The plumbing is kept and the pass is not run.** `PointStart.toss_ball` and
-`ball_toss_weight` exist, so if a better ball model or a closer camera ever makes
-this viable it blends in without restructuring; with no ball reading the pose
-toss carries rule 1 alone. The pose score already does the job the ball was meant
-to do.
+| | frames with a ball per serve |
+|---|---|
+| head-centred ROI, wrong window | 0–0.5 |
+| wrist-centred ROI, single shot | 5.0 |
+| **wrist-centred ROI + SAHI** | **8.0** |
+
+**But ball presence does not discriminate.** A returner also has a ball near
+them — the one they are about to hit. Median frames-with-ball is 8.0 true against
+6.0 false, and "≥3 frames with a ball" is 71% true against **83% false**.
+
+**The arc does, but only through direction:**
+
+| trajectory feature | AUC |
+|---|---|
+| total rise of the highest ball | 49% |
+| peak height above the wrist | 45% |
+| **fraction of time the ball is climbing** | **73–75%** |
+
+**And it is redundant with the pose toss.** On the same 19 true / 12 false
+sequences the ball arc scores 75%, the pose toss 83%, they correlate at **+0.49**,
+and the best blend (0.3 arc + 0.7 pose) reaches **83% — no better than pose
+alone**. Both watch the same event; the arm is simply easier to see than the ball.
+
+So a pass costing tiled ball inference over ~18 native-resolution frames per
+candidate, with a video seek each, buys nothing over a signal already computed
+for free. `far_toss_ball.py` is complete and tested; enable it only if that
+changes — a closer camera, a better small-object model, or a clip where far pose
+degrades. The sample is small (19/12), so this is a reason not to spend the
+compute, not proof the ball can never help.
 
 ### Rule 1 — toss evidence adjusts far confidence
 ### Rule 2 — a far serve among near serves is suspect
