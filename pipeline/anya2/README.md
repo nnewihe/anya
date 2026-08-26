@@ -581,6 +581,48 @@ them.
 A consumer thresholding `adjusted_p ≥ 0.70` keeps 80% of true far serves and 45%
 of false ones — where raw `p` could barely tell them apart.
 
+## Acquisition and inference cost
+
+Everything above the two pose passes is numpy; the passes ARE the cost.
+
+| pass | what | cost, clip 58 (56 min) |
+|---|---|---|
+| near | 540p whole-frame proxy, pose @15 Hz, **imgsz 640** | 784s → **484s** |
+| far | native-res baseline band, pose @15 Hz, **imgsz 960** | 534s |
+| everything else | walking model, near_end, tracks, 3 detectors, reel | seconds |
+
+**~0.30× realtime** end to end, down from 0.39×.
+
+**The near pass had headroom; the far pass has none.** That asymmetry is the
+whole story of this pipeline, and it is the same fact that forced two ROIs in
+the first place — near players are 72–275 px and far players 22–32 px, right at
+the model's detection size.
+
+- **near 960 → 640**: clip 35 near serve 100%/100% unchanged, pass 140s → 57s;
+  clip 58 near serve 79.5%→81.8% recall, point end within noise, pass 784s →
+  484s. Adopted.
+- **far 960 → 768**: a micro-benchmark said this was free (35.2 vs 52.6 ms/frame,
+  1.00 vs 1.02 persons/frame). End-to-end it cost **recall 100% → 86.7%**.
+  Rejected. Persons-per-frame over a short sample cannot price this, because the
+  frames that break are the ones where the player is smallest — which is
+  disproportionately the serves. **Only an end-to-end recall number can price a
+  far-side change.**
+- **far 15 Hz → 10 Hz**: cannot be done alone. `tracks._stack` requires both
+  passes on one timeline, since side membership is decided by the court rather
+  than by which pass found a person. Attempted, `tracks` refuses — and the
+  refusal produced a tempting false positive: with tracks failing, the far
+  detector scored the *stale* 15 Hz tracks and reported identical accuracy for
+  30% less time. Decoupling means resampling the far stream onto the near
+  timeline: a substrate change, not a parameter.
+
+### Known gap
+
+11 of 13 clips still take their near detections from the legacy
+`_end_walk_dets.npz` (540p, imgsz 960) rather than `perceive.near`; only clips
+35 and 58 use the new pass. The corpus is therefore mixed, and a full
+regeneration at imgsz 640 would shift the near-serve and point-end numbers by a
+little in either direction.
+
 ## Agent 4 — the orchestrator
 
 Takes the three event streams and produces the reel. It detects nothing; it

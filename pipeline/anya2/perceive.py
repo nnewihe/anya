@@ -30,10 +30,20 @@ RATES ARE INPUTS, NOT DECISIONS
 -------------------------------
 15 Hz is where `anya_end_telemetry` landed and the reasoning holds here: the
 walking classifier scores at 15 Hz, and 15 Hz is above Nyquist for the 0.7-4.0
-Hz gait cadence band, while 7.5 Hz is not.  But nothing in anya2 depends on it
-being 15 -- each detector DECLARES its rate in its `Requirement`, and Phase E
-is where those declarations are unioned into whatever passes actually run.
-Until then this module just makes the two caches.
+Hz gait cadence band, while 7.5 Hz is not.
+
+THE TWO ROIs ARE LOCKED TO ONE RATE, and that is a real constraint rather than
+an oversight.  `tracks._stack` requires both passes on one timeline, because
+side membership is decided by the COURT and not by which pass found a person,
+so the two candidate lists have to be interleaved sample for sample.  Dropping
+the far pass to 10 Hz therefore cannot be done alone -- attempted, it makes
+`tracks` refuse outright, which is the guard working.  (It also produced a
+tempting false result: with tracks refusing, the far detector scored the STALE
+15 Hz tracks and reported identical accuracy for 30% less time.  The number was
+real and measured the wrong thing.)
+Decoupling the rates means resampling the far stream onto the near timeline --
+possible, but a change to the substrate rather than a parameter, and not worth
+making speculatively while the far pass is the cheaper of the two.
 
 Unsampled frames are DROPPED, never held.  A zero-order hold turns a
 differentiated feature into spurious events; the npz is written decimated with
@@ -65,6 +75,34 @@ POSE_FPS = 15.0
 
 _W = Path(__file__).resolve().parents[1] / "models" / "yolov8n-pose.pt"
 POSE_MODEL = str(_W) if _W.is_file() else "yolov8n-pose.pt"
+
+# FAR_IMGSZ stays at 960, and the attempt to lower it is recorded because the
+# micro-benchmark was persuasive and WRONG.  Timed on 64 band frames, imgsz 768
+# looked free -- 35.2 ms/frame against 52.6, at 1.00 persons/frame against 1.02.
+# Run over the whole clip it is not: detections fall from 0.94 to 0.86 per
+# sample, empty frames rise 21.1% to 25.1%, and the far detector goes from
+# 100% recall / 83.3% precision to 86.7% / 72.2% on Data/23.  An 8% detection
+# loss lands squarely on the serves.
+#
+# The lesson generalises: the far player sits AT the model's detection size, so
+# persons-per-frame over a short sample cannot see the cost -- the frames that
+# break are the ones where the player is smallest, which is not most frames but
+# is disproportionately the ones a serve happens in.  Do not re-tune this on a
+# throughput benchmark; only an end-to-end recall number can price it.
+FAR_IMGSZ = 960
+# 640, not 960.  The near frame is a 960x540 proxy, so 960 is native -- but the
+# near players are 72-275 px tall and survive the downscale, unlike the far
+# player.  Validated end to end rather than on throughput (see FAR_IMGSZ for why
+# that distinction matters):
+#
+#     clip 35   near serve 100%/100% -> 100%/100%   pass 140s -> 57s
+#     clip 58   near serve 79.5%/61.4% -> 81.8%/62.1%   pass 784s -> 484s
+#     clip 58   point end  38.3%/25.0% -> 37.0%/26.1%, truncations 0 either way
+#
+# Accuracy is unchanged to slightly better and the pass is 38-59% cheaper.  The
+# asymmetry with the far pass is the whole story of this pipeline: near players
+# are far above the detection size and have headroom, far players have none.
+NEAR_IMGSZ = 640
 
 NEAR_SUFFIX = "_anya2_near_dets.npz"
 FAR_SUFFIX = "_anya2_far_dets.npz"
@@ -212,7 +250,7 @@ def near(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
     src.release()
     stride, eff = _stride_for(fps, pose_fps)
     print(f"[near-dets] {fps:.2f} fps source, stride {stride} -> {eff:.2f} fps")
-    return _pose_pass(prox, out, stride, imgsz=960, device=device,
+    return _pose_pass(prox, out, stride, imgsz=NEAR_IMGSZ, device=device,
                       label="NEAR-DETS", limit=limit)
 
 
@@ -276,8 +314,19 @@ def far(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
     src.release()
     stride, eff = _stride_for(fps, pose_fps)
     print(f"[far-dets] {fps:.2f} fps source, stride {stride} -> {eff:.2f} fps")
+    # imgsz 768, not 960.  The far band is ~730 px wide, so 768 is essentially
+    # native and 960 only pays to letterbox padding.  Measured on Data/23's band:
+    #
+    #     imgsz 960   52.6 ms/frame   1.02 persons/frame
+    #     imgsz 768   35.2 ms/frame   1.00 persons/frame   <-- here
+    #     imgsz 640   26.3 ms/frame   0.06 persons/frame   <-- collapses
+    #
+    # A third off the cost for no lost detections, and a hard cliff immediately
+    # below: at 640 the band is downscaled and the far player falls under the
+    # model's detection size, which is the same scale limit that made a
+    # whole-frame 540p pass useless for the far side in the first place.
     # Crop pixels are SOURCE pixels; map them back to the analysis frame.
-    return _pose_pass(prox, out, stride, imgsz=960, device=device,
+    return _pose_pass(prox, out, stride, imgsz=FAR_IMGSZ, device=device,
                       offset=(crop[0] / sx, crop[1] / sy),
                       scale=(1.0 / sx, 1.0 / sy),
                       label="FAR-DETS", limit=limit,

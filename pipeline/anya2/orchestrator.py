@@ -197,13 +197,19 @@ class ReelConfig:
     # Two independent readings of the same event, neither of which the far
     # detector folds into its own score:
     #
-    #   POSE TOSS   `far_serve.toss_score` -- the tossing arm's own motion.
-    #               AUC 75% against far false positives, and correlated only
-    #               +0.04 with the serve score, so it is genuinely new evidence.
-    #   BALL TOSS   a ball seen arcing in the region above the far player's
-    #               head, within +/- BALL_TOSS_WINDOW_S of the detection.
+    # The evidence is `far_serve.toss_score` -- the tossing arm's own motion,
+    # AUC 75% against far false positives and correlated only +0.04 with the
+    # serve score, so it is genuinely new evidence.
     #
-    # They ADJUST confidence rather than filter.  A hard gate on either one
+    # A BALL toss detector was built and removed.  Re-aimed at the tossing wrist
+    # with native-resolution SAHI tiling it detected the ball well (8 frames per
+    # serve against 0-0.5 for a head-centred ROI), and its arc separated true
+    # from false serves at AUC 75% -- but it correlated +0.49 with the pose toss
+    # and the best blend of the two was no better than pose alone.  Two readings
+    # of the same event, and the arm is far easier to see than a 3 px ball.  It
+    # cost tiled inference over ~18 native frames per candidate for nothing.
+    #
+    # This ADJUSTS confidence rather than filtering.  A hard gate on either one
     # costs real serves (dropping pose-toss below 0.40 removes 54% of false
     # positives but 18% of true ones), and the brief is precision WITHOUT
     # giving up recall -- so a weak toss reading demotes a candidate and lets
@@ -218,9 +224,6 @@ class ReelConfig:
                                      # seeing one is weak evidence against --
                                      # the ball is a few pixels at that range
                                      # and the arm may be occluded.
-    ball_toss_window_s: float = 1.5  # the user's bound on ball-arc evidence
-    ball_toss_weight: float = 0.5    # share of rule 1 carried by the ball when
-                                     # a ball reading exists at all
 
     # ── rule 2: a far serve among near serves is suspect ─────────────────
     # Measured over the corpus: requiring 3 of a far candidate's 4 nearest
@@ -248,7 +251,6 @@ class PointStart:
     side_conflict: bool = False
     court_x: Optional[float] = None
     toss_pose: Optional[float] = None    # far_serve's pose toss score
-    toss_ball: Optional[float] = None    # ball-arc evidence, when available
     toss_combined: Optional[float] = None
     conf_adj: float = 0.0                # rules 1 and 2 accumulate here
     notes: List[str] = field(default_factory=list)
@@ -290,8 +292,7 @@ def merge_starts(near: Sequence[Event], far: Sequence[Event],
     cands = [PointStart(t=float(e.t), side="near", p=float(e.p), track=e.track)
              for e in near if e.p >= cfg.near_threshold]
     cands += [PointStart(t=float(e.t), side="far", p=float(e.p), track=e.track,
-                         toss_pose=e.detail.get("toss"),
-                         toss_ball=e.detail.get("toss_ball"))
+                         toss_pose=e.detail.get("toss"))
               for e in far if e.p >= cfg.far_threshold]
     cands.sort(key=lambda c: c.t)
 
@@ -329,16 +330,10 @@ def drop_rapid_repeats(starts: List[PointStart], cfg: ReelConfig) -> List[PointS
 def apply_toss_rule(starts: List[PointStart], cfg: ReelConfig) -> List[PointStart]:
     """RULE 1 -- adjust a far serve's confidence by its toss evidence.
 
-    Two readings, combined into one [0, 1] `toss` before it is applied:
-
-      pose  `far_serve`'s toss score, always present.
-      ball  a ball arc seen above the far player's head within
-            +/- `ball_toss_window_s`, present only when the ball pass ran.
-
-    When both exist they are blended by `ball_toss_weight`; when only the pose
-    reading exists it carries the rule alone.  The result shifts confidence
-    within [-rule1_max_penalty, +rule1_max_boost] and never removes a start --
-    see the config for why the bound is asymmetric.
+    Pose evidence only -- `far_serve`'s toss score.  The result shifts confidence
+    within [-rule1_max_penalty, +rule1_max_boost] and never removes a start; see
+    the config for why the bound is asymmetric, and for why the ball half of
+    this was measured and removed.
     """
     if not cfg.rule1_enabled:
         return starts
@@ -346,9 +341,6 @@ def apply_toss_rule(starts: List[PointStart], cfg: ReelConfig) -> List[PointStar
         if ps.side == "near" or ps.toss_pose is None:
             continue
         t = float(ps.toss_pose)
-        if ps.toss_ball is not None:
-            t = ((1.0 - cfg.ball_toss_weight) * t
-                 + cfg.ball_toss_weight * float(ps.toss_ball))
         # -1 (no toss seen) .. +1 (clearly a toss)
         u = 2.0 * float(np.clip((t - cfg.toss_pose_lo)
                                 / max(cfg.toss_pose_hi - cfg.toss_pose_lo, 1e-6),
