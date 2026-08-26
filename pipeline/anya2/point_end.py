@@ -238,7 +238,8 @@ LIVE_LO = 0.35            # ...and leave it below this
 LIVE_MIN_S = 2.0          # ignore live runs shorter than this
 
 
-def live_score(parts: Dict[str, np.ndarray], video, tracks_npz=None) -> np.ndarray:
+def live_score(parts: Dict[str, np.ndarray], video, tracks_npz=None,
+               smooth_s: Optional[float] = None) -> np.ndarray:
     """Normalised [0, ~1] score for "a point is in play"."""
     fps = float(parts["fps"])
     n = len(parts["union"])
@@ -248,7 +249,7 @@ def live_score(parts: Dict[str, np.ndarray], video, tracks_npz=None) -> np.ndarr
         near = np.nan_to_num(np.nanmax(act[list(T.NEAR_SLOTS)], axis=0), nan=0.0)
         far = np.nan_to_num(np.nanmax(act[list(T.FAR_SLOTS)], axis=0), nan=0.0)
     raw = np.fmax(near, far) * (1.0 - parts["union"])
-    w = max(1, int(round(LIVE_SMOOTH_S * fps)))
+    w = max(1, int(round((LIVE_SMOOTH_S if smooth_s is None else float(smooth_s)) * fps)))
     sm = np.convolve(raw, np.ones(w) / w, mode="same")
     return sm / max(np.percentile(sm, LIVE_SCALE_PCT), 1e-6)
 
@@ -295,10 +296,14 @@ def detect_ends(parts: Dict[str, np.ndarray], live: np.ndarray,
 
 
 def detect_video(video, tracks_npz=None, hi: float = LIVE_HI,
-                 verbose: bool = True) -> List[Event]:
+                 verbose: bool = True, lo: Optional[float] = None,
+                 smooth_s: Optional[float] = None,
+                 min_live_s: Optional[float] = None) -> List[Event]:
     parts = end_signal(video, tracks_npz)
-    live = live_score(parts, video, tracks_npz)
-    ev = detect_ends(parts, live, hi)
+    live = live_score(parts, video, tracks_npz, smooth_s=smooth_s)
+    ev = detect_ends(parts, live, hi,
+                     LIVE_LO if lo is None else float(lo),
+                     LIVE_MIN_S if min_live_s is None else float(min_live_s))
     if verbose:
         print(f"[point-end] {len(ev)} ends (falling edges of the live score)")
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=POINT_END, track=None,

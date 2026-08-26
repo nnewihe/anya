@@ -171,6 +171,14 @@ class ReelConfig:
     far_threshold: float = 0.0       # exist so a caller can be stricter
     end_threshold: float = 0.0
 
+    # Which streams to read AT ALL.  A disabled agent must not contribute, and
+    # that cannot be left to simply not regenerating its file: the events are
+    # cached beside the video, so a stale run would silently keep feeding the
+    # reel after the agent was switched off.
+    use_near: bool = True
+    use_far: bool = True
+    use_end: bool = True
+
     # ── in-rally suppression ─────────────────────────────────────────────
     # A serve struck while a point is already live is spurious, and agent 3
     # already computes the signal that says so.  Measured over the corpus, the
@@ -672,9 +680,9 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
             return []
         return [e for e in load_events(p) if e.kind == kind]
 
-    near = _load("_anya2_near_serve.json", NEAR_SERVE)
-    far = _load("_anya2_far_serve.json", FAR_SERVE)
-    ends = _load("_anya2_point_end.json", POINT_END)
+    near = _load("_anya2_near_serve.json", NEAR_SERVE) if cfg.use_near else []
+    far = _load("_anya2_far_serve.json", FAR_SERVE) if cfg.use_far else []
+    ends = _load("_anya2_point_end.json", POINT_END) if cfg.use_end else []
 
     duration = None
     try:

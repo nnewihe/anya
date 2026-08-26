@@ -17,9 +17,36 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
-from pipeline.rally_reel import ReelConfig, build_reel
-from pipeline.rally_reel.reel import ANALYSIS_SIZE
-from pipeline.utilities import init_court, probe_video
+# ── which detection engine ───────────────────────────────────────────────
+# anya2 is the primary path: three independent detectors (near serve, far
+# serve, point end) on a shared player-tracking substrate, assembled by an
+# orchestrator that applies tennis structure.  It is scored against
+# ground_truth.json over 13 clips -- see pipeline/anya2/README.md.
+#
+# The legacy `rally_reel` remains selectable because it is what shipped, and
+# because anya2 is newer inside the app than it is on the command line.  Set
+# ANYA_ENGINE=legacy to fall back; nothing else changes.
+#
+# Both expose the same call:
+#     build_reel(video, output_path=..., cfg=..., on_progress=cb) -> (segments, out)
+# and the same one-time, main-thread court calibration.
+import os as _os
+
+ENGINE = _os.environ.get("ANYA_ENGINE", "anya2").strip().lower()
+
+if ENGINE == "legacy":
+    from pipeline.rally_reel import ReelConfig as EngineConfig, build_reel
+    from pipeline.rally_reel.reel import ANALYSIS_SIZE
+    from pipeline.utilities import init_court as _ensure_court
+
+    def ensure_court(video):
+        _ensure_court(video, analysis_size=ANALYSIS_SIZE)
+else:
+    from pipeline.anya2.config import Anya2Config as EngineConfig
+    from pipeline.anya2.run import build_reel, ensure_court
+    from pipeline.anya2.court import ANALYSIS_SIZE
+
+from pipeline.utilities import probe_video
 
 from applog import log_path, logger
 from background import SleepBlocker, notify
@@ -28,7 +55,7 @@ from theme import BLACK, YELLOW, WHITE, ghost_btn_css, primary_btn_css, label_cs
 
 
 class _Worker(QThread):
-    """Runs pipeline.rally_reel off the GUI thread.
+    """Runs the detection engine off the GUI thread (see ENGINE).
 
     `stage` carries rally_reel's own stage reporting straight through, so the
     UI never has to know the stage list — add or reorder a stage in the
@@ -51,7 +78,7 @@ class _Worker(QThread):
         super().__init__()
         self.video_path  = video_path
         self.output_path = output_path
-        self.cfg         = cfg or ReelConfig()
+        self.cfg         = cfg or EngineConfig()
         self._stopped    = False
 
     def run(self):
@@ -92,7 +119,7 @@ class HighlightReelTab(QWidget):
         super().__init__()
         self._worker      = None
         self._output_path = ""
-        self._cfg         = ReelConfig()
+        self._cfg         = EngineConfig()
         self._sleep_blocker = SleepBlocker()
         self._setup_ui()
 
@@ -252,7 +279,7 @@ class HighlightReelTab(QWidget):
         # returns instantly with no window.
         try:
             self._set_status("Court calibration…")
-            init_court(video, analysis_size=ANALYSIS_SIZE)
+            ensure_court(video)
         except Exception as ex:
             self._set_status(f"Calibration cancelled: {ex}", error=True)
             return

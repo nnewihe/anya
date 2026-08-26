@@ -401,7 +401,10 @@ def toss_score(prim: Dict[str, np.ndarray], k: int, toss_left: bool) -> Dict:
 
 def detect_serves(prim, threshold: float = THRESHOLD,
                   require_court: bool = True,
-                  track: Optional[int] = None) -> List[Dict]:
+                  track: Optional[int] = None,
+                  lead_s: Optional[float] = None,
+                  refract_s: Optional[float] = None,
+                  w_still: Optional[float] = None) -> List[Dict]:
     """Sequence-match ready -> trophy -> swing, as `near_serve.detect_serves`."""
     fps = float(prim["fps"])
     trophy, ready = prim["trophy"], prim["ready"]
@@ -455,11 +458,12 @@ def detect_serves(prim, threshold: float = THRESHOLD,
 
         shape = (W_TROPHY * s_trophy + W_READY * s_ready) / (W_TROPHY + W_READY)
         p = shape * (SWING_FLOOR + (1.0 - SWING_FLOOR) * s_swing)
-        p *= (1.0 - W_STILL) + W_STILL * s_still
+        ws = W_STILL if w_still is None else float(w_still)
+        p *= (1.0 - ws) + ws * s_still
         if p < threshold:
             continue
         out.append({
-            "t": lo / fps - SERVE_LEAD_S,
+            "t": lo / fps - (SERVE_LEAD_S if lead_s is None else float(lead_s)),
             "p": round(p, 4),
             "trophy": round(s_trophy, 4), "swing": round(s_swing, 4),
             "ready": round(s_ready, 4), "still": round(s_still, 4),
@@ -468,11 +472,14 @@ def detect_serves(prim, threshold: float = THRESHOLD,
             "t_contact": round(t_contact, 3) if t_contact is not None else None,
             "track": track,
         })
-    return S.refractory(out, REFRACT_S)
+    return S.refractory(out, REFRACT_S if refract_s is None else float(refract_s))
 
 
 def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
-                 require_court: bool = True, verbose: bool = True):
+                 require_court: bool = True, verbose: bool = True,
+                 lead_s: Optional[float] = None,
+                 refract_s: Optional[float] = None,
+                 w_still: Optional[float] = None):
     """Score every far slot; the server is whichever produced the candidate."""
     z = T.load(video, tracks_npz)
     fps = float(z["fps"])
@@ -487,14 +494,15 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
             continue
         prim = serve_primitives(kp[:, slot], bbox[:, slot], fps,
                                 eligible=el[:, slot])
-        ev = detect_serves(prim, threshold, require_court, track=int(slot))
+        ev = detect_serves(prim, threshold, require_court, track=int(slot),
+                           lead_s=lead_s, refract_s=refract_s, w_still=w_still)
         if verbose:
             print(f"[far-serve] slot {slot}: tracked {100 * seen.mean():5.1f}%"
                   f"  sane boxes {100 * np.mean(prim['valid']):5.1f}%"
                   f"  -> {len(ev)} candidates")
         raw.extend(ev)
 
-    kept = S.refractory(raw, REFRACT_S)
+    kept = S.refractory(raw, REFRACT_S if refract_s is None else float(refract_s))
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=FAR_SERVE,
                   track=e["track"],
                   detail={k: e[k] for k in ("trophy", "swing", "ready",

@@ -490,7 +490,8 @@ def serve_primitives(kp, bbox, fps: float,
     }
 
 
-def serve_onset(prim: Dict[str, np.ndarray], k: int) -> tuple:
+def serve_onset(prim: Dict[str, np.ndarray], k: int,
+                lead_s: Optional[float] = None) -> tuple:
     """Point-start time for a trophy peaking at sample `k`, and how it was found.
 
     Returns (t_seconds, basis) with basis "together" or "trophy" -- the basis is
@@ -501,9 +502,13 @@ def serve_onset(prim: Dict[str, np.ndarray], k: int) -> tuple:
     gap = np.nan_to_num(prim["gap_bh"], nan=np.inf)
     a = max(0, k - int(round(TOGETHER_BACK_S * fps)))
     idx = np.flatnonzero(gap[a:k] <= TOGETHER_BH)
+    lead = SERVE_LEAD_S if lead_s is None else float(lead_s)
+    # The trophy fallback keeps its offset RELATIVE to the hands-together lead,
+    # so overriding one moves both onto the same convention.
+    tro_lead = lead + (TROPHY_LEAD_S - SERVE_LEAD_S)
     if idx.size:
-        return (a + int(idx[-1])) / fps - SERVE_LEAD_S, "together"
-    return k / fps - TROPHY_LEAD_S, "trophy"
+        return (a + int(idx[-1])) / fps - lead, "together"
+    return k / fps - tro_lead, "trophy"
 
 
 def _runs(mask: np.ndarray) -> List[tuple]:
@@ -524,7 +529,9 @@ def _runs(mask: np.ndarray) -> List[tuple]:
 def detect_serves(prim: Dict[str, np.ndarray],
                   threshold: float = THRESHOLD,
                   require_court: bool = True,
-                  track: Optional[int] = None) -> List[Dict]:
+                  track: Optional[int] = None,
+                  lead_s: Optional[float] = None,
+                  refract_s: Optional[float] = None) -> List[Dict]:
     """Sequence-match ready -> trophy -> swing over the primitives.
 
     Each trophy run is one candidate.  The run's peak sample fixes the trophy
@@ -583,7 +590,7 @@ def detect_serves(prim: Dict[str, np.ndarray],
         p = shape * (SWING_FLOOR + (1.0 - SWING_FLOOR) * s_swing)
         if p < threshold:
             continue
-        t_start, basis = serve_onset(prim, k)
+        t_start, basis = serve_onset(prim, k, lead_s=lead_s)
         out.append({
             "t": t_start,                     # POINT START: see SERVE_LEAD_S
             "t_basis": basis,
@@ -601,10 +608,11 @@ def detect_serves(prim: Dict[str, np.ndarray],
     # one trophy run, but a double fault produces two serves 15-25 s apart and
     # both are real point starts, so this only suppresses the immediate
     # re-detection of a single action, never a second serve.
+    gap = REFRACT_S if refract_s is None else float(refract_s)
     out.sort(key=lambda e: (-e["p"], e["t"]))
     kept: List[Dict] = []
     for e in out:
-        if all(abs(e["t"] - k["t"]) >= REFRACT_S for k in kept):
+        if all(abs(e["t"] - k["t"]) >= gap for k in kept):
             kept.append(e)
     kept.sort(key=lambda e: e["t"])
     return kept
@@ -642,7 +650,9 @@ def events_path(video, suffix=EVENTS_SUFFIX):
 
 
 def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
-                 require_court: bool = True, verbose: bool = True):
+                 require_court: bool = True, verbose: bool = True,
+                 lead_s: Optional[float] = None,
+                 refract_s: Optional[float] = None):
     """Score every near slot and return the serves, as contract `Event`s.
 
     DOUBLES IS WHY THIS IS A LOOP.  Each near slot is scored independently and
@@ -671,7 +681,8 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
                                 court_y=ct[:, slot, 1],
                                 eligible=el[:, slot])
         ev = detect_serves(prim, threshold=threshold,
-                           require_court=require_court, track=int(slot))
+                           require_court=require_court, track=int(slot),
+                           lead_s=lead_s, refract_s=refract_s)
         if verbose:
             print(f"[near-serve] slot {slot}: tracked {100 * seen.mean():5.1f}%"
                   f"  eligible {100 * el[:, slot][seen].mean():5.1f}%"
@@ -684,10 +695,11 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
     # and a partner's raised arm can produce a weak candidate alongside the
     # server's real one.  Keeping the STRONGER is the same arbitration used
     # within a slot, and it is what decides WHO SERVED in doubles.
+    gap = REFRACT_S if refract_s is None else float(refract_s)
     raw.sort(key=lambda e: (-e["p"], e["t"]))
     kept: List[Dict] = []
     for e in raw:
-        if all(abs(e["t"] - k["t"]) >= REFRACT_S for k in kept):
+        if all(abs(e["t"] - k["t"]) >= gap for k in kept):
             kept.append(e)
     kept.sort(key=lambda e: e["t"])
 
