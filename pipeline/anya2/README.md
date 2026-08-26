@@ -489,6 +489,76 @@ service run, and raising `min_service_run` to 4 or 5 — **neither changed clip 
 at all**, because the phantoms cluster into runs of 2–3 that any game-length
 minimum accepts as legitimate.
 
+## Toss evidence, and two confidence rules (2026-08-25)
+
+### The pose toss score (far_serve.toss_score)
+
+A **separate** score, never folded into the serve `p`, so the orchestrator can
+arbitrate. Read from the tossing arm only: the wrist started low, is offset
+laterally at the top, is held above head height, and how far above it reaches —
+four ramps, averaged.
+
+| | AUC vs far false positives |
+|---|---|
+| each component alone | 64–66% |
+| **the mean of the four** | **75%** |
+| correlation with the serve score `p` | **+0.04** |
+
+That last row is the point: it is independent evidence, not a restatement of the
+trophy. Two findings worth keeping — the toss arm is **not** vertical (true
+serves have a *larger* lateral offset, 0.148 vs 0.090 bh, because the ball goes
+up and forward across the body), and the four components must be **averaged, not
+multiplied** (the product scores the same AUC but is degenerate, costing 53% of
+true serves to cut 88% of false ones).
+
+### The ball toss tracker — built, measured, not shipped
+
+An ROI above the far player's shoulder, −0.2 s to +1.0 s around each far
+detection, ball model at high imgsz on the native-resolution crop. **It does not
+work at far-court range**, and the numbers say so plainly:
+
+| setting | true serves with ≥2 ball detections | false positives |
+|---|---|---|
+| imgsz 960, conf 0.05 | 25% | 22% |
+| imgsz 960, conf 0.02 | **42%** | 33% |
+| imgsz 1280, conf 0.02 | 25% | **44% — inverted** |
+
+Median detections per sequence is 0–0.5: the ball simply is not found. The best
+setting separates by 9 points on 12 true and 9 false sequences, and another
+setting reverses the sign — the signature of noise, not signal. A toss ball at
+that distance is a few pixels against a bright sky or a busy fence.
+
+**The plumbing is kept and the pass is not run.** `PointStart.toss_ball` and
+`ball_toss_weight` exist, so if a better ball model or a closer camera ever makes
+this viable it blends in without restructuring; with no ball reading the pose
+toss carries rule 1 alone. The pose score already does the job the ball was meant
+to do.
+
+### Rule 1 — toss evidence adjusts far confidence
+### Rule 2 — a far serve among near serves is suspect
+
+Both **adjust confidence, never delete**. A hard gate on toss below 0.40 removes
+54% of false positives but 18% of true serves, and the brief is precision without
+giving up recall. Rule 2 fires when ≥3 of a far candidate's 4 neighbouring starts
+are near-side — measured to flag 18% of remaining far false positives at **zero**
+true-serve cost, where the 2-of-4 setting starts costing 7%.
+
+Rule 1's bound is asymmetric (+0.15 boost, −0.35 penalty): seeing a toss is
+strong evidence *for* a serve, while not seeing one is weak evidence against,
+since the arm may be occluded. Both run **before** the service-run DP, because
+rule 2 reads the sides as detected and the DP would otherwise have overwritten
+them.
+
+**Effect on far starts leaving the orchestrator** (87 matched, 33 unmatched):
+
+| | TP median | FP median | AUC |
+|---|---|---|---|
+| raw `p` | 0.97 | 0.94 | 64% |
+| **adjusted_p** | **1.00** | **0.68** | **74%** |
+
+A consumer thresholding `adjusted_p ≥ 0.70` keeps 80% of true far serves and 45%
+of false ones — where raw `p` could barely tell them apart.
+
 ## Agent 4 — the orchestrator
 
 Takes the three event streams and produces the reel. It detects nothing; it

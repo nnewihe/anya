@@ -193,6 +193,50 @@ class ReelConfig:
     recover_live_thr: float = 0.75   # live score above which play is clearly on
     recover_min_s: float = 3.0       # ...held this long to count as a point
 
+    # ── rule 1: toss evidence adjusts a far serve's confidence ───────────
+    # Two independent readings of the same event, neither of which the far
+    # detector folds into its own score:
+    #
+    #   POSE TOSS   `far_serve.toss_score` -- the tossing arm's own motion.
+    #               AUC 75% against far false positives, and correlated only
+    #               +0.04 with the serve score, so it is genuinely new evidence.
+    #   BALL TOSS   a ball seen arcing in the region above the far player's
+    #               head, within +/- BALL_TOSS_WINDOW_S of the detection.
+    #
+    # They ADJUST confidence rather than filter.  A hard gate on either one
+    # costs real serves (dropping pose-toss below 0.40 removes 54% of false
+    # positives but 18% of true ones), and the brief is precision WITHOUT
+    # giving up recall -- so a weak toss reading demotes a candidate and lets
+    # the rest of the pipeline decide, instead of deleting it outright.
+    rule1_enabled: bool = True
+    toss_pose_lo: float = 0.30       # pose-toss at or below this is unsupportive
+    toss_pose_hi: float = 0.60       # ...and at or above it, corroborating
+    rule1_max_boost: float = 0.15    # most a strong toss may add
+    rule1_max_penalty: float = 0.35  # ...and most a missing one may subtract.
+                                     # Asymmetric on purpose: seeing a toss is
+                                     # strong evidence FOR a serve, while not
+                                     # seeing one is weak evidence against --
+                                     # the ball is a few pixels at that range
+                                     # and the arm may be occluded.
+    ball_toss_window_s: float = 1.5  # the user's bound on ball-arc evidence
+    ball_toss_weight: float = 0.5    # share of rule 1 carried by the ball when
+                                     # a ball reading exists at all
+
+    # ── rule 2: a far serve among near serves is suspect ─────────────────
+    # Measured over the corpus: requiring 3 of a far candidate's 4 nearest
+    # neighbouring starts to be NEAR-side flags 18% of the remaining far false
+    # positives and ZERO true far serves.  At 2 of 4 it reaches 27% of false
+    # positives but starts costing 7% of true ones.
+    #
+    # So the 3-of-4 setting is free, and this too adjusts rather than deletes:
+    # one player does serve a whole game, but detections are missed, and a real
+    # far game whose first serves were not detected would look exactly like
+    # this.  Demoting is recoverable; deleting is not.
+    rule2_enabled: bool = True
+    rule2_neighbours: int = 4        # how many surrounding starts to look at
+    rule2_min_near: int = 3          # ...of which this many must be near-side
+    rule2_penalty: float = 0.30
+
 
 @dataclass
 class PointStart:
@@ -203,6 +247,16 @@ class PointStart:
     detected_side: str = ""
     side_conflict: bool = False
     court_x: Optional[float] = None
+    toss_pose: Optional[float] = None    # far_serve's pose toss score
+    toss_ball: Optional[float] = None    # ball-arc evidence, when available
+    toss_combined: Optional[float] = None
+    conf_adj: float = 0.0                # rules 1 and 2 accumulate here
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def adjusted_p(self) -> float:
+        """Confidence after the orchestrator's rules, clipped to [0, 1]."""
+        return float(min(1.0, max(0.0, self.p + self.conf_adj)))
 
 
 @dataclass
@@ -235,7 +289,9 @@ def merge_starts(near: Sequence[Event], far: Sequence[Event],
     """
     cands = [PointStart(t=float(e.t), side="near", p=float(e.p), track=e.track)
              for e in near if e.p >= cfg.near_threshold]
-    cands += [PointStart(t=float(e.t), side="far", p=float(e.p), track=e.track)
+    cands += [PointStart(t=float(e.t), side="far", p=float(e.p), track=e.track,
+                         toss_pose=e.detail.get("toss"),
+                         toss_ball=e.detail.get("toss_ball"))
               for e in far if e.p >= cfg.far_threshold]
     cands.sort(key=lambda c: c.t)
 
@@ -268,6 +324,66 @@ def drop_rapid_repeats(starts: List[PointStart], cfg: ReelConfig) -> List[PointS
             continue
         out.append(s)
     return out
+
+
+def apply_toss_rule(starts: List[PointStart], cfg: ReelConfig) -> List[PointStart]:
+    """RULE 1 -- adjust a far serve's confidence by its toss evidence.
+
+    Two readings, combined into one [0, 1] `toss` before it is applied:
+
+      pose  `far_serve`'s toss score, always present.
+      ball  a ball arc seen above the far player's head within
+            +/- `ball_toss_window_s`, present only when the ball pass ran.
+
+    When both exist they are blended by `ball_toss_weight`; when only the pose
+    reading exists it carries the rule alone.  The result shifts confidence
+    within [-rule1_max_penalty, +rule1_max_boost] and never removes a start --
+    see the config for why the bound is asymmetric.
+    """
+    if not cfg.rule1_enabled:
+        return starts
+    for ps in starts:
+        if ps.side == "near" or ps.toss_pose is None:
+            continue
+        t = float(ps.toss_pose)
+        if ps.toss_ball is not None:
+            t = ((1.0 - cfg.ball_toss_weight) * t
+                 + cfg.ball_toss_weight * float(ps.toss_ball))
+        # -1 (no toss seen) .. +1 (clearly a toss)
+        u = 2.0 * float(np.clip((t - cfg.toss_pose_lo)
+                                / max(cfg.toss_pose_hi - cfg.toss_pose_lo, 1e-6),
+                                0.0, 1.0)) - 1.0
+        adj = (cfg.rule1_max_boost * u if u >= 0
+               else cfg.rule1_max_penalty * u)
+        ps.toss_combined = round(t, 4)
+        ps.conf_adj += adj
+        ps.notes.append(f"toss {t:.2f} -> {adj:+.2f}")
+    return starts
+
+
+def apply_neighbour_rule(starts: List[PointStart], cfg: ReelConfig) -> List[PointStart]:
+    """RULE 2 -- a far serve surrounded by near serves is suspect.
+
+    Uses the sides AS DETECTED, before the service-run DP relabels anything:
+    the DP's own output would make this circular, since it has already decided
+    the run each start belongs to.
+    """
+    if not cfg.rule2_enabled or len(starts) < 3:
+        return starts
+    k = max(1, cfg.rule2_neighbours // 2)
+    for i, ps in enumerate(starts):
+        if ps.side != "far":
+            continue
+        nb = [starts[j].side for j in range(max(0, i - k), min(len(starts), i + k + 1))
+              if j != i]
+        if not nb:
+            continue
+        n_near = sum(1 for x in nb if x == "near")
+        if n_near >= cfg.rule2_min_near:
+            ps.conf_adj -= cfg.rule2_penalty
+            ps.notes.append(f"far serve among {n_near}/{len(nb)} near neighbours "
+                            f"-> -{cfg.rule2_penalty:.2f}")
+    return starts
 
 
 # ── 2. service runs ──────────────────────────────────────────────────────
@@ -590,6 +706,10 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     n_inrally = n_merged - len(starts)
     starts = drop_rapid_repeats(starts, cfg)
     n_rapid = n_merged - n_inrally - len(starts)
+    # Rules 1 and 2 run BEFORE the service-run DP: rule 2 reads the sides as
+    # detected, and the DP would otherwise have already overwritten them.
+    starts = apply_toss_rule(starts, cfg)
+    starts = apply_neighbour_rule(starts, cfg)
     starts = enforce_service_runs(starts, cfg)
     starts = annotate_serve_court(starts, video, tracks_npz)
     segs = pair_ends(starts, ends, cfg, duration)
@@ -607,8 +727,19 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     total = sum(s.duration for s in segs)
     flips = sum(1 for s in segs if any("same-court" in n for n in s.notes))
     conflicts = sum(1 for p in starts if p.side_conflict)
+    rule1 = sum(1 for p_ in starts if p_.toss_combined is not None)
+    rule2 = sum(1 for p_ in starts
+                if any("near neighbours" in n for n in p_.notes))
+    demoted = sum(1 for p_ in starts if p_.conf_adj < -0.01)
     res = {
         "video": video, "duration_s": duration,
+        "n_rule1_toss_adjusted": rule1,
+        "n_rule2_neighbour_penalised": rule2,
+        "n_confidence_demoted": demoted,
+        "starts": [{"t": round(p_.t, 2), "side": p_.side, "p": round(p_.p, 3),
+                    "adjusted_p": round(p_.adjusted_p, 3),
+                    "toss": p_.toss_combined, "notes": p_.notes}
+                   for p_ in starts],
         "n_near": len(near), "n_far": len(far), "n_ends": len(ends),
         "n_starts_merged": n_merged, "n_rapid_repeats_dropped": n_rapid,
         "n_dropped_in_rally": n_inrally,
