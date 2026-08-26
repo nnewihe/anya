@@ -5,7 +5,36 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.10"
+APP_VERSION = "0.1.0-beta.11"
+# beta.11 — anya2 is now the app's detection engine (three independent
+# detectors -- near serve, far serve, point end -- on a shared player-tracking
+# substrate, assembled by an orchestrator; see pipeline/anya2/README.md).
+# ANYA_ENGINE=legacy still selects the previous pipeline.rally_reel path.
+#   Every file a run creates -- court/exclusion calibration, pose detections,
+#   player tracks, each detector's events, the reel JSON, and the scratch
+#   segments a cut passes through -- now goes into a tmp_anya folder beside
+#   the input video instead of littering that folder directly. A new
+#   checkbox on the Highlight Reel page ("Keep calibration and interim files
+#   after processing") controls whether tmp_anya survives the run; UNCHECKED
+#   is the default, so a normal render leaves nothing behind but the video.
+#   Checking it keeps the folder for a bug report or for reuse on a rerun of
+#   the same video. pipeline/workdir.py is the mechanism: a single
+#   process-wide override that every artifact-path function in pipeline/,
+#   pipeline/anya2/ and walking/ now consults, falling back to today's
+#   beside-the-video placement when unset -- which is always, for every
+#   CLI and scoring script, so the corpus under /Volumes/Anya/Data is
+#   unaffected.
+#   Each of the three detectors and the orchestrator can now be tuned
+#   independently through pipeline.anya2.config.Anya2Config (thresholds,
+#   label leads, refractory windows, the far detector's stillness weight,
+#   the point-end detector's hysteresis) without editing their modules.
+#   Also fixes a real leak found while building this: run.py's cutter left
+#   a system temp directory of encoded segments behind after every single
+#   render; it now writes into tmp_anya when one is active and self-cleans
+#   exactly as the legacy cutter already did otherwise.
+#   Includes the near_end import fix shipped separately (beta.10 was never
+#   released with anya2 as an option; this is the first release where it is
+#   the default, so that fix is folded in here).
 # beta.10 — a Windows run could analyse the first second of a match, report
 # success, and hand back an empty reel.  Two independent causes, both fixed.
 #   (1) The Windows build bundled no ffmpeg, so proxy.py fell back to the

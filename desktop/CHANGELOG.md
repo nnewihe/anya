@@ -8,6 +8,21 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.1.0-beta.11
+
+- **A new detection engine.** The app now uses anya2, a rebuilt detector
+  that finds near-side serves, far-side serves, and point ends
+  independently and then assembles them into the reel, rather than one
+  combined pass. In testing it matches or beats the previous engine on
+  every one of those, most clearly on point ends.
+- **Nothing extra left behind.** Every working file a run creates —
+  court setup, detection data, and everything in between — now goes into
+  a `tmp_anya` folder next to your video instead of scattering files
+  alongside it. A new checkbox on the Highlight Reel page, unchecked by
+  default, lets you keep that folder if you want to inspect it or reuse
+  it on a rerun; otherwise it's cleaned up automatically once the video
+  is done, whether the run succeeds or fails.
+
 ## 0.1.0-beta.10
 
 - **Fixes a Windows run that quietly analysed only the first second of a

@@ -134,6 +134,11 @@ except ImportError:                         # script import (python pipeline/x.p
                            assert_decode_complete, open_video)
     from proxy import ensure_proxy, ensure_crop_proxy, FAR_BAND_SUFFIX
     from extract_far_pose import FAR_POSE_VERSION, N_KP, far_pose_path_for
+try:
+    from . import workdir as _workdir
+except ImportError:
+    import workdir as _workdir
+
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -210,7 +215,7 @@ class FarExtractorConfig:
 
 
 def far_telemetry_path_for(video_path: str) -> str:
-    d = os.path.dirname(os.path.abspath(video_path))
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{FAR_TELEMETRY_SUFFIX}")
 

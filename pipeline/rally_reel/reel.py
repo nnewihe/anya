@@ -82,7 +82,8 @@ def _emit(on_progress, stage: int, frac: Optional[float] = None):
 
 
 def _stem_path(video_path: str, suffix: str) -> str:
-    d = os.path.dirname(os.path.abspath(video_path))
+    from ..workdir import artifact_dir
+    d = artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{suffix}")
 

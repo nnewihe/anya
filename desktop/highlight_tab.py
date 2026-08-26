@@ -7,6 +7,7 @@ QTabWidget alongside scoreboard_tab.ScoreboardTab. Behavior is unchanged.
 """
 
 import os
+import shutil
 import sys
 import subprocess
 from pathlib import Path
@@ -14,7 +15,9 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QProgressBar, QLineEdit, QFrame,
+    QCheckBox,
 )
+from pipeline import workdir as _workdir
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 # ── which detection engine ───────────────────────────────────────────────
@@ -121,6 +124,10 @@ class HighlightReelTab(QWidget):
         self._output_path = ""
         self._cfg         = EngineConfig()
         self._sleep_blocker = SleepBlocker()
+        # The tmp_anya directory for the run IN PROGRESS (or just finished) --
+        # set in _on_detect, used by _cleanup_tmp_anya to know what to remove.
+        # None outside of a run.
+        self._tmp_anya = None
         self._setup_ui()
 
     # ── UI construction ────────────────────────────────────────────────────
@@ -135,6 +142,19 @@ class HighlightReelTab(QWidget):
 
         lay.addWidget(self._label("OUTPUT VIDEO  (auto-generated if blank)"))
         lay.addLayout(self._file_row("output"))
+
+        # Every calibration/detection file this run produces goes into a
+        # tmp_anya folder beside the input video (see pipeline.workdir) --
+        # unchecked (discard) by default, since a tester who never needs to
+        # look at them shouldn't accumulate gigabytes of npz/json per video.
+        # Checking it is for diagnosing a bad reel: the cached detections and
+        # the court/exclusion calibration survive for inspection or reuse.
+        self._keep_files_checkbox = QCheckBox(
+            "Keep calibration and interim files after processing")
+        self._keep_files_checkbox.setChecked(False)
+        self._keep_files_checkbox.setStyleSheet(
+            "color: rgba(255,255,255,0.7); font-size: 12px;")
+        lay.addWidget(self._keep_files_checkbox)
 
         lay.addStretch()
 
@@ -273,15 +293,22 @@ class HighlightReelTab(QWidget):
             output = str(Path(video).parent / f"{Path(video).stem}_rally_reel.mp4")
         self._output_path = output
 
-        # One-time court calibration.  init_court opens a cv2 window, which
-        # must run on the MAIN thread — do it here (it caches to disk, so
-        # build_reel's stage-0 call is windowless).  A cached calibration
-        # returns instantly with no window.
+        # Every file this run creates -- court/exclusion calibration, pose
+        # detections, tracks, each detector's events, the reel JSON, and the
+        # scratch segments the cut passes through -- goes into tmp_anya beside
+        # the input, reused across runs on the same video if it is still
+        # there (a prior run only leaves it behind when "keep files" was
+        # checked) and created fresh otherwise.  set_work_dir must be called
+        # on the MAIN thread, and before calibration, because init_court
+        # writes the court cache into it too.
+        self._tmp_anya = str(Path(video).parent / "tmp_anya")
         try:
+            _workdir.set_work_dir(self._tmp_anya)
             self._set_status("Court calibration…")
             ensure_court(video)
         except Exception as ex:
-            self._set_status(f"Calibration cancelled: {ex}", error=True)
+            self._set_status(f"Setup failed: {ex}", error=True)
+            _workdir.clear_work_dir()
             return
 
         self._result_panel.setVisible(False)
@@ -328,6 +355,17 @@ class HighlightReelTab(QWidget):
             self._progress.setValue(max(0, pct))
             self._set_status(f"Stage {i}/{n} — {label}  {frac:.0%}")
 
+    def _cleanup_tmp_anya(self):
+        """Honor the checkbox: discard tmp_anya unless the tester asked to
+        keep it. Called after EVERY terminal state -- success or failure --
+        so a crash mid-run does not leave the override pointed at a directory
+        that is about to be deleted out from under the next run.
+        """
+        _workdir.clear_work_dir()
+        d, self._tmp_anya = self._tmp_anya, None
+        if d and not self._keep_files_checkbox.isChecked():
+            shutil.rmtree(d, ignore_errors=True)
+
     def _on_finished(self, output_path, n_segments):
         # NOT `self._worker = None` — render_done is emitted from inside run(),
         # so the OS thread is usually still alive when this slot runs and
@@ -335,6 +373,7 @@ class HighlightReelTab(QWidget):
         # "QThread: Destroyed while thread is still running", qFatal, SIGABRT.
         # The app died right at the moment the reel completed. See
         # _release_worker.
+        self._cleanup_tmp_anya()
         self._sleep_blocker.stop()
         self._estimate.setVisible(False)
         self._progress.setValue(100)
@@ -352,6 +391,7 @@ class HighlightReelTab(QWidget):
 
     def _on_error(self, msg):
         # See _on_finished: the handle is released on `finished`, not here.
+        self._cleanup_tmp_anya()
         self._sleep_blocker.stop()
         self._estimate.setVisible(False)
         self._progress.setValue(0)

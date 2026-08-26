@@ -83,6 +83,11 @@ except ImportError:                         # script import (python pipeline/x.p
                            assert_decode_complete, open_video)
     from proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from proxy import ensure_proxy as _ensure_proxy
+try:
+    from . import workdir as _workdir
+except ImportError:
+    import workdir as _workdir
+
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -148,7 +153,7 @@ class NearExtractorConfig:
 
 
 def near_telemetry_path_for(video_path: str) -> str:
-    d = os.path.dirname(os.path.abspath(video_path))
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{NEAR_TELEMETRY_SUFFIX}")
 

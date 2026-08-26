@@ -41,6 +41,7 @@ from walking.court import ANALYSIS_SIZE
 # let the two drift. videoio is dependency-free (cv2 + stdlib), so it costs
 # nothing at import time.
 from pipeline.videoio import open_video
+from pipeline import workdir as _workdir
 
 N_KP = 17
 MAX_PERSONS = 8
@@ -74,7 +75,7 @@ BATCH = 16
 
 
 def dets_path(video_path):
-    d = os.path.dirname(video_path)
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}_walk_dets.npz")
 

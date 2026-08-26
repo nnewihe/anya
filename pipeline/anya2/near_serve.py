@@ -96,6 +96,7 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from pipeline import workdir as WD
 
 # COCO indices, as in near_end / walking.features.
 NOSE = 0
@@ -644,7 +645,7 @@ REQUIREMENT = Requirement(roi=ROI_NEAR, pose_fps=15.0, needs_ball=False,
 
 
 def events_path(video, suffix=EVENTS_SUFFIX):
-    d = os.path.dirname(os.path.abspath(video))
+    d = WD.artifact_dir(video)
     stem = os.path.splitext(os.path.basename(video))[0]
     return os.path.join(d, f"{stem}{suffix}")
 

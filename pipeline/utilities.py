@@ -28,8 +28,10 @@ except ImportError:                         # script import (python pipeline/x.p
 
 try:                                        # package import (python -m pipeline.x)
     from .subproc import run as _run
+    from . import workdir as _workdir
 except ImportError:                         # script import (python pipeline/x.py)
     from subproc import run as _run
+    import workdir as _workdir
 
 
     
@@ -295,7 +297,7 @@ def _is_in_exclusion_zone(x, y, exclusion_zones):
 
 
 def _exclusion_zone_cache_path(video_path: str) -> str:
-    video_dir  = os.path.dirname(os.path.abspath(video_path))
+    video_dir  = _workdir.artifact_dir(video_path)
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(video_dir, f"{video_name}_exclusion_cache.json")
 
@@ -326,13 +328,13 @@ def save_cached_exclusion_zones(video_path: str, zones) -> None:
 
 
 def _court_cache_path(video_path: str) -> str:
-    video_dir  = os.path.dirname(os.path.abspath(video_path))
+    video_dir  = _workdir.artifact_dir(video_path)
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(video_dir, f"{video_name}_court_cache.json")
 
 
 def _far_player_roi_cache_path(video_path: str) -> str:
-    video_dir  = os.path.dirname(os.path.abspath(video_path))
+    video_dir  = _workdir.artifact_dir(video_path)
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(video_dir, f"{video_name}_far_player_roi.json")
 
@@ -820,7 +822,18 @@ def create_highlights_ffmpeg(
     merged_note = f" ({n_raw - n_merged} merged)" if n_merged < n_raw else ""
     print(f"\n[HIGHLIGHT] Creating highlight reel: {n_merged} segment(s){merged_note} → {output_path}")
 
-    tmpdir = tempfile.mkdtemp(prefix="anya_highlights_")
+    # A work-dir override (set by the desktop app) gets the scratch segment
+    # files too, and in that case cleanup is the APP's decision -- whether to
+    # keep them is the same "keep interim files" choice that covers everything
+    # else in that directory, so this function does not delete them itself.
+    # With no override (every CLI/eval caller) nothing changes: system temp,
+    # and the `finally` below removes it unconditionally, exactly as before.
+    _wd = _workdir.get_work_dir()
+    if _wd:
+        tmpdir = os.path.join(_wd, "highlight_segments")
+        os.makedirs(tmpdir, exist_ok=True)
+    else:
+        tmpdir = tempfile.mkdtemp(prefix="anya_highlights_")
     try:
         seg_files = []
         for i, (start, end) in enumerate(valid):
@@ -878,4 +891,5 @@ def create_highlights_ffmpeg(
         else:
             print("[HIGHLIGHT] Concatenation step failed — check FFMPEG output above.")
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if not _wd:
+            shutil.rmtree(tmpdir, ignore_errors=True)

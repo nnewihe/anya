@@ -70,6 +70,14 @@ def ensure_court(video: str) -> None:
 
 
 def _stem(video: str) -> Tuple[str, str]:
+    """The video's OWN directory and stem -- NOT the artifact dir.
+
+    Used only for the output video's default location, which must stay beside
+    the input regardless of any work-dir override: the app's tmp_anya holds
+    calibration and interim files, never the finished reel.  Every cache or
+    event file uses `pipeline.workdir.artifact_dir` instead -- see
+    `_end_signals` and `build_reel` below for the split.
+    """
     d = os.path.dirname(os.path.abspath(video))
     return d, os.path.splitext(os.path.basename(video))[0]
 
@@ -83,7 +91,9 @@ def _end_signals(video: str, force: bool = False) -> None:
     gaps -- on a changeover the same human moves between slots, and using one
     slot alone loses half the clip.
     """
-    d, st = _stem(video)
+    from pipeline import workdir as WD
+    _, st = _stem(video)
+    d = WD.artifact_dir(video)
     walk_p = os.path.join(d, f"{st}_anya2_walk.npz")
     sig_p = os.path.join(d, f"{st}_anya2_endsig.npz")
     if os.path.isfile(walk_p) and os.path.isfile(sig_p) and not force:
@@ -131,7 +141,20 @@ def cut(video: str, segments: List[dict], output: str,
     cfg = cfg or Anya2Config()
     if not segments:
         raise ValueError("no segments to cut")
-    tmp = tempfile.mkdtemp(prefix="anya2_reel_")
+    from pipeline import workdir as WD
+    # A work-dir override (the desktop app's tmp_anya) gets the scratch
+    # segment files too; the app decides whether to keep them as part of the
+    # same "keep interim files" choice that covers everything else there, so
+    # this function does not clean up after itself in that case.  With no
+    # override -- every CLI caller -- this used to leak a system temp
+    # directory on every call; it now self-cleans, matching the legacy
+    # cutter's behaviour in pipeline.utilities.create_highlights_ffmpeg.
+    wd = WD.get_work_dir()
+    if wd:
+        tmp = os.path.join(wd, "cut_segments")
+        os.makedirs(tmp, exist_ok=True)
+    else:
+        tmp = tempfile.mkdtemp(prefix="anya2_reel_")
     parts = []
     vf = (["-vf", f"scale=-2:{cfg.scale_height}"] if cfg.scale_height else [])
     for i, s in enumerate(segments):
@@ -156,6 +179,9 @@ def cut(video: str, segments: List[dict], output: str,
     subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                     "-f", "concat", "-safe", "0", "-i", lst,
                     "-c", "copy", output], capture_output=True, check=True)
+    if not wd:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
     return output
 
 
@@ -165,8 +191,12 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
                dry_run: bool = False) -> Tuple[List[dict], Optional[str]]:
     """Video in, cut reel out.  Signature-compatible with rally_reel.build_reel."""
     cfg = cfg or Anya2Config()
-    d, st = _stem(video_path)
-    output_path = output_path or os.path.join(d, f"{st}_anya2_reel.mp4")
+    from pipeline import workdir as WD
+    video_dir, st = _stem(video_path)
+    # The output default is the INPUT's own directory, always -- never the
+    # work-dir override.  Every other path below uses the artifact dir.
+    output_path = output_path or os.path.join(video_dir, f"{st}_anya2_reel.mp4")
+    d = WD.artifact_dir(video_path)
 
     _emit(on_progress, 0, "Court calibration")
     ensure_court(video_path)

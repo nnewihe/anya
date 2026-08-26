@@ -98,6 +98,11 @@ except ImportError:                         # script import (python pipeline/x.p
                            assert_decode_complete, open_video)
     from proxy import PROXY_SUFFIX, proxy_path_for as _proxy_path_for
     from proxy import ensure_proxy as _ensure_proxy
+try:
+    from . import workdir as _workdir
+except ImportError:
+    import workdir as _workdir
+
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -190,7 +195,7 @@ def end_telemetry_path_for(video_path: str,
     A/B unaffordable.  Keying the non-default settings into the filename lets
     every variant live on disk at once.
     """
-    d = os.path.dirname(os.path.abspath(video_path))
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     base = os.path.join(d, f"{stem}{END_TELEMETRY_SUFFIX}")
     defaults = EndExtractorConfig()
@@ -203,13 +208,13 @@ def end_telemetry_path_for(video_path: str,
 
 
 def end_dets_path_for(video_path: str) -> str:
-    d = os.path.dirname(os.path.abspath(video_path))
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{END_DETS_SUFFIX}")
 
 
 def end_pose_path_for(video_path: str) -> str:
-    d = os.path.dirname(os.path.abspath(video_path))
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{END_POSE_SUFFIX}")
 

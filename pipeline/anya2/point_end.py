@@ -60,6 +60,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from pipeline import workdir as WD
 
 from pipeline.anya2 import signals as S
 from pipeline.anya2 import tracks as T
@@ -88,7 +89,7 @@ REQUIREMENT = Requirement(roi=ROI_BOTH, pose_fps=15.0, needs_ball=False,
 
 
 def events_path(video, suffix=EVENTS_SUFFIX):
-    d = os.path.dirname(os.path.abspath(video))
+    d = WD.artifact_dir(video)
     stem = os.path.splitext(os.path.basename(video))[0]
     return os.path.join(d, f"{stem}{suffix}")
 
@@ -178,7 +179,7 @@ UNION_WIN_S = 0.6
 def end_signal(video, tracks_npz=None) -> Dict[str, np.ndarray]:
     """The non-rally union and its parts, off the cached pose passes."""
     stem = os.path.splitext(os.path.basename(video))[0]
-    d = os.path.dirname(os.path.abspath(video))
+    d = WD.artifact_dir(video)
     w = np.load(os.path.join(d, f"{stem}_anya2_walk.npz"))
     sg = np.load(os.path.join(d, f"{stem}_anya2_endsig.npz"))
     fps = float(w["fps"])
