@@ -66,6 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.videoio import open_video
 from pipeline import proxy as P
 from pipeline.anya2 import court as C
+from pipeline import workdir as WD
 
 N_KP = 17
 MAX_PERSONS = 8
@@ -109,7 +110,7 @@ FAR_SUFFIX = "_anya2_far_dets.npz"
 
 
 def dets_path(video, suffix=NEAR_SUFFIX):
-    d = os.path.dirname(os.path.abspath(video))
+    d = WD.artifact_dir(video)
     stem = os.path.splitext(os.path.basename(video))[0]
     return os.path.join(d, f"{stem}{suffix}")
 

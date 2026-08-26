@@ -90,6 +90,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from pipeline import workdir as WD
 
 from pipeline.anya2 import signals as S
 from pipeline.anya2 import tracks as T
@@ -259,7 +260,7 @@ REQUIREMENT = Requirement(roi=ROI_FAR, pose_fps=15.0, needs_ball=False,
 
 
 def events_path(video, suffix=EVENTS_SUFFIX):
-    d = os.path.dirname(os.path.abspath(video))
+    d = WD.artifact_dir(video)
     stem = os.path.splitext(os.path.basename(video))[0]
     return os.path.join(d, f"{stem}{suffix}")
 

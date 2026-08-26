@@ -45,9 +45,11 @@ from typing import Optional, Sequence, Tuple
 try:                                        # package import (python -m pipeline.x)
     from .utilities import probe_video
     from .subproc import run as _run
+    from . import workdir as _workdir
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import probe_video
     from subproc import run as _run
+    import workdir as _workdir
 
 # Every degradation below is recoverable, so none of them stops the run — but
 # a windowed PyInstaller build owns no console, `sys.stdout` goes nowhere, and
@@ -67,7 +69,7 @@ FAR_BAND_SUFFIX   = "_farband.mp4"
 
 
 def proxy_path_for(video_path: str, suffix: str = PROXY_SUFFIX) -> str:
-    d = os.path.dirname(os.path.abspath(video_path))
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{suffix}")
 

@@ -30,6 +30,7 @@ import os
 import numpy as np
 
 from walking.court import COURT_L, COURT_W, HALF_L, load_homography, to_court
+from pipeline import workdir as _workdir
 from walking.extract_pose import dets_path
 
 L_ANK, R_ANK = 15, 16
@@ -42,7 +43,7 @@ MAX_SPEED = 9.0          # m/s; faster than a sprint means it is a different per
 
 
 def pose_path(video_path):
-    d = os.path.dirname(video_path)
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}_walk_pose.npz")
 

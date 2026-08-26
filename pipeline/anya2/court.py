@@ -49,7 +49,23 @@ say who is allowed to be serving.
 import numpy as np
 
 from walking.court import (ANALYSIS_SIZE, COURT_L, COURT_W, HALF_L,  # noqa: F401
-                           court_cache_path, load_homography, to_court)
+                           load_homography, to_court)
+from pipeline import workdir as WD
+
+
+def court_cache_path(video_path):
+    """Override-aware court cache path.
+
+    `walking.court.court_cache_path` computes the SAME filename convention
+    (`{stem}_court_cache.json`) beside the video, unconditionally -- it has no
+    knowledge of the app's work-dir override, because `walking/` is used by
+    CLI/eval callers that must never be redirected.  anya2 wraps it so the
+    court cache anya2 looks for is the same one `pipeline.utilities.init_court`
+    writes when a work dir IS set.
+    """
+    import os
+    stem = os.path.splitext(os.path.basename(video_path))[0]
+    return os.path.join(WD.artifact_dir(video_path), f"{stem}_court_cache.json")
 
 # ── doubles geometry ─────────────────────────────────────────────────────
 ALLEY_W = 1.37          # doubles alley width, metres, each side of the singles

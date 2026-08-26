@@ -81,6 +81,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline.anya2 import court as C
+from pipeline import workdir as WD
 from pipeline.anya2.signals import runs as S_runs
 from pipeline.anya2 import point_end as PE
 from pipeline.anya2 import tracks as T
@@ -671,7 +672,7 @@ def smooth(segs: List[Segment], cfg: ReelConfig,
 def build_reel(video: str, cfg: Optional[ReelConfig] = None,
                tracks_npz=None, verbose: bool = True) -> Dict:
     cfg = cfg or ReelConfig()
-    d = os.path.dirname(os.path.abspath(video))
+    d = WD.artifact_dir(video)
     stem = os.path.splitext(os.path.basename(video))[0]
 
     def _load(suffix, kind):
@@ -782,7 +783,7 @@ def main():
     if a.merge_gap is not None:
         cfg.merge_gap_s = a.merge_gap
     res = build_reel(a.video, cfg)
-    out = a.json or os.path.join(os.path.dirname(os.path.abspath(a.video)),
+    out = a.json or os.path.join(WD.artifact_dir(a.video),
                                  os.path.splitext(os.path.basename(a.video))[0]
                                  + SEGMENTS_SUFFIX)
     with open(out, "w") as fh:

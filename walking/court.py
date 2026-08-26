@@ -13,6 +13,12 @@ is exactly the discriminant used to pick the near player.
 
 import json
 import os
+import sys
+
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+from pipeline import workdir as _workdir
 
 import cv2
 import numpy as np
@@ -24,7 +30,7 @@ ANALYSIS_SIZE = (960, 540)
 
 
 def court_cache_path(video_path):
-    d = os.path.dirname(video_path)
+    d = _workdir.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}_court_cache.json")
 

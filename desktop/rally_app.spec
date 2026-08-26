@@ -203,6 +203,7 @@ a = Analysis(
         # analysis does not reach them.  The legacy rally_reel path is kept
         # importable too, since ANYA_ENGINE=legacy must still work in a built app.
         'pipeline.anya2',
+        'pipeline.workdir',
         'pipeline.anya2.run',
         'pipeline.anya2.config',
         'pipeline.anya2.orchestrator',

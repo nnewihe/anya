@@ -65,6 +65,11 @@ except ImportError:                         # script import (python pipeline/x.p
                            load_cached_exclusion_zones,
                            save_cached_exclusion_zones, probe_video,
                            open_video)
+try:
+    from . import workdir as _workdir
+except ImportError:
+    import workdir as _workdir
+
 
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -132,7 +137,7 @@ class ExtractorConfig:
 
 
 def telemetry_path_for(video_path: str) -> str:
-    video_dir  = os.path.dirname(os.path.abspath(video_path))
+    video_dir  = _workdir.artifact_dir(video_path)
     video_stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(video_dir, f"{video_stem}{TELEMETRY_SUFFIX}")
 

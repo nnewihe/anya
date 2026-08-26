@@ -65,6 +65,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 
 from pipeline.anya2 import court as C
+from pipeline import workdir as WD
 
 N_KP = 17
 N_SLOTS = 4
@@ -152,7 +153,7 @@ W_HOME = 1.0           # weight on proximity to the player's OWN baseline
 
 
 def tracks_path(video_path, suffix="_anya2_tracks.npz"):
-    d = os.path.dirname(os.path.abspath(video_path))
+    d = WD.artifact_dir(video_path)
     stem = os.path.splitext(os.path.basename(video_path))[0]
     return os.path.join(d, f"{stem}{suffix}")
 
