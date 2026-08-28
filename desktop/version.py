@@ -5,7 +5,36 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.11"
+APP_VERSION = "0.1.0-beta.12"
+# beta.12 — two things: audio that stays with the picture, and a Cancel button.
+#   (1) A reel's sound drifted away from its video, further the longer the
+#       reel. The cause was the JOIN, not the cutting: every re-encoded segment
+#       ends with its video a few tens of milliseconds longer than its audio
+#       (video ends on a frame boundary, audio on an AAC frame boundary), and
+#       a `-c copy` concat carries that mismatch forward instead of absorbing
+#       it, so the shortfall accumulates across every segment. Measured on a
+#       synthetic source carrying a simultaneous flash and beep every second:
+#       -0.58 s/hour at 29.97 fps and +4.30 s/hour at 59.94 -- twice as fast
+#       because 60p packs twice as many joins into a minute. The join now
+#       re-encodes the audio (video is still copied, so it costs seconds)
+#       through `aresample=async=1:min_hard_comp=0.001`, which hard-fills each
+#       segment's shortfall with silence at the moment it appears rather than
+#       trying to stretch it away. Both rates land at -0.03/-0.04 s/hour, i.e.
+#       inside a frame and no longer accumulating. Applies to all three
+#       cutters -- pipeline.utilities (both), pipeline.anya2.run.cut (the one
+#       the app uses) and the scoreboard renderer. See the long note above
+#       `concat_cmd` in pipeline/utilities.py for the measurements and for why
+#       forcing -r/-ar/-ac on the SEGMENTS cannot fix this.
+#   (2) A Cancel button on the Highlight Reel page. The tab already had a
+#       `stop()` on its worker, but nothing in the pipeline consulted it, so
+#       it only suppressed the RESULT -- the job ran to completion in the
+#       background, pinning the machine for the rest of a ten-minute render.
+#       pipeline/cancel.py is a process-wide cooperative flag (same shape and
+#       the same justification as pipeline/workdir.py) checked in the places
+#       that hold the clock: once per inference batch in the two pose passes,
+#       between stages in anya2.run, per segment in the cut, and by
+#       terminating the child for the one-shot proxy transcodes, which are a
+#       single multi-minute ffmpeg call each.
 # beta.11 — anya2 is now the app's detection engine (three independent
 # detectors -- near serve, far serve, point end -- on a shared player-tracking
 # substrate, assembled by an orchestrator; see pipeline/anya2/README.md).

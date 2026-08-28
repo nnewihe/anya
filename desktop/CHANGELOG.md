@@ -8,6 +8,22 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.1.0-beta.12
+
+- **Sound now stays with the picture.** In longer reels the audio slowly
+  slid out of sync with the video — barely noticeable at the start and
+  clearly wrong by the end. On 60 fps footage it drifted about four
+  seconds an hour. Fixed: the drift is now under a single frame no
+  matter how long the reel is, on both 30 and 60 fps video. This
+  applies to scoreboard videos too.
+- **You can cancel a run.** A Cancel button sits next to Build Rally
+  Reel while a job is going. Pressing it actually stops the work within
+  a few seconds and gives you your machine back — previously the only
+  way out was to quit the app, and even then the run kept going until
+  it finished. Nothing is saved from a cancelled run, but the court
+  setup you clicked for that video is kept, so starting again doesn't
+  ask you to do it twice.
+
 ## 0.1.0-beta.11
 
 - **A new detection engine.** The app now uses anya2, a rebuilt detector

@@ -63,6 +63,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from pipeline import cancel
 from pipeline.videoio import open_video
 from pipeline import proxy as P
 from pipeline.anya2 import court as C
@@ -215,6 +216,10 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
             buf.append(frame)
             slots.append(pos[f])
             if len(buf) >= BATCH:
+                # The pose passes are most of a run's wall time, so this is
+                # where Cancel has to be able to land. Once per batch is a
+                # sub-second check-in and costs an already-predicted branch.
+                cancel.check()
                 flush()
                 if done % 2000 < BATCH:
                     el = time.time() - t0

@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QFileDialog, QProgressBar, QLineEdit, QFrame,
     QCheckBox,
 )
+from pipeline import cancel as _cancel
 from pipeline import workdir as _workdir
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -54,7 +55,8 @@ from pipeline.utilities import probe_video
 from applog import log_path, logger
 from background import SleepBlocker, notify
 from preflight import ensure_ffmpeg
-from theme import BLACK, YELLOW, WHITE, ghost_btn_css, primary_btn_css, label_css, line_edit_css
+from theme import (BLACK, YELLOW, WHITE, danger_btn_css, ghost_btn_css,
+                   primary_btn_css, label_css, line_edit_css)
 
 
 class _Worker(QThread):
@@ -73,9 +75,10 @@ class _Worker(QThread):
     which crashes the app with "QThread: Destroyed while thread is still
     running".
     """
-    stage         = pyqtSignal(int, int, str, float)  # (i, n, label, frac; -1 = busy)
-    render_done   = pyqtSignal(str, int)               # (output_path, n_segments)
-    render_failed = pyqtSignal(str)
+    stage            = pyqtSignal(int, int, str, float)  # (i, n, label, frac; -1 = busy)
+    render_done      = pyqtSignal(str, int)              # (output_path, n_segments)
+    render_failed    = pyqtSignal(str)
+    render_cancelled = pyqtSignal()
 
     def __init__(self, video_path, output_path, cfg=None):
         super().__init__()
@@ -103,14 +106,32 @@ class _Worker(QThread):
                 on_progress=_on_progress,
             )
             if self._stopped:
+                self.render_cancelled.emit()
                 return
             self.render_done.emit(out or self.output_path, len(segments))
+        except _cancel.Cancelled:
+            # Not an error: the tester asked for this. Logged at info so a
+            # truncated app.log still explains why the run has no reel at the
+            # end of it.
+            logger().info("Highlight Reel render cancelled by the user")
+            self.render_cancelled.emit()
         except Exception as ex:
             logger().exception("Highlight Reel render failed")
             self.render_failed.emit(str(ex))
 
     def stop(self):
+        """Ask the pipeline to stop at its next check-in.
+
+        The flag alone is not enough and never was: build_reel does not consult
+        it, so before pipeline.cancel existed this only suppressed the RESULT
+        while the job ran to completion in the background -- the machine stayed
+        pinned for the rest of a ten-minute render and the tester could not
+        start another one. `_cancel.request()` is what actually stops the work;
+        `_stopped` still suppresses the progress ticks so the bar does not
+        twitch forward while the pipeline unwinds.
+        """
         self._stopped = True
+        _cancel.request()
 
 
 class HighlightReelTab(QWidget):
@@ -158,8 +179,7 @@ class HighlightReelTab(QWidget):
 
         lay.addStretch()
 
-        self._detect_btn = self._make_detect_btn()
-        lay.addWidget(self._detect_btn)
+        lay.addLayout(self._action_row())
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
@@ -218,13 +238,36 @@ class HighlightReelTab(QWidget):
         row.addWidget(btn)
         return row
 
-    def _make_detect_btn(self):
-        btn = QPushButton(self._action_text())
-        btn.setFixedHeight(52)
-        btn.setEnabled(False)
-        btn.setStyleSheet(primary_btn_css(enabled=False))
-        btn.clicked.connect(self._on_detect)
-        return btn
+    def _action_row(self):
+        """The primary action, with Cancel beside it once a run is going.
+
+        Cancel is built now and hidden rather than added when a job starts:
+        appearing mid-run would reflow the progress bar and status line under
+        a tester's cursor at exactly the moment they are watching them.
+        """
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        self._detect_btn = QPushButton(self._action_text())
+        self._detect_btn.setFixedHeight(52)
+        self._detect_btn.setEnabled(False)
+        self._detect_btn.setStyleSheet(primary_btn_css(enabled=False))
+        self._detect_btn.clicked.connect(self._on_detect)
+        row.addWidget(self._detect_btn, 1)
+
+        self._cancel_btn = QPushButton("CANCEL")
+        self._cancel_btn.setFixedHeight(52)
+        self._cancel_btn.setFixedWidth(132)
+        self._cancel_btn.setStyleSheet(danger_btn_css())
+        self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._cancel_btn.setToolTip(
+            "Stop this run. Nothing is saved, but the calibration already done "
+            "for this video is reused next time.")
+        self._cancel_btn.setVisible(False)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        row.addWidget(self._cancel_btn)
+
+        return row
 
     def _action_text(self):
         return "BUILD RALLY REEL"
@@ -318,6 +361,14 @@ class HighlightReelTab(QWidget):
         self._detect_btn.setEnabled(False)
         self._detect_btn.setStyleSheet(primary_btn_css(enabled=False))
         self._detect_btn.setText("WORKING…")
+        # Cleared at the START of a run, not the end of the last one: a
+        # cancelled job can still be unwinding when the tester starts the next,
+        # and clearing on the way out would race that unwind and leave the new
+        # run cancelling itself. See pipeline.cancel.clear.
+        _cancel.clear()
+        self._cancel_btn.setEnabled(True)
+        self._cancel_btn.setText("CANCEL")
+        self._cancel_btn.setVisible(True)
 
         # Keep the machine awake for the duration of the (possibly long) job so
         # a backgrounded window keeps processing instead of sleeping mid-run.
@@ -327,6 +378,7 @@ class HighlightReelTab(QWidget):
         self._worker.stage.connect(self._on_stage)
         self._worker.render_done.connect(self._on_finished)
         self._worker.render_failed.connect(self._on_error)
+        self._worker.render_cancelled.connect(self._on_cancelled)
         # QThread's own built-in `finished` — fires only after the OS thread
         # has actually stopped, unlike our render_done/render_failed signals
         # which we emit manually from inside run(). BOTH the deleteLater and
@@ -380,6 +432,7 @@ class HighlightReelTab(QWidget):
         noun = "rally" if n_segments == 1 else "rallies"
         badge = f"{n_segments} RALL{'Y' if n_segments == 1 else 'IES'}"
         self._set_status(f"Done — {n_segments} {noun}")
+        self._cancel_btn.setVisible(False)
         notify("Anya Tennis — reel complete",
                f"{n_segments} {noun} · {os.path.basename(output_path)}")
         self._detect_btn.setText(self._action_text())
@@ -389,6 +442,37 @@ class HighlightReelTab(QWidget):
         self._result_count_lbl.setText(badge)
         self._result_panel.setVisible(True)
 
+    def _on_cancel(self):
+        """Cancel pressed. Ask, then wait — the thread reports back itself.
+
+        Deliberately not a confirmation dialog: the button is already the
+        second, quieter one in the row, and a modal on top of a ten-minute
+        render that the tester has decided to abandon is one more thing in
+        their way. What it does do is disable itself immediately, because the
+        pipeline stops at its next check-in rather than instantly and a Cancel
+        that still looked pressable would read as ignored.
+        """
+        if self._worker is None:
+            return
+        self._cancel_btn.setEnabled(False)
+        self._cancel_btn.setText("CANCELLING…")
+        self._set_status("Cancelling — finishing the current step…")
+        self._worker.stop()
+
+    def _on_cancelled(self):
+        # See _on_finished: the handle is released on `finished`, not here.
+        # A cancelled run leaves no reel, but tmp_anya still honours the
+        # checkbox — a tester who cancelled BECAUSE the run looked wrong is
+        # exactly the one who may want the interim files.
+        self._cleanup_tmp_anya()
+        self._sleep_blocker.stop()
+        self._estimate.setVisible(False)
+        self._progress.setValue(0)
+        self._set_status("Cancelled — no reel was written.")
+        self._cancel_btn.setVisible(False)
+        self._detect_btn.setText(self._action_text())
+        self._refresh_detect_btn()
+
     def _on_error(self, msg):
         # See _on_finished: the handle is released on `finished`, not here.
         self._cleanup_tmp_anya()
@@ -396,6 +480,7 @@ class HighlightReelTab(QWidget):
         self._estimate.setVisible(False)
         self._progress.setValue(0)
         self._set_status(f"Error: {msg}  (details in {log_path()})", error=True)
+        self._cancel_btn.setVisible(False)
         self._detect_btn.setText(self._action_text())
         self._refresh_detect_btn()
 

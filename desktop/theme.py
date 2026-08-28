@@ -74,3 +74,24 @@ def line_edit_css():
         }}
         QLineEdit:focus {{ border: 1px solid {YELLOW}; }}
     """
+
+
+def danger_btn_css():
+    """"Stop what you're doing" button (Cancel). A ghost button rather than a
+    filled one on purpose: it sits beside the yellow primary action for the
+    whole length of a run, and two filled buttons competing for the eye would
+    make the destructive one look like the thing to press."""
+    return """
+        QPushButton {
+            background: transparent;
+            border: 1px solid rgba(231,76,60,0.55);
+            border-radius: 8px;
+            color: rgba(231,76,60,0.90);
+            font-size: 12px; font-weight: 700; letter-spacing: 0.07em;
+        }
+        QPushButton:hover  { border-color: #E74C3C; color: #E74C3C; }
+        QPushButton:pressed { background: rgba(231,76,60,0.14); }
+        QPushButton:disabled {
+            border-color: rgba(255,255,255,0.12); color: rgba(255,255,255,0.30);
+        }
+    """

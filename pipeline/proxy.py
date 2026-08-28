@@ -45,10 +45,12 @@ from typing import Optional, Sequence, Tuple
 try:                                        # package import (python -m pipeline.x)
     from .utilities import probe_video
     from .subproc import run as _run
+    from . import cancel as _cancel
     from . import workdir as _workdir
 except ImportError:                         # script import (python pipeline/x.py)
     from utilities import probe_video
     from subproc import run as _run
+    import cancel as _cancel
     import workdir as _workdir
 
 # Every degradation below is recoverable, so none of them stops the run — but
@@ -111,7 +113,10 @@ def _transcode(video_path: str, out: str, vf: str, want: dict,
     print(f"[{label}] Building proxy ({vf}, crf {crf}, one-time)…")
     t0 = time.perf_counter()
     try:
-        _run(cmd, check=True, capture_output=True)
+        # Cancellable: this is a single multi-minute call on a long match, so
+        # a run cancelled here has to reach into the child rather than wait
+        # for it. See pipeline.cancel.
+        _cancel.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as ex:
         # `capture_output=True` swallows ffmpeg's stderr into the exception,
         # so without this the reason is lost and all a tester's log shows is

@@ -27,10 +27,10 @@ except ImportError:                         # script import (python pipeline/x.p
     from videoio import open_video
 
 try:                                        # package import (python -m pipeline.x)
-    from .subproc import run as _run
+    from . import cancel as _cancel
     from . import workdir as _workdir
 except ImportError:                         # script import (python pipeline/x.py)
-    from subproc import run as _run
+    import cancel as _cancel
     import workdir as _workdir
 
 
@@ -693,6 +693,105 @@ def resize_for_analysis(frame):
                       interpolation=cv2.INTER_AREA)
 
 
+# ── Cutting a reel: segments, then a join that keeps sound on picture ──────
+#
+# Every cutter here (and pipeline.anya2.run.cut, and the scoreboard renderer)
+# builds a reel the same way: encode each kept span to its own file, then join
+# the files with ffmpeg's concat demuxer. The join is where audio/video sync is
+# won or lost, and it used to be lost.
+#
+# A re-encoded segment never ends with its two streams the same length. Video
+# ends on a frame boundary (33.4 ms at 29.97 fps, 16.7 at 59.94) and audio on an
+# AAC frame boundary (21.3 ms at 48 kHz), so each segment's video overruns its
+# audio by a few tens of milliseconds, by a different amount every time. `-c
+# copy` through the concat demuxer carries that mismatch into the output rather
+# than absorbing it, and since the demuxer advances the timeline by each file's
+# (video-length) duration while only the audio-length of sound is actually
+# there, the shortfall ACCUMULATES. Sound walks away from picture for the whole
+# length of the reel — and the faster the source, the faster it walks, because
+# 59.94 fps footage packs twice as many mismatched joins into the same minute.
+#
+# Measured on a synthetic source carrying a simultaneous flash and beep every
+# second, cut into 18-41 segments and joined, then read back by locating each
+# beep against its flash and fitting the offset against time:
+#
+#                        drift          over a one-hour reel
+#     29.97 fps  before  -0.162 ms/s    -0.58 s
+#                 after  -0.008 ms/s    -0.03 s
+#     59.94 fps  before  +1.195 ms/s    +4.30 s
+#                 after  -0.011 ms/s    -0.04 s
+#
+# The fix is to stop copying the audio through the join. Re-encoding it — video
+# is still copied, so this costs seconds, not a second pass over the picture —
+# resamples the sound onto the joined timeline and fills each segment's
+# shortfall with the silence that is actually there.
+#
+# `async=1` is what asks for the filling. `min_hard_comp` is what makes it
+# work, and it is the whole fix rather than a detail: below that threshold the
+# resampler corrects a gap by STRETCHING audio at up to `async` samples per
+# second, and our gaps (17-40 ms) sit far below the 0.1 s default, so the
+# stretch could never keep up and the drift survived nearly intact. Dropping
+# the threshold to 1 ms puts every gap above it, so each one is hard-filled
+# with silence at the moment it appears and nothing carries forward. That also
+# leaves the residual constant offset at +2 to -5 ms, i.e. inside a single
+# frame, with no need to compensate the AAC encoder's priming by hand.
+#
+# Do NOT try to fix this at the segment-encode end instead. The accumulation is
+# a property of the join, so forcing `-r`, `-ar` or `-ac` on the segments does
+# not touch it, and each one costs something real: `-r 30` throws away half the
+# frames of 59.94 fps footage, `-ar 44100` resamples 48 kHz camera audio for
+# nothing.
+
+
+def write_concat_list(seg_files: List[str], list_path: str) -> str:
+    """Write the concat demuxer's file list; returns `list_path`.
+
+    Explicit utf-8: Python's default text encoding on Windows is the legacy
+    ANSI code page, but the concat demuxer reads this file as utf-8. The temp
+    path runs through the user's profile directory, so any account whose name
+    isn't representable in the local code page — Cyrillic or CJK on a cp1252
+    box — either raises UnicodeEncodeError here or writes bytes ffmpeg then
+    fails to resolve. Every segment encodes fine and only the final concat
+    dies, which makes it a miserable thing to debug from a bug report.
+
+    Forward slashes are belt-and-braces. ffmpeg accepts them on Windows, and
+    normalizing keeps the entry from depending on the demuxer's quoting rules
+    (backslash is literal inside single quotes today, but nothing in the
+    format guarantees that).
+
+    An apostrophe in the path would otherwise close the quoted entry early and
+    leave ffmpeg looking for a file that does not exist. The segment files are
+    named seg_0000.mp4, but the directory holding them is not ours: with a
+    work-dir override it is tmp_anya beside the user's video, so it inherits
+    whatever the user called that folder.
+    """
+    with open(list_path, "w", encoding="utf-8") as f:
+        for sf in seg_files:
+            f.write("file '{}'\n".format(
+                sf.replace("\\", "/").replace("'", "'\\''")))
+    return list_path
+
+
+def concat_cmd(list_path: str, output_path: str, with_audio: bool = True,
+               audio_bitrate: str = "192k", quiet: bool = False,
+               extra_out: Optional[List[str]] = None) -> List[str]:
+    """The ffmpeg argv that joins the listed segments — see the note above."""
+    cmd = ["ffmpeg", "-y"]
+    if quiet:
+        cmd += ["-hide_banner", "-loglevel", "error"]
+    cmd += ["-f", "concat", "-safe", "0", "-i", list_path]
+    if with_audio:
+        cmd += [
+            "-c:v", "copy",
+            "-af", "aresample=async=1:min_hard_comp=0.001",
+            "-c:a", "aac", "-b:a", audio_bitrate,
+        ]
+    else:
+        # Nothing to keep in step; a straight copy is exact and free.
+        cmd += ["-c", "copy"]
+    return cmd + list(extra_out or []) + [output_path]
+
+
 def create_highlights_ffmpeg_multisource(
     segments: List[Tuple[str, float, float]],
     output_path: str,
@@ -731,7 +830,7 @@ def create_highlights_ffmpeg_multisource(
                 "-vsync", "cfr",
                 seg_path,
             ]
-            result = _run(cmd, capture_output=True)
+            result = _cancel.run(cmd, capture_output=True)
             if result.returncode != 0:
                 print(f"[HIGHLIGHT] Warning: segment {i} ({start:.2f}s–{end:.2f}s) from "
                       f"{os.path.basename(src)} failed.")
@@ -745,32 +844,9 @@ def create_highlights_ffmpeg_multisource(
             print("[HIGHLIGHT] No segments were successfully extracted.")
             return
 
-        concat_list = os.path.join(tmpdir, "concat.txt")
-        # Explicit utf-8: Python's default text encoding on Windows is the
-        # legacy ANSI code page, but the concat demuxer reads this file as
-        # utf-8. The temp path runs through the user's profile directory, so
-        # any account whose name isn't representable in the local code page —
-        # Cyrillic or CJK on a cp1252 box — either raises UnicodeEncodeError
-        # here or writes bytes ffmpeg then fails to resolve. Every segment
-        # encodes fine and only the final concat dies, which makes it a
-        # miserable thing to debug from a bug report.
-        #
-        # Forward slashes are belt-and-braces. ffmpeg accepts them on Windows,
-        # and normalizing keeps the entry from depending on the demuxer's
-        # quoting rules (backslash is literal inside single quotes today, but
-        # nothing in the format guarantees that).
-        with open(concat_list, "w", encoding="utf-8") as f:
-            for sf in seg_files:
-                f.write("file '{}'\n".format(sf.replace("\\", "/")))
-
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", concat_list,
-            "-c", "copy",
-            output_path,
-        ]
-        result = _run(cmd)
+        concat_list = write_concat_list(
+            seg_files, os.path.join(tmpdir, "concat.txt"))
+        result = _cancel.run(concat_cmd(concat_list, output_path))
         if result.returncode == 0:
             print(f"[HIGHLIGHT] Saved: {output_path}")
         else:
@@ -845,10 +921,12 @@ def create_highlights_ffmpeg(
                 "-i", video_path,
                 "-c:v", "libx264", "-crf", "18", "-preset", "fast",
                 "-c:a", "aac", "-b:a", "192k",
+                # Constant frame rate out, whatever the source did. The sync
+                # fix itself is in the JOIN, not here -- see concat_cmd.
                 "-vsync", "cfr",
                 seg_path,
             ]
-            result = _run(cmd, capture_output=True)
+            result = _cancel.run(cmd, capture_output=True)
             if result.returncode != 0:
                 print(f"[HIGHLIGHT] Warning: segment {i} ({start:.2f}s–{end:.2f}s) failed.")
                 print(result.stderr.decode(errors="replace"))
@@ -860,32 +938,9 @@ def create_highlights_ffmpeg(
             print("[HIGHLIGHT] No segments were successfully extracted.")
             return
 
-        concat_list = os.path.join(tmpdir, "concat.txt")
-        # Explicit utf-8: Python's default text encoding on Windows is the
-        # legacy ANSI code page, but the concat demuxer reads this file as
-        # utf-8. The temp path runs through the user's profile directory, so
-        # any account whose name isn't representable in the local code page —
-        # Cyrillic or CJK on a cp1252 box — either raises UnicodeEncodeError
-        # here or writes bytes ffmpeg then fails to resolve. Every segment
-        # encodes fine and only the final concat dies, which makes it a
-        # miserable thing to debug from a bug report.
-        #
-        # Forward slashes are belt-and-braces. ffmpeg accepts them on Windows,
-        # and normalizing keeps the entry from depending on the demuxer's
-        # quoting rules (backslash is literal inside single quotes today, but
-        # nothing in the format guarantees that).
-        with open(concat_list, "w", encoding="utf-8") as f:
-            for sf in seg_files:
-                f.write("file '{}'\n".format(sf.replace("\\", "/")))
-
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", concat_list,
-            "-c", "copy",
-            output_path,
-        ]
-        result = _run(cmd)
+        concat_list = write_concat_list(
+            seg_files, os.path.join(tmpdir, "concat.txt"))
+        result = _cancel.run(concat_cmd(concat_list, output_path))
         if result.returncode == 0:
             print(f"[HIGHLIGHT] Saved: {output_path}")
         else:

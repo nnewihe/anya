@@ -36,6 +36,7 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
+from pipeline import cancel
 from pipeline.anya2 import far_serve as FS
 from pipeline.anya2 import near_serve as NS
 from pipeline.anya2 import perceive as PC
@@ -49,6 +50,11 @@ N_STAGES = 7
 
 
 def _emit(cb, i, label, frac=None):
+    # Every stage announces itself through here exactly once, which makes this
+    # the one place a per-stage cancel check can live without a line per stage
+    # -- and a stage added later inherits it. The long stages check in far more
+    # often than this from the inside (see pipeline.cancel).
+    cancel.check()
     if cb:
         try:
             cb(i, N_STAGES, label, frac)
@@ -158,27 +164,32 @@ def cut(video: str, segments: List[dict], output: str,
     parts = []
     vf = (["-vf", f"scale=-2:{cfg.scale_height}"] if cfg.scale_height else [])
     for i, s in enumerate(segments):
+        cancel.check()
         p = os.path.join(tmp, f"seg_{i:04d}.mp4")
         cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                "-ss", f"{s['start']:.3f}", "-i", video,
                "-t", f"{s['stop'] - s['start']:.3f}", *vf,
                "-c:v", "libx264", "-crf", str(cfg.crf),
-               "-preset", cfg.preset, "-pix_fmt", "yuv420p"]
+               "-preset", cfg.preset, "-pix_fmt", "yuv420p",
+               "-vsync", "cfr"]
         cmd += (["-c:a", "aac", "-b:a", "160k"] if cfg.keep_audio else ["-an"])
         cmd.append(p)
-        if subprocess.run(cmd, capture_output=True).returncode == 0:
+        # cancel.run rather than subprocess.run: one 4K segment can take tens
+        # of seconds to encode, which would be the whole latency of Cancel.
+        if cancel.run(cmd, capture_output=True).returncode == 0:
             parts.append(p)
         _emit(on_progress, 6, f"Cutting segment {i + 1}/{len(segments)}",
               (i + 1) / len(segments))
     if not parts:
         raise RuntimeError("every segment failed to encode")
-    lst = os.path.join(tmp, "concat.txt")
-    with open(lst, "w", encoding="utf-8") as fh:
-        for p in parts:
-            fh.write(f"file '{p}'\n")
-    subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-f", "concat", "-safe", "0", "-i", lst,
-                    "-c", "copy", output], capture_output=True, check=True)
+    # The join re-encodes the audio (video is still copied) so sound cannot
+    # walk away from picture over the length of the reel -- see the long note
+    # above `concat_cmd` in pipeline.utilities for the measurements.
+    from pipeline.utilities import concat_cmd, write_concat_list
+    lst = write_concat_list(parts, os.path.join(tmp, "concat.txt"))
+    cancel.run(concat_cmd(lst, output, with_audio=cfg.keep_audio,
+                          audio_bitrate="160k", quiet=True),
+               capture_output=True, check=True)
     if not wd:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)

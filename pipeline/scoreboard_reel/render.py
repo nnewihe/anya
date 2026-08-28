@@ -209,7 +209,7 @@ def render_scoreboard_video(
                 "-t", f"{dur:.3f}",
                 "-vf", filters,
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                "-pix_fmt", "yuv420p",
+                "-pix_fmt", "yuv420p", "-vsync", "cfr",
                 "-c:a", "aac", "-b:a", "160k",
                 "-movflags", "+faststart",
                 seg,
@@ -219,16 +219,18 @@ def render_scoreboard_video(
         if on_progress:
             on_progress(n, n, "concatenating", None)
 
-        list_file = os.path.join(work, "list.txt")
-        with open(list_file, "w") as fh:
-            for sf in seg_files:
-                fh.write(f"file '{sf.replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'\n")
+        # Same join as the highlight cutters, and for the same reason: a
+        # `-c copy` concat lets each segment's audio/video length mismatch
+        # accumulate until sound has walked visibly off picture by the end of
+        # a long match. See the note above `concat_cmd`.
+        from pipeline.utilities import concat_cmd, write_concat_list
+        list_file = write_concat_list(seg_files, os.path.join(work, "list.txt"))
 
         output_path = os.path.abspath(output_path)
-        _run_ffmpeg([
-            "-y", "-f", "concat", "-safe", "0", "-i", list_file,
-            "-c", "copy", "-movflags", "+faststart", output_path,
-        ])
+        # [1:] drops concat_cmd's leading "ffmpeg" -- _run_ffmpeg prepends
+        # its own.
+        _run_ffmpeg(concat_cmd(list_file, output_path, audio_bitrate="160k",
+                               extra_out=["-movflags", "+faststart"])[1:])
         return output_path
     finally:
         shutil.rmtree(work, ignore_errors=True)
