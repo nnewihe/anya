@@ -86,6 +86,41 @@ Measured on a synthetic 30 s clip with a known 21 px pan/tilt/roll at t=15 s
 
 The jostle is reported at frame 450 — the frame it was injected at.
 
+#### What Data/77 actually turned out to be
+
+The synthetic clip validated a code path real footage cannot support, and the
+69-minute match said so. Two corrections came out of it.
+
+**A real court is flat paint.** Across 414 samples the global fit had a median
+of **1365** inliers and the *on-court* subset a median of **18** — see
+`MIN_GROUND_INLIERS` for the numbers and what the original 20 did with them.
+The synthetic court had speckle texture inside the quad, so it never exercised
+the case where the ground re-fit is unsupportable, which on real footage is
+almost always. The floor is now 60 plus an agreement gate.
+
+**Data/77 has no jostle.** Its largest *sustained* level change over 69 minutes
+is 0.92 px. What it has is monotonic drift — a settling mount — of the far
+baseline:
+
+| | 0–10 min | 30–40 min | 60–70 min |
+|---|---|---|---|
+| far-baseline offset | 0.2 px | 1.0 px | **2.2 px** |
+
+Two pixels sounds like nothing and is not. The court's whole 23.77 m length
+occupies ~117 px in the analysis frame, and the far end is where the perspective
+compression is worst, so the same drift reads as **0.02 m of error at the near
+corners and 2.4 m at the far ones** by the end of the match. That asymmetry is
+the entire story of why a fixed homography fails quietly rather than obviously.
+
+**One honest negative.** On the two coarse far-side backstops the corrected
+geometry is marginally *worse* — `_trackable` survival 95.69% → 95.42% over
+16,072 far detections. The correction pushes the far player ~1.8 m deeper in the
+last third, toward `FAR_BACK_M`'s 12 m cutoff, and that 12 was measured against
+the *uncorrected* projection: it absorbed some of this error. Near-side
+eligibility moves the other way, +1.7 points in the last third. Correcting the
+geometry without revisiting the constants that were fitted around its absence is
+a job only half done, and `FAR_BACK_M` is the one to revisit first.
+
 Turn it off with `ANYA_CAMERA_TRACK=0`, which restores the previous behaviour
 everywhere at once: nothing estimates a track and nothing reads a cached one.
 

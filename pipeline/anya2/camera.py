@@ -118,7 +118,33 @@ def make_matcher(approximate=True):
     return cv2.BFMatcher(cv2.NORM_HAMMING)
 RANSAC_PX = 3.0
 MIN_INLIERS = 30        # below this the fit is not evidence of anything
-MIN_GROUND_INLIERS = 20 # ...to prefer the ground-plane re-fit over the global
+
+# ── when the ground-plane re-fit may override the global fit ─────────────
+# MEASURED, and it overturned the value this shipped with.  Over 414 samples
+# spread across Data/77's 69 minutes:
+#
+#     global fit        median 1365 inliers (p05 567)
+#     on-court inliers  median   18
+#
+# A tennis court is flat paint.  It carries almost no ORB features, so the
+# ground-plane re-fit -- which is right in principle, see the module docstring --
+# is almost never SUPPORTABLE on real footage.  At the 20 this shipped with it
+# fired anyway, replacing a 1365-inlier fit with a 20-point one:
+#
+#     |ground - global| corner displacement, px
+#       >= 20 on-court inliers (n=178)   median  3.14   p95 33.73   max 86.20
+#       >= 50 on-court inliers (n= 26)   median  0.22   p95  1.84   max  2.67
+#
+# Above 50 the two agree to a quarter of a pixel; below it the re-fit is noise
+# wearing the same interface.  That produced 47 phantom "jostles" of 100-213 px
+# on this clip, half of them reverting within 0.2 s -- which no tripod does, and
+# which is what gave them away.
+#
+# 60, and an agreement gate as well: the re-fit exists to REFINE the global fit
+# under a small camera translation, not to find a different camera.  One that
+# disagrees by more than a few pixels has not refined anything.
+MIN_GROUND_INLIERS = 60
+GROUND_AGREE_PX = 4.0
 
 # ── sanity bounds on an accepted warp ────────────────────────────────────
 # A homography fit to mismatched features is usually not subtly wrong, it is
@@ -129,6 +155,24 @@ AREA_LO, AREA_HI = 0.70, 1.45
 
 # ── what counts as a jostle, for reporting ───────────────────────────────
 JOSTLE_PX = 3.0         # sample-to-sample step in court-corner position
+
+# ── isolated bad samples ─────────────────────────────────────────────────
+# A sample can register on far weaker evidence than its neighbours and still
+# clear MIN_INLIERS.  On Data/77 exactly two of 20,681 did -- both in the
+# opening seconds, where the picture is still fading up -- with 136 inliers
+# against the track's median of 1339, and they put the far baseline 14.9 px
+# out.  Every other sample was within 3.8 px.
+#
+# A running MEDIAN over the track removes those and leaves a genuine jostle
+# intact, which is the whole reason it is a median and not a mean: a median
+# passes a step edge through with at most a couple of samples' delay, while a
+# mean would ramp across it and smear the one event this module exists to catch.
+#
+# The filter runs on the corner POSITIONS, not on the matrices -- there is no
+# meaningful median of a homography, but a homography is fully determined by
+# where a handful of points go, so filtering the points and re-deriving the
+# matrix is both well defined and exactly equivalent.
+SMOOTH_SAMPLES = 5      # 1.0 s at SAMPLE_FPS; 0 or 1 disables
 
 _IDENTITY = np.eye(3, dtype=np.float64)
 
@@ -185,6 +229,13 @@ def _reference_frame(video_path, ref_idx):
     return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 
+def court_corners(video_path):
+    """The four clicked corners, in analysis pixels. [4,2]."""
+    import json
+    with open(C.court_cache_path(video_path)) as fh:
+        return np.array(json.load(fh)["points"], dtype=np.float64)
+
+
 def _court_mask(video_path, pad_px=25):
     """Boolean [H,W] mask of the court surface in the reference frame.
 
@@ -193,9 +244,7 @@ def _court_mask(video_path, pad_px=25):
     dilated because a feature ON a line sits at the line's edge, and the corner
     clicks are human.
     """
-    import json
-    with open(C.court_cache_path(video_path)) as fh:
-        pts = np.array(json.load(fh)["points"], dtype=np.int32)
+    pts = court_corners(video_path).astype(np.int32)
     w, h = C.ANALYSIS_SIZE
     m = np.zeros((h, w), dtype=np.uint8)
     cv2.fillConvexPoly(m, pts.reshape(-1, 1, 2), 255)
@@ -251,11 +300,15 @@ def _sane(W):
     return AREA_LO <= ratio <= AREA_HI
 
 
-def _fit(src, dst, ground_mask_fn):
-    """Global RANSAC homography, then the ground-plane re-fit.
+def _fit(src, dst, ground_mask_fn, probe=None):
+    """Global RANSAC homography, then the ground-plane re-fit if it earns it.
 
     `ground_mask_fn(dst_points) -> bool[M]` says which correspondences land on
-    the court in the REFERENCE frame.  Returns (W, n_inliers) or (None, 0).
+    the court in the REFERENCE frame.  `probe` is [K,2] reference points -- the
+    court corners -- where the two fits are compared; without it the agreement
+    gate cannot be applied and the global fit is simply kept.
+
+    Returns (W, n_inliers) or (None, 0).
     """
     if len(src) < MIN_INLIERS:
         return None, 0
@@ -267,20 +320,34 @@ def _fit(src, dst, ground_mask_fn):
     n = int(inl.sum())
     if n < MIN_INLIERS or not _sane(W):
         return None, 0
+    if probe is None:
+        return W, n
 
     on_court = inl & ground_mask_fn(dst)
-    if int(on_court.sum()) >= MIN_GROUND_INLIERS:
-        Wg, inl_g = cv2.findHomography(src[on_court], dst[on_court],
-                                       cv2.RANSAC, RANSAC_PX,
-                                       maxIters=5000, confidence=0.999)
-        if Wg is not None and inl_g is not None and _sane(Wg):
-            ng = int(inl_g.ravel().sum())
-            if ng >= MIN_GROUND_INLIERS:
-                return Wg, ng
-    return W, n
+    if int(on_court.sum()) < MIN_GROUND_INLIERS:
+        return W, n
+    Wg, inl_g = cv2.findHomography(src[on_court], dst[on_court],
+                                   cv2.RANSAC, RANSAC_PX,
+                                   maxIters=5000, confidence=0.999)
+    if Wg is None or inl_g is None or not _sane(Wg):
+        return W, n
+    ng = int(inl_g.ravel().sum())
+    if ng < MIN_GROUND_INLIERS:
+        return W, n
+    # The agreement gate.  Both fits are asked where the court corners go; a
+    # re-fit that moves them further than GROUND_AGREE_PX from what a fit with
+    # an order of magnitude more support says is not a correction, and the
+    # global fit is kept instead.
+    q = np.asarray(probe, dtype=np.float64).reshape(-1, 1, 2)
+    a = cv2.perspectiveTransform(q, W).reshape(-1, 2)
+    b = cv2.perspectiveTransform(q, Wg).reshape(-1, 2)
+    if float(np.hypot(*(a - b).T).max()) > GROUND_AGREE_PX:
+        return W, n
+    return Wg, ng
 
 
-def register(gray, pts_ref, des_ref, ground_mask_fn, orb=None, matcher=None):
+def register(gray, pts_ref, des_ref, ground_mask_fn, orb=None, matcher=None,
+             probe=None):
     """Warp mapping `gray` onto the reference frame, or (None, 0).
 
     Factored out of `estimate` so the registration can be exercised on a
@@ -291,14 +358,14 @@ def register(gray, pts_ref, des_ref, ground_mask_fn, orb=None, matcher=None):
     matcher = matcher or make_matcher()
     pts_cur, des_cur = _detect(orb, gray)
     src, dst = _match(matcher, des_cur, des_ref, pts_cur, pts_ref)
-    W, n = _fit(src, dst, ground_mask_fn)
+    W, n = _fit(src, dst, ground_mask_fn, probe)
     if W is None and not isinstance(matcher, cv2.BFMatcher):
         # The approximate matcher missed; the exact one is 6x slower and this
         # only runs on frames that already failed, so it costs nothing on a
         # clip where it is never needed.
         src, dst = _match(make_matcher(approximate=False), des_cur, des_ref,
                           pts_cur, pts_ref)
-        W, n = _fit(src, dst, ground_mask_fn)
+        W, n = _fit(src, dst, ground_mask_fn, probe)
     return W, n, pts_cur, des_cur
 
 
@@ -331,6 +398,7 @@ def estimate(video_path, force=False, sample_fps=SAMPLE_FPS, out=None,
     ref_idx = reference_index(video_path)
     ref_gray = _reference_frame(video_path, ref_idx)
     court = _court_mask(video_path)
+    quad = court_corners(video_path)
 
     def ground_mask_fn(dst):
         xi = np.clip(np.rint(dst[:, 0]).astype(int), 0, court.shape[1] - 1)
@@ -381,15 +449,15 @@ def estimate(video_path, force=False, sample_fps=SAMPLE_FPS, out=None,
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         W, n, pts_cur, des_cur = register(gray, pts_ref, des_ref,
-                                          ground_mask_fn, orb, matcher)
+                                          ground_mask_fn, orb, matcher,
+                                          probe=quad)
 
         if W is None and prev_ok_W is not None:
             # Fallback: register against the last sample that DID match the
             # reference, and compose. One link, never a chain -- the anchor is
             # still a reference-registered frame, so nothing accumulates.
             src2, dst2 = _match(matcher, des_cur, prev_kp[1], pts_cur, prev_kp[0])
-            W2, n2 = _fit(src2, dst2,
-                          lambda d: np.ones(len(d), dtype=bool))
+            W2, n2 = _fit(src2, dst2, lambda d: np.ones(len(d), dtype=bool))
             if W2 is not None:
                 cand = prev_ok_W @ W2
                 if _sane(cand):
@@ -434,6 +502,8 @@ def estimate(video_path, force=False, sample_fps=SAMPLE_FPS, out=None,
     if 0 < first < len(frames):
         W_arr[:first] = Ws[first]
 
+    W_arr = smooth(W_arr, quad)
+
     np.savez_compressed(
         out,
         frames=np.asarray(frames, dtype=np.int32),
@@ -448,6 +518,49 @@ def estimate(video_path, force=False, sample_fps=SAMPLE_FPS, out=None,
     )
     if verbose:
         report(video_path, out)
+    return out
+
+
+def _probe_points():
+    """Points the track is filtered and re-derived on.
+
+    The four court corners because they are what the map is used for, and the
+    four frame corners because a homography fitted to the court quad alone is
+    poorly conditioned outside it -- the far band reaches above the top of the
+    court, and the near player stands below its bottom.
+    """
+    w, h = C.ANALYSIS_SIZE
+    return np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float64)
+
+
+def smooth(W, quad, k=SMOOTH_SAMPLES):
+    """Running median over the track. See SMOOTH_SAMPLES for why a median."""
+    n = len(W)
+    if k < 3 or n < k:
+        return W
+    if k % 2 == 0:
+        k += 1
+    pts = np.concatenate([_probe_points(), np.asarray(quad, dtype=np.float64)])
+    p = pts.reshape(-1, 1, 2)
+    inv = np.linalg.inv(W)
+    loc = np.stack([cv2.perspectiveTransform(p, inv[i]).reshape(-1, 2)
+                    for i in range(n)])                      # [n, P, 2]
+    # The window STICKS at the ends rather than being padded with a repeat of
+    # the edge sample.  Repeating it makes a bad first sample outvote the good
+    # ones beside it, which is precisely the case this filter exists for -- the
+    # two outliers on Data/77 are the first two samples of the video.  Sticking
+    # means index 0 and index 1 both take the median of samples 0..k-1, where
+    # the outliers are outnumbered.
+    half = k // 2
+    start = np.clip(np.arange(n) - half, 0, n - k)
+    med = np.median(loc[start[:, None] + np.arange(k)], axis=1)      # [n, P, 2]
+    out = np.empty_like(W)
+    for i in range(n):
+        # method=0 -- a plain least-squares fit.  These eight points are already
+        # the filtered consensus; running RANSAC over them again would be
+        # re-deciding which of an agreed set to believe.
+        M, _ = cv2.findHomography(med[i].astype(np.float64), pts, 0)
+        out[i] = M if (M is not None and _sane(M)) else W[i]
     return out
 
 
@@ -568,10 +681,8 @@ def jostles(track, corners, step_px=JOSTLE_PX):
 
 def report(video_path, path=None):
     """What the track says, in the units that decide whether it matters."""
-    import json
     tr = load(video_path, path)
-    with open(C.court_cache_path(video_path)) as fh:
-        corners = np.array(json.load(fh)["points"], dtype=np.float64)
+    corners = court_corners(video_path)
 
     shift = tr.corner_shift(corners)
     H = C.load_homography(video_path)
@@ -670,7 +781,8 @@ def _self_test():
         A = np.asarray(W_true, dtype=np.float64)
         cur = cv2.warpPerspective(ref, A, (w, h), flags=cv2.INTER_LINEAR,
                                   borderMode=cv2.BORDER_REFLECT)
-        W, n, _, _ = register(cur, pts_ref, des_ref, gmask, orb, matcher)
+        W, n, _, _ = register(cur, pts_ref, des_ref, gmask, orb, matcher,
+                              probe=quad)
         if W is None:
             check(label, False, "did not register")
             continue
@@ -684,7 +796,8 @@ def _self_test():
         check(label, err < 1.0, f"max court-corner error {err:.2f} px, {n} inliers")
 
     print("[self-test] a static camera is the identity")
-    W, n, _, _ = register(ref, pts_ref, des_ref, gmask, orb, matcher)
+    W, n, _, _ = register(ref, pts_ref, des_ref, gmask, orb, matcher,
+                          probe=quad)
     err = float(np.abs(cv2.perspectiveTransform(quad.reshape(-1, 1, 2), W)
                        .reshape(-1, 2) - quad).max())
     check("unmoved frame -> identity", err < 0.5, f"max {err:.3f} px")
@@ -692,7 +805,8 @@ def _self_test():
     print("[self-test] garbage is rejected, not accepted quietly")
     rng = np.random.default_rng(7)
     noise = rng.integers(0, 255, (h, w)).astype(np.uint8)
-    W, n, _, _ = register(noise, pts_ref, des_ref, gmask, orb, matcher)
+    W, n, _, _ = register(noise, pts_ref, des_ref, gmask, orb, matcher,
+                          probe=quad)
     check("unrelated frame -> no warp", W is None, f"inliers {n}")
     check("_sane rejects a collapsed quad",
           not _sane(np.array([[1e-3, 0, 0], [0, 1e-3, 0], [0, 0, 1.0]])))
