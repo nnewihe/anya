@@ -5,7 +5,36 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.12"
+APP_VERSION = "0.1.0-beta.13"
+# beta.13 — the court map is a function of time, so a bumped camera no longer
+# invalidates the rest of the video.
+#   Calibration is four corners clicked ONCE, on one reference frame, turned
+#   into a single homography applied to every frame. That is right exactly as
+#   long as the camera does not move, and when it moves nothing errors: the
+#   corners still load, every projection still returns a number, and the
+#   numbers are simply wrong from that frame on. They are wrong where it costs
+#   most, too -- at far-court depth the 960x540 analysis frame is ~4-5 px per
+#   court metre, so Data/78's 46 px knock became a median 18.8 m court error
+#   and put far players a median 9.15 m from where they stood.
+#   pipeline/anya2/camera.py keeps the single clicked calibration and makes the
+#   MAP time-varying: court = H_ref @ W_t @ image(t), where W_t registers frame
+#   t against the frame the corners were clicked on (ORB + RANSAC over the 540p
+#   proxy perceive already builds, at 5 Hz, so no extra decode and no model
+#   call). The court is never re-detected -- the question asked is "how did the
+#   whole image move", answered from ~1365 matched background features a frame,
+#   and the court's position falls out because the court is part of the image.
+#   Every sample registers against the ONE reference, never chained, so nothing
+#   accumulates and a static camera gives identity warps forever.
+#   Two halves, both load-bearing and fixing different things. The geometry
+#   (tracks.build reads H_at(frame); every detector reads `court` out of the
+#   tracks npz, so one change corrects all four) recovers 24 points of recall
+#   on Data/78 -- those detections existed and the map was discarding them. The
+#   far band (perceive.far_band is now the union over the whole track) recovers
+#   5 more: a crop is a fixed ffmpeg rectangle and cannot follow a camera, so
+#   those detections did NOT exist. Point recall after the knock 65.8% -> 94.7%
+#   against 88.2% before it, with the pre-knock number unchanged in every arm --
+#   the correction does nothing when there is nothing to correct.
+#   ANYA_CAMERA_TRACK=0 restores the previous behaviour everywhere at once.
 # beta.12 — two things: audio that stays with the picture, and a Cancel button.
 #   (1) A reel's sound drifted away from its video, further the longer the
 #       reel. The cause was the JOIN, not the cutting: every re-encoded segment
