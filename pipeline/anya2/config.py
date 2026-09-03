@@ -36,6 +36,16 @@ class PerceiveConfig:
                                        # 768 costs 13 points of far recall
     device: str = "mps"
     force: bool = False
+    camera_sample_fps: Optional[float] = None
+                                       # default 5.0 -- how often the camera
+                                       # track registers a frame against the
+                                       # calibration frame.  Raise it only to
+                                       # place a jostle more precisely in time;
+                                       # a jostle is a step, and the geometry
+                                       # either side of it is already right.
+                                       # Turn tracking OFF entirely with
+                                       # ANYA_CAMERA_TRACK=0, not from here --
+                                       # see pipeline/anya2/camera.py.
 
 
 @dataclass

@@ -154,3 +154,67 @@ def eligible(court_xy):
     """
     c = np.asarray(court_xy, dtype=np.float64)
     return in_bounds(c[..., 0])
+
+
+# ── the map is a function of time, not a constant ────────────────────────
+class Geometry:
+    """Image -> court metres AT A GIVEN FRAME.
+
+    `load_homography` returns the one map implied by the four clicked corners,
+    and every caller used to apply it to every frame of the video.  That is only
+    right while the camera does not move.  This wraps it with the camera track
+    (`pipeline.anya2.camera`), which says where frame t's image sits relative to
+    the frame those corners were clicked on:
+
+        H_at(t)  =  H_ref @ W_t
+
+    With no cached track the camera track is the identity and `H_at` returns
+    `H_ref` for every frame -- byte for byte the old behaviour, through the same
+    code path rather than through a branch beside it.
+
+    FRAME INDICES ARE SOURCE FRAMES.  Every pass in anya2 is decimated by its
+    own stride, and a sample index means nothing without knowing which; the
+    source frame number is the one clock they all share.
+    """
+
+    def __init__(self, video, track=None, enabled=True):
+        self.H_ref = load_homography(video)
+        if enabled:
+            from pipeline.anya2 import camera as CAM
+            self.track = track if track is not None else CAM.load(video)
+        else:
+            from pipeline.anya2.camera import CameraTrack
+            self.track = CameraTrack.identity()
+        self._H = {}
+        self._Hi = {}
+
+    @property
+    def is_static(self):
+        """True when this is the plain fixed homography after all."""
+        return self.track.is_identity
+
+    def H_at(self, src_frame):
+        """3x3 image(src_frame) -> court metres."""
+        i = self.track.index_at(src_frame)
+        H = self._H.get(i)
+        if H is None:
+            # Cached per SAMPLE, not per frame: at 15 Hz pose over a 30 minute
+            # match this is 9000 lookups against ~9000 distinct warps, and the
+            # matrix product is the only work that would otherwise repeat.
+            H = self._H[i] = self.H_ref @ self.track.W[i]
+        return H
+
+    def H_inv_at(self, src_frame):
+        i = self.track.index_at(src_frame)
+        Hi = self._Hi.get(i)
+        if Hi is None:
+            Hi = self._Hi[i] = np.linalg.inv(self.H_at(src_frame))
+        return Hi
+
+    def project_at(self, src_frame, bbox):
+        """`project`, at a frame. [..., 4] -> [..., 2] court metres."""
+        return project(self.H_at(src_frame), bbox)
+
+    def to_court_at(self, src_frame, pts):
+        """`to_court`, at a frame. [N,2] image px -> [N,2] court metres."""
+        return to_court(self.H_at(src_frame), pts)

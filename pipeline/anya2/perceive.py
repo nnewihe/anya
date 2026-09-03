@@ -230,11 +230,17 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
     cap.release()
 
     stride_src = stride * (1 if to_analysis is None else 1)
+    # The crop travels WITH the detections.  It is the coordinate frame they
+    # were produced in, and `far()` needs it to tell a cached pass that still
+    # covers the right pixels from one aimed at a band the camera has since
+    # left -- a distinction the file's existence alone cannot make.
     np.savez_compressed(out_path, kp=kp, box=bx, conf=cf,
                         fps=np.float64(src_fps / stride),
                         src_fps=np.float64(src_fps),
                         stride=np.float64(stride_src),
-                        n_src_frames=np.float64(total))
+                        n_src_frames=np.float64(total),
+                        crop=np.asarray(crop if crop is not None else (0, 0, 0, 0),
+                                        dtype=np.int32))
     per = np.mean(np.sum(np.isfinite(cf), axis=1))
     print(f"[{label}] {out_path}: {n} samples @ {src_fps / stride:.2f} fps, "
           f"{per:.2f} persons/sample, {empty / max(n, 1):.1%} empty, "
@@ -258,6 +264,29 @@ def near(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
     print(f"[near-dets] {fps:.2f} fps source, stride {stride} -> {eff:.2f} fps")
     return _pose_pass(prox, out, stride, imgsz=NEAR_IMGSZ, device=device,
                       label="NEAR-DETS", limit=limit)
+
+
+def _band_union(video, ref_pts):
+    """Where the reference band's points land in EVERY sampled frame.
+
+    Returns a [M, 2] stack in analysis pixels: the reference points themselves
+    plus their position under each camera-track warp.  The caller takes one
+    bounding box around the lot.  With no cached track there is one warp, the
+    identity, and this returns `ref_pts` unchanged.
+    """
+    from pipeline.anya2 import camera as CAM
+    tr = CAM.load(video)
+    if tr.is_identity:
+        return ref_pts
+    inv = np.linalg.inv(tr.W)
+    # Only the EXTREMES of the track can widen a bounding box, but which sample
+    # is extreme differs per corner, so all of them are transformed.  It is 18
+    # points against a few thousand 3x3s -- milliseconds, once per video.
+    outs = [ref_pts]
+    p = ref_pts.reshape(-1, 1, 2)
+    for i in range(len(inv)):
+        outs.append(cv2.perspectiveTransform(p, inv[i]).reshape(-1, 2))
+    return np.concatenate(outs, axis=0)
 
 
 # How far above the ground the far band must reach, in metres.  A standing
@@ -284,6 +313,15 @@ def far_band(video, pad_m=FAR_BAND_PAD_M, up_m=FAR_BAND_UP_M):
     depth: the band's own width spans a known number of court metres, giving
     px-per-metre there, and the band grows upward by `up_m` of them.  That
     scales with the camera instead of being a pixel constant tuned on one clip.
+
+    THE BAND IS THE UNION OVER THE WHOLE CAMERA TRACK, not the band at
+    calibration time.  This crop becomes a fixed ffmpeg rectangle, and ffmpeg
+    cannot be asked for a rectangle that moves; a far player who leaves it is
+    not mis-projected, they are absent, and no amount of correct geometry
+    downstream brings them back.  So every sampled warp is applied to the
+    reference band and the crop is taken around all of them at once.  Paying for
+    a slightly larger decode is the cheap side of that trade -- and on a camera
+    that never moved the union is the reference band exactly.
     """
     H = C.load_homography(video)
     Hi = np.linalg.inv(H)
@@ -291,6 +329,8 @@ def far_band(video, pad_m=FAR_BAND_PAD_M, up_m=FAR_BAND_UP_M):
     ys = [C.COURT_L - pad_m, C.COURT_L + pad_m]
     pts = np.array([[x, y] for y in ys for x in xs], dtype=np.float64)
     img = cv2.perspectiveTransform(pts.reshape(-1, 1, 2), Hi).reshape(-1, 2)
+    ref_img = img
+    img = _band_union(video, img)
 
     probe = P.probe_video(video)
     W, Hh = int(probe["width"]), int(probe["height"])
@@ -301,18 +341,46 @@ def far_band(video, pad_m=FAR_BAND_PAD_M, up_m=FAR_BAND_UP_M):
     y1 = max(0, int(np.floor(img[:, 1].min() * sy)))
     y2 = min(Hh, int(np.ceil(img[:, 1].max() * sy)))
 
-    px_per_m = (x2 - x1) / (C.X_HI - C.X_LO)
+    # px-per-metre comes from the REFERENCE band's width, not the union's: the
+    # union is wider than the court by however far the camera moved, and using
+    # it here would inflate the upward growth by that same error.
+    px_per_m = ((ref_img[:, 0].max() - ref_img[:, 0].min()) * sx) / (C.X_HI - C.X_LO)
     y1 = max(0, int(y1 - round(up_m * px_per_m)))
     return (x1, y1, x2, y2), (sx, sy)
+
+
+def _crop_of(dets_npz):
+    """The crop a cached pose pass was run over, or None for an old file."""
+    try:
+        with np.load(dets_npz, allow_pickle=False) as z:
+            if "crop" not in z:
+                return None
+            return tuple(int(v) for v in z["crop"])
+    except Exception:
+        return None
 
 
 def far(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
     """Native-resolution far-baseline band, all-persons pose at `pose_fps`."""
     out = dets_path(video, FAR_SUFFIX)
-    if os.path.isfile(out) and not force:
-        print(f"[far-dets] cached: {out}")
-        return out
     crop, (sx, sy) = far_band(video)
+    if os.path.isfile(out) and not force:
+        # Existence is not freshness.  The band widens the first time a camera
+        # track finds a jostle, and a cached pass over the OLD band is missing
+        # exactly the frames the widening exists to recover -- silently, since
+        # a missing far player looks the same as a far player who is not there.
+        cached_crop = _crop_of(out)
+        # A file written before the crop was recorded reports None.  That is
+        # only ambiguous when the band could have MOVED: with a static camera
+        # track the band is the calibration band, which is what any older file
+        # was cut from, so the cache is kept rather than charging every existing
+        # video a fresh far pose pass for a camera that never moved.
+        from pipeline.anya2 import camera as CAM
+        if cached_crop == tuple(crop) or (cached_crop is None and CAM.load(video).is_identity):
+            print(f"[far-dets] cached: {out}")
+            return out
+        print(f"[far-dets] cached pass covers {cached_crop}, band is now "
+              f"{tuple(crop)} -- re-running")
     print(f"[far-dets] band {crop} in source pixels")
     prox = P.ensure_crop_proxy(video, crop, crf=14, label="FARBAND")
     src = cv2.VideoCapture(prox)
