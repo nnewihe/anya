@@ -146,14 +146,37 @@ slot-frames rise +21% / +45% / +60% across the three thirds, far serves 37 → 7
 and the reel goes 960.7 s → 1195.2 s — the broken run was dropping about four
 minutes of real rally.
 
-**What this A/B does NOT show.** It reuses the cached far dets, which were cut
-from a band aimed before the camera moved — post-jostle that band is missing 99
-px on the right and 83 px at the bottom of where the far player now is. So it
-exercises the corrected geometry but not the union band. The tracked arm's
-far-serve density after the jostle is 1.74/point against 0.59/point before it;
-if geometry alone were the whole story those would match, so precision is
-probably not restored to the pre-jostle regime. `tags.json` records point starts
-only and misses faults, so serve-level precision cannot be scored from it.
+#### Both halves of the fix, separated
+
+The table above reuses the cached far dets, cut from a band aimed before the
+camera moved — post-jostle that band is missing 99 px on the right and 83 px at
+the bottom of where the far player now is. So it exercises the corrected
+geometry but not the union band. Re-running the far pose pass over the union
+band separates the two:
+
+| arm | recall pre | recall post | far events/pt pre | post |
+|---|---|---|---|---|
+| A — fixed H, old band | 88.2% | **65.8%** | 0.53 | 0.74 |
+| B — tracked H, old band | 88.2% | 89.5% | 0.59 | 1.74 |
+| C — tracked H, union band | 88.2% | **94.7%** | 0.71 | 1.58 |
+
+Both halves are load-bearing and they fix different things. The geometry
+recovers 24 points of recall (A→B): the detections existed, and the court map
+was throwing them away. The band recovers 5 more (B→C): those detections did
+not exist, because the crop no longer contained the player — persons/sample
+0.99 → 1.11 and empty frames 22.7% → 14.2%. Nothing downstream can recover a
+frame the crop never saw, which is why the band is sized from the track rather
+than from the calibration.
+
+**The unresolved part.** Arm C's far-serve rate after the jostle is 1.58/point
+against 0.71 before it. Widening the band explains some of it — the same ratio
+in arm A is 0.53 → 0.74, and a wider crop admits more people — but not a factor
+of 2.2. Near-side density is roughly flat across the same boundary (1.24 → 0.87),
+so this is specific to the far side after the camera moved. It may be real (more
+far serves in the later part of the match) or it may be false positives that the
+recall number cannot see. `tags.json` records point starts only and misses
+faults, so serve-level precision cannot be scored from it, and this stays open
+until there is serve-level truth on this clip.
 
 **One honest negative.** On the two coarse far-side backstops the corrected
 geometry is marginally *worse* — `_trackable` survival 95.69% → 95.42% over
