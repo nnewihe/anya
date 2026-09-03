@@ -96,6 +96,26 @@ ORB_FEATURES = 4000     # a tennis frame is texture-poor in the middle and rich
                         # The count has to be high enough that the COURT still
                         # contributes after the edges have taken their share.
 LOWE_RATIO = 0.75
+
+# Approximate nearest-neighbour matching, not brute force.  Matching dominates
+# this pass -- 4000 reference descriptors against 4000 per frame is 16 M Hamming
+# comparisons -- and on Data/77 it is where 80% of the time went:
+#
+#     detect  match+fit        ground inliers (median)
+#     9.7 ms    72.9 ms  BF           175
+#     9.7 ms    11.4 ms  FLANN-LSH    176      <-- here
+#
+# Six times faster for the same answer.  LSH is approximate and can in principle
+# return fewer matches on a frame; `_register` falls back to brute force when the
+# LSH fit fails, so the approximation can cost time on a hard frame but never an
+# answer.
+_FLANN_LSH = dict(algorithm=6, table_number=6, key_size=12, multi_probe_level=1)
+
+
+def make_matcher(approximate=True):
+    if approximate:
+        return cv2.FlannBasedMatcher(_FLANN_LSH, dict(checks=32))
+    return cv2.BFMatcher(cv2.NORM_HAMMING)
 RANSAC_PX = 3.0
 MIN_INLIERS = 30        # below this the fit is not evidence of anything
 MIN_GROUND_INLIERS = 20 # ...to prefer the ground-plane re-fit over the global
@@ -268,10 +288,17 @@ def register(gray, pts_ref, des_ref, ground_mask_fn, orb=None, matcher=None):
     whose only test is "the reel looked better" is a routine nobody can change.
     """
     orb = orb or cv2.ORB_create(nfeatures=ORB_FEATURES)
-    matcher = matcher or cv2.BFMatcher(cv2.NORM_HAMMING)
+    matcher = matcher or make_matcher()
     pts_cur, des_cur = _detect(orb, gray)
     src, dst = _match(matcher, des_cur, des_ref, pts_cur, pts_ref)
     W, n = _fit(src, dst, ground_mask_fn)
+    if W is None and not isinstance(matcher, cv2.BFMatcher):
+        # The approximate matcher missed; the exact one is 6x slower and this
+        # only runs on frames that already failed, so it costs nothing on a
+        # clip where it is never needed.
+        src, dst = _match(make_matcher(approximate=False), des_cur, des_ref,
+                          pts_cur, pts_ref)
+        W, n = _fit(src, dst, ground_mask_fn)
     return W, n, pts_cur, des_cur
 
 
@@ -311,7 +338,7 @@ def estimate(video_path, force=False, sample_fps=SAMPLE_FPS, out=None,
         return court[yi, xi]
 
     orb = cv2.ORB_create(nfeatures=ORB_FEATURES)
-    matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+    matcher = make_matcher()
     pts_ref, des_ref = _detect(orb, ref_gray)
     if des_ref is None:
         raise RuntimeError("no ORB features in the calibration frame; "
@@ -331,12 +358,21 @@ def estimate(video_path, force=False, sample_fps=SAMPLE_FPS, out=None,
     f = 0
     n_want = (min(n_src, limit) if limit else n_src)
     while True:
-        ok, img = cap.read()
-        if not ok:
+        # grab() then retrieve(), rather than read().  Eleven of every twelve
+        # frames are skipped here, and read() pays for a colour conversion and a
+        # copy of each one before we throw it away; grab() advances the decoder
+        # without either.  Measured on Data/77 it saves ~2% -- decode is NOT the
+        # bottleneck, matching is (see MATCHER below).  Kept because it is
+        # strictly less work, not because it bought anything.
+        if not cap.grab():
             break
         if limit and f >= limit:
             break
         if f % step:
+            f += 1
+            continue
+        ok, img = cap.retrieve()
+        if not ok:
             f += 1
             continue
         cancel.check()
@@ -602,7 +638,7 @@ def _self_test():
     w, h = C.ANALYSIS_SIZE
     ref, quad = _synthetic_court()
     orb = cv2.ORB_create(nfeatures=ORB_FEATURES)
-    matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
+    matcher = make_matcher()
     pts_ref, des_ref = _detect(orb, ref)
     court = np.zeros((h, w), np.uint8)
     cv2.fillConvexPoly(court, quad.astype(np.int32), 255)
