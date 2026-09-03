@@ -8,6 +8,19 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.1.0-beta.13
+
+- **A bumped camera no longer wrecks the rest of the video.** The app
+  learns where the court is from the four corners you click once, at
+  the start. If the camera then got knocked — a nudged tripod, someone
+  leaning on the fence — everything after that was measured against a
+  court that had moved, and the app quietly began missing points. On a
+  49-minute match where the camera was knocked at 10:53, it found 66%
+  of the points after the bump against 88% before it. It now finds
+  95%, and the reel gained about four minutes of rally that had been
+  dropped. Nothing changes for video where the camera never moved, and
+  you don't need to re-click anything.
+
 ## 0.1.0-beta.12
 
 - **Sound now stays with the picture.** In longer reels the audio slowly
