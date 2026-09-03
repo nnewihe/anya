@@ -112,6 +112,49 @@ compression is worst, so the same drift reads as **0.02 m of error at the near
 corners and 2.4 m at the far ones** by the end of the match. That asymmetry is
 the entire story of why a fixed homography fails quietly rather than obviously.
 
+#### Data/78 — the clip with an actual jostle
+
+Data/77 has drift; Data/78 has a bump, and it is what the module was built for.
+The camera is dead still for ten minutes, is knocked at 10:53, and is still
+again for the next thirty:
+
+| | corner shift |
+|---|---|
+| 0–10 min | 0.5–1.0 px |
+| **10:53** | → **45.2 px** (dx +24.1, dy −9.4 at the far baseline) |
+| 12–42 min | 45.8–46.1 px, flat |
+| **~43:30** | → **52.1 px**, a second smaller knock |
+
+Sub-pixel stable across fifteen consecutive 2-minute windows, which is the
+strongest evidence available that the estimate is real: noise does not hold
+46.0 for half an hour. Under the fixed homography that is a **median 18.8 m**
+court error, and the far player lands a median **9.15 m** from where they are.
+
+Scored against the clip's own `tags.json` point starts (±3 s), both arms run off
+the SAME cached pose passes so the court map is the only variable:
+
+| point recall | fixed | tracked |
+|---|---|---|
+| before the jostle | 88.2% | **88.2%** |
+| after | 65.8% | **89.5%** |
+| overall | 72.7% | **89.1%** |
+
+The first row is the control and matters as much as the second: the correction
+does nothing when there is nothing to correct, which is what a change of
+coordinates that is the identity on a still camera has to look like. Far
+slot-frames rise +21% / +45% / +60% across the three thirds, far serves 37 → 76,
+and the reel goes 960.7 s → 1195.2 s — the broken run was dropping about four
+minutes of real rally.
+
+**What this A/B does NOT show.** It reuses the cached far dets, which were cut
+from a band aimed before the camera moved — post-jostle that band is missing 99
+px on the right and 83 px at the bottom of where the far player now is. So it
+exercises the corrected geometry but not the union band. The tracked arm's
+far-serve density after the jostle is 1.74/point against 0.59/point before it;
+if geometry alone were the whole story those would match, so precision is
+probably not restored to the pre-jostle regime. `tags.json` records point starts
+only and misses faults, so serve-level precision cannot be scored from it.
+
 **One honest negative.** On the two coarse far-side backstops the corrected
 geometry is marginally *worse* — `_trackable` survival 95.69% → 95.42% over
 16,072 far detections. The correction pushes the far player ~1.8 m deeper in the
