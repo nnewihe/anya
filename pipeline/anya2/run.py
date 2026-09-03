@@ -14,15 +14,22 @@ Stages, and why they are in this order
                   opens a cv2 window, so it MUST run on the caller's main
                   thread -- `ensure_court` is separated out for exactly that,
                   and the desktop app calls it before starting the worker.
-  2 PERCEIVE      the two pose passes.  The whole cost of the pipeline; see
+  2 CAMERA TRACK  where each frame sits relative to the frame those corners were
+                  clicked on.  BEFORE perceive, and not merely for tidiness:
+                  the far pose pass crops a fixed rectangle around the far
+                  baseline, and that rectangle has to be sized to cover
+                  everywhere the camera went, which is only knowable once the
+                  track exists.  It also builds the 540p proxy that the near
+                  pass then reuses, so it costs one decode, not two.
+  3 PERCEIVE      the two pose passes.  The whole cost of the pipeline; see
                   perceive.py for why one ROI cannot serve both ends.
-  3 TRACKS        <=2 near + <=2 far player slots on one timeline.
-  4 END SIGNALS   the walking classifier and near_end's four pose signals, both
+  4 TRACKS        <=2 near + <=2 far player slots on one timeline.
+  5 END SIGNALS   the walking classifier and near_end's four pose signals, both
                   read off the near track.  Agent 3 needs them; nothing else
                   does.
-  5 DETECTORS     the three agents, independently.
-  6 ORCHESTRATE   structure, rules, recovery, smoothing -> segments.
-  7 CUT           ffmpeg.
+  6 DETECTORS     the three agents, independently.
+  7 ORCHESTRATE   structure, rules, recovery, smoothing -> segments.
+  8 CUT           ffmpeg.
 
 Progress is reported as (stage_index, n_stages, label, fraction) to match what
 `rally_reel` emits, so the app's existing progress handling works unchanged.
@@ -37,6 +44,7 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 
 from pipeline import cancel
+from pipeline.anya2 import camera as CAM
 from pipeline.anya2 import far_serve as FS
 from pipeline.anya2 import near_serve as NS
 from pipeline.anya2 import perceive as PC
@@ -46,7 +54,7 @@ from pipeline.anya2.config import Anya2Config
 from pipeline.anya2.contract import dump_events
 from pipeline.anya2.orchestrator import SEGMENTS_SUFFIX, build_reel as orchestrate
 
-N_STAGES = 7
+N_STAGES = 8
 
 
 def _emit(cb, i, label, frac=None):
@@ -178,7 +186,7 @@ def cut(video: str, segments: List[dict], output: str,
         # of seconds to encode, which would be the whole latency of Cancel.
         if cancel.run(cmd, capture_output=True).returncode == 0:
             parts.append(p)
-        _emit(on_progress, 6, f"Cutting segment {i + 1}/{len(segments)}",
+        _emit(on_progress, 7, f"Cutting segment {i + 1}/{len(segments)}",
               (i + 1) / len(segments))
     if not parts:
         raise RuntimeError("every segment failed to encode")
@@ -212,20 +220,28 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
     _emit(on_progress, 0, "Court calibration")
     ensure_court(video_path)
 
-    _emit(on_progress, 1, "Detecting players (near)")
+    # Before perceive: `PC.far`'s crop rectangle is sized from this track, and
+    # a crop is a fixed ffmpeg rectangle that cannot follow a moving camera.
+    _emit(on_progress, 1, "Tracking the camera")
+    CAM.estimate(video_path, force=cfg.perceive.force,
+                 sample_fps=cfg.perceive.camera_sample_fps or CAM.SAMPLE_FPS,
+                 on_progress=lambda fr: _emit(on_progress, 1,
+                                              "Tracking the camera", fr))
+
+    _emit(on_progress, 2, "Detecting players (near)")
     near_npz = PC.near(video_path, device=cfg.perceive.device,
                        pose_fps=cfg.perceive.pose_fps, force=cfg.perceive.force)
-    _emit(on_progress, 1, "Detecting players (far)", 0.5)
+    _emit(on_progress, 2, "Detecting players (far)", 0.5)
     far_npz = PC.far(video_path, device=cfg.perceive.device,
                      pose_fps=cfg.perceive.pose_fps, force=cfg.perceive.force)
 
-    _emit(on_progress, 2, "Building player tracks")
+    _emit(on_progress, 3, "Building player tracks")
     TR.build(video_path, near_npz, far_npz, verbose=False)
 
-    _emit(on_progress, 3, "Player motion signals")
+    _emit(on_progress, 4, "Player motion signals")
     _end_signals(video_path, force=cfg.perceive.force)
 
-    _emit(on_progress, 4, "Detecting serves and point ends")
+    _emit(on_progress, 5, "Detecting serves and point ends")
     if cfg.near.enabled:
         ev = NS.detect_video(video_path, verbose=False,
                              threshold=cfg.near.threshold or NS.THRESHOLD,
@@ -246,7 +262,7 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
                              min_live_s=cfg.end.min_live_s)
         dump_events(ev, os.path.join(d, f"{st}{PE.EVENTS_SUFFIX}"))
 
-    _emit(on_progress, 5, "Assembling the reel")
+    _emit(on_progress, 6, "Assembling the reel")
     # A disabled agent is disabled for the ORCHESTRATOR too, not merely skipped
     # here -- its events are cached on disk and would otherwise still be read.
     cfg.reel.use_near = cfg.near.enabled
@@ -259,6 +275,6 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
     if dry_run or not segments:
         return segments, None
 
-    _emit(on_progress, 6, "Cutting video", 0.0)
+    _emit(on_progress, 7, "Cutting video", 0.0)
     out = cut(video_path, segments, output_path, cfg, on_progress)
     return segments, out

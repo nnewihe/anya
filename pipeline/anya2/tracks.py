@@ -384,8 +384,19 @@ def build(video, dets_npz=None, far_npz=None, out=None, verbose=True):
     dets_npz = dets_npz or dets_path(video)
     kp_all, box_all, conf_all, fps, z = _stack(dets_npz, far_npz)
     n, k = conf_all.shape
-    H = C.load_homography(video)
-    H_inv = np.linalg.inv(H)
+    # The court map is read PER FRAME, not once.  A bumped camera leaves the
+    # cached corners describing a court that is no longer where they say, and
+    # nothing here would notice: every projection still returns a number, just
+    # the wrong one, for every frame after the bump.  `Geometry` composes the
+    # clicked homography with the camera track's warp for that frame, and with
+    # no track cached it IS the clicked homography -- see anya2/camera.py.
+    geom = C.Geometry(video)
+    # Pose sample f is source frame f * stride (`perceive._pose_pass` writes
+    # `idx = range(0, total, stride)`), and the camera track is keyed by source
+    # frame because that is the one clock the two decimated passes share.
+    stride = int(z["stride"]) if "stride" in z else 1
+    if verbose and not geom.is_static:
+        print(f"[tracks] camera track active over {len(geom.track.frames)} samples")
 
     kp_out = np.full((n, N_SLOTS, N_KP, 3), np.nan, dtype=np.float32)
     bb_out = np.full((n, N_SLOTS, 4), np.nan, dtype=np.float32)
@@ -396,6 +407,9 @@ def build(video, dets_npz=None, far_npz=None, out=None, verbose=True):
     slot_ids = {C.NEAR: NEAR_SLOTS, C.FAR: FAR_SLOTS}
 
     for f in range(n):
+        src_f = f * stride
+        H = geom.H_at(src_f)
+        H_inv = geom.H_inv_at(src_f)
         by_side = {C.NEAR: [], C.FAR: []}
         for i in range(k):
             cf = conf_all[f, i]

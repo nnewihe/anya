@@ -20,6 +20,7 @@ the desktop app and the backend server automatically.
 | `anya_near_telemetry.py` | **Near fast path** — near-only extractor (540p proxy + 5 fps player + toss-ROI ball) at ~12x |
 | `proxy.py` | One-time frame-exact ffmpeg proxies (downscaled whole frame, or native-resolution crop) shared by both fast paths |
 | `near_end.py` | **Near-player point-end signals** — settle, turn-away, stance-drop, idle-hands, off the pose pass the walking classifier already ran |
+| `anya2/camera.py` | **Camera track** — per-frame warp back onto the calibration frame, so a bumped camera does not silently invalidate the court map |
 | `anya_base.py` | YOLO player + ball telemetry provider |
 | `ball_tracker.py` | IMM Kalman single-ball tracker |
 | `utilities.py` | ffmpeg highlight cutter, court homography helpers |

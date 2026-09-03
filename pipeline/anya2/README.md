@@ -16,6 +16,7 @@ untouched so every number below is A/B-able against them.
 | module | what it owns |
 |---|---|
 | `court.py` | image→court-metres map, and the two player gates |
+| `camera.py` | per-frame warp back onto the calibration frame — the map is a function of time |
 | `tracks.py` | ≤2 near + ≤2 far player tracks, with a per-frame eligibility flag |
 | `balls.py` | ball detection with exclusion zones applied at source |
 | `perceive.py` | the two pose ROIs (near 540p whole-frame, far native-res band) |
@@ -35,6 +36,58 @@ the homography is a full plane map, so the alley is analytic.
 Tracking uses a **looser** zone than the gate, on purpose. Players walk off
 court to the ball carts; a court gate would break the track and then
 mis-reacquire it. So a player off court is still *tracked*, just not *eligible*.
+
+### The map is a function of time
+
+Calibration is four corners clicked once, on one reference frame. That is one
+homography, and applying it to every frame is correct exactly as long as the
+camera does not move. When the camera *is* bumped, nothing errors: the corners
+still load, every projection still returns a number, and the numbers are simply
+wrong from that frame on.
+
+They are wrong in the direction that costs most. At far-court depth the 960×540
+analysis frame is only ~4–5 px per court metre, so a 20 px jostle moves the far
+baseline by four metres — `side()` starts calling far players near, `in_bounds()`
+starts rejecting players who are on the court, and the far-serve band gates on a
+`court_y` that no longer means what it meant at calibration.
+
+`camera.py` keeps the single clicked calibration and makes the map time-varying
+instead:
+
+    court metres  =  H_ref  @  W_t  @  (image point at frame t)
+
+`W_t` registers frame t against the frame the corners were clicked on — ORB plus
+a RANSAC homography over the 540p proxy `perceive` already builds, at 5 Hz, so it
+costs no extra decode and no model call. Every sample is registered against the
+**one** reference, never chained, so nothing accumulates and a static camera
+gives identity warps forever. `court.Geometry` composes the two; with no cached
+track it *is* `H_ref`, through the same code path rather than a branch beside it.
+
+Two details that are not incidental:
+
+- **Ground-plane inliers are re-fit separately.** A single homography fits the
+  whole scene only under pure rotation; a real bump translates a little too, and
+  then the fence, the stands and the court surface each want a different one.
+  Downstream `W_t` is only ever used on ground points, so the inliers landing
+  inside the court polygon are re-fit alone when there are ≥20 of them.
+- **The far band is the union over the whole track.** `perceive.far_band` becomes
+  a fixed ffmpeg crop, and a crop cannot follow a camera. A far player who leaves
+  it is not mis-projected, they are *absent*. So the band is taken around the
+  reference band under every sampled warp at once. The cached far pose pass now
+  records its crop and re-runs when the band moves.
+
+Measured on a synthetic 30 s clip with a known 21 px pan/tilt/roll at t=15 s
+(`--self-test` covers the same math analytically):
+
+| | max court error |
+|---|---|
+| fixed homography | **2.63 m** |
+| tracked | **0.10 m** |
+
+The jostle is reported at frame 450 — the frame it was injected at.
+
+Turn it off with `ANYA_CAMERA_TRACK=0`, which restores the previous behaviour
+everywhere at once: nothing estimates a track and nothing reads a cached one.
 
 ## Near-side serve — results
 
@@ -795,6 +848,9 @@ not test that.
 ## Usage
 
 ```bash
+python -m pipeline.anya2.camera   --self-test          # no video needed
+python -m pipeline.anya2.camera   /Volumes/Anya/Data/21/snippet.mp4
+python -m pipeline.anya2.camera   /Volumes/Anya/Data/21/snippet.mp4 --report
 python -m pipeline.anya2.perceive /Volumes/Anya/Data/21/snippet.mp4 --roi near
 python -m pipeline.anya2.perceive /Volumes/Anya/Data/21/snippet.mp4 --roi far
 python -m pipeline.anya2.tracks   /Volumes/Anya/Data/21/snippet.mp4 \
@@ -820,6 +876,13 @@ python -m pipeline.anya2.orchestrator /Volumes/Anya/Data/21/snippet.mp4
 - **The far ROI is built but unused.** `perceive.far` derives the band from the
   homography and grows it upward by 2.8 m of court scale (a ground-strip band is
   ~55 px on a 4K clip and clips the server's raised arm). Nothing reads it yet.
+- **The end signals still project through the fixed homography.** `walking.predict`
+  and `near_end.frame_signals` each call `load_homography` themselves, so after a
+  jostle their `court_x`/`court_y` carry a constant offset and their `speed`/`acc`
+  carry a one-sample spike at the jostle instant. anya2's own gates are corrected;
+  these two feed agent 3 and are not. Threading `Geometry` through them means
+  changing signatures in `walking/`, which is why it is listed here rather than
+  done.
 - **Slot flapping on clip 38** — 31 identity switches over 420 s on a singles
   clip. The doubles clips are stable (2 and 1), which is what the "who served"
   answer depends on, so this is not currently costing anything measurable.
