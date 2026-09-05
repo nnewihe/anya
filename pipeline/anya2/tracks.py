@@ -119,6 +119,158 @@ FAR_BACK_M = 12.0
 HEIGHT_MAX_RATIO = 1.40    # observed / expected; p90 is 1.24
 PLAYER_HEIGHT_M = 1.75
 
+# ── the far band's lower edge, enforced a second time ────────────────────
+# `perceive._pose_pass` already refuses far-band detections whose box bottom
+# sits ON the crop's lower edge, for the reason given there: the box bottom is
+# the CROP BOUNDARY and not the person's feet, so projecting it through a
+# ground-plane homography invents a place they never stood.
+#
+# THAT FILTER WAS TOO TIGHT BY ABOUT ONE PIXEL, and it cost six false far
+# serves.  Its `edge_px` is 2.0, and the near SERVER -- who at the trophy
+# extends up into the band and is cut by it -- lands just outside:
+#
+#     clip 22 @108.1s   box bottom 2.7 px from the edge   (cutoff 2.0)
+#     clip 22 @111.3s                 4.0 px
+#     clip 22 @165.3s                 2.5 px
+#     clip 22 @196.1s                 2.7 px
+#     clip 35 @139.0s                 2.6 px
+#     clip 35 @153.5s                 2.5 px
+#
+# Every one clears the cutoff by 0.5 to 2.0 px.  A detector does not put a box
+# edge exactly on the image boundary; it lands a few pixels inside, so a 2 px
+# tolerance tests for something that does not happen.
+#
+# The consequence is not a slightly wrong position.  The cut box projects to
+# court_y 16-19 m, `is_near` calls it FAR, and the fragment -- a head with a
+# wrist above it -- is precisely the shape `far_serve` hunts.  The near
+# player's own serve is scored as a far serve, twice per clip.
+#
+# `_height_plausible` cannot catch it either: it is one-sided by design and
+# rejects only boxes TOO BIG for their depth, while truncation makes the box
+# too SMALL -- 51 px where the intact player is 200 -- which is exactly what a
+# real player at 18 m looks like.  Truncation is the one failure mode that
+# defeats a one-sided height test.
+#
+# So the test is repeated here, wider.  It lives in `tracks` rather than as a
+# raised `edge_px` because changing the perceive-side constant invalidates
+# every cached far pose pass -- the most expensive stage in the pipeline --
+# for a bound that wants to be measured against results.
+#
+# SWEPT over the twelve snippets, far serve at the shipped thresholds:
+#
+#     edge_px   hits/91   fp   recall  precision     F1
+#       2.0       87      18    95.6%     82.9%     88.8   <- perceive's value
+#       3.0       87      12    95.6%     87.9%     91.6   <- here
+#       3.5       87      14    95.6%     86.1%     90.6
+#       4.0       86      13    94.5%     86.9%     90.5
+#       5.0       86      13    94.5%     86.9%     90.5
+#       6.0       85      13    93.4%     86.7%     89.9
+#
+# 3.0 keeps every serve and removes a third of the false positives.  Clip 22
+# goes from five false positives to two, clip 35 from four to one.
+#
+# IT DOES NOT RISE MONOTONICALLY, and that is worth knowing before anyone
+# retunes it: 3.5 scores WORSE than 3.0.  Dropping a far-band candidate frees a
+# slot, the freed slot is filled by somebody else, and that person brings their
+# own detections.  Past 3.0 the number is being decided by slot-assignment
+# churn rather than by the truncation criterion, so it should not be pushed
+# further on the strength of this table alone.
+#
+# The cost above 3.0 is real and has a cause: the band is grown UPWARD from a
+# ground strip about the far baseline, so a far player standing INSIDE the
+# baseline has their feet near the band's lower edge too.  At 6.0 that deletes
+# two of clip 23's labelled serves.  This bound separates a cut box from a
+# player standing near the front of the band, and those two are only a few
+# pixels apart.
+#
+# NOT A FAR-SIDE-ONLY CHANGE, measured on the same twelve clips:
+#     near serve   88.9% / 86.2%  ->  unchanged, to the detection
+#     point end    59.1% / 50.3%  ->  58.3% / 54.0%, truncations 0 either way
+# Two clips (26, 50) see their NEAR slots change, because the band's lower edge
+# legitimately catches a near player at the net and those detections are now
+# dropped -- correctly, since a cut box has no ground point whichever side it
+# lands on, and the whole-frame pass sees that player intact anyway.
+FAR_EDGE_PX = 3.0          # source pixels; the six mis-projections are 2.5-4.0
+
+# ── the box bottom must actually BE the feet ─────────────────────────────
+# FAR_EDGE_PX tests one CAUSE of a box with no feet in it.  This tests the
+# thing itself, and so catches the same failure however it arose -- the crop
+# edge, the frame edge, an occluding player, the net post.
+#
+# The projection's whole assumption is that the box bottom is where the person
+# meets the ground.  A pose model tells us directly whether it is: if it found
+# no knee and no ankle, there is no lower body in the box and its bottom edge
+# is wherever the person was cut off.  Measured at the trophy, over the six
+# known mis-projections and 114 true far serves:
+#
+#     rule                                    rejects fragments   real far
+#     no confident ankle                             83%             2%
+#     no confident knee                              83%             1%
+#     no ankle AND no knee                           83%             1%
+#     fewer than 12 confident keypoints              33%             1%
+#     head sits below 0.25 of box height             50%            13%
+#     head below the hips (an upside-down box)        0%             0%
+#
+# THE ANATOMICAL ORDERING RULES DO NOT FIRE.  A box "with the head at the
+# bottom" sounds like the signature of this failure and never once occurs: the
+# band cuts the near player at the WAIST, so the fragment keeps the head at the
+# top and looks perfectly well-formed.  What it loses is the FEET.  The
+# invariant worth testing is the presence of the lower body, not the order of
+# what is present.
+#
+# IT WORKS, AND IT IS OFF.  Measured end to end it removes the fragment class
+# completely -- 2 of the 12 remaining far-serve false positives are still cut
+# near players, and this takes them to 0 -- but it does not pay for itself:
+#
+#     rules on                    far serve        point end      fragments
+#     edge 3.0                  96.7% / 88.0%   58.3% / 54.0%         2
+#     edge 3.0 + lower body     95.6% / 87.9%   57.5% / 51.8%         0
+#
+# One far serve, one point end, and 2.2 points of point-end precision, to
+# remove two false positives that the orchestrator's rule 2 -- a far serve
+# surrounded by near serves is suspect -- is already aimed at.  The recall side
+# of that trade is the wrong direction for a point START.
+#
+# The serve it costs is NOT one this rule rejects.  Clip 23's server at 377.8 s
+# has every keypoint confident, both ankles, hips at 0.51 of the box, and sits
+# 41 px clear of the band edge.  It is lost because dropping OTHER samples puts
+# holes in its stillness window -- a second-order effect through `still`, not a
+# judgement about that box.
+#
+# Kept because it is the more general statement.  FAR_EDGE_PX tests one cause of
+# a footless box; this tests the box.  On footage where the truncation comes
+# from an occluding player, the net post or the frame edge rather than the crop,
+# this is the rule that catches it and FAR_EDGE_PX is not.
+FAR_LOWER_BODY_CONF = 0.20
+FAR_NEED_LOWER_BODY = False
+
+
+FAR_HIP_MAX_FRAC = 0.85    # hips this far down the box means no legs below them
+
+
+def _has_lower_body(kp_one, box=None):
+    """Is there a lower body in this box, so its bottom edge is the feet?
+
+    Two readings, because they fail in different places.  A knee or an ankle is
+    direct evidence.  Failing that, WHERE THE HIPS SIT IN THE BOX answers the
+    same question indirectly: on a whole player the hips are around 0.45-0.77 of
+    the way down, and on a box cut at the waist they are at 0.88-1.02 -- there
+    is nothing below them because there is no room below them.
+
+    The hip reading is kept as a fallback rather than the primary test because
+    it is the weaker of the two, and absent hips are not evidence either way.
+    """
+    if np.any(kp_one[[13, 14, 15, 16], 2] >= FAR_LOWER_BODY_CONF):
+        return True
+    if box is None:
+        return False
+    h = float(box[3] - box[1])
+    hips = [(float(kp_one[i, 1]) - float(box[1])) / h
+            for i in (11, 12) if kp_one[i, 2] >= FAR_LOWER_BODY_CONF and h > 0]
+    if not hips:
+        return False                    # nothing to read; no lower body found
+    return float(np.mean(hips)) <= FAR_HIP_MAX_FRAC
+
 LOST_FRAMES = 60       # keep a lost slot's anchor this long before freeing it
 MAX_SPEED = 9.0        # m/s; faster than a sprint means a different human
 
@@ -164,6 +316,27 @@ def _px_per_m(H_inv, cy):
         np.array([[[0.0, cy]], [[C.COURT_W, cy]]], dtype=np.float64), H_inv
     ).reshape(-1, 2)
     return float(np.hypot(*(p[1] - p[0]))) / C.COURT_W
+
+
+def _far_band_edge(video, far_npz):
+    """The far band's lower edge in ANALYSIS-frame y, and the tolerance there.
+
+    Returns (edge_y, tol) or None when the far pass carries no crop -- a file
+    written before the crop was recorded, which must not be guessed at.
+    """
+    if not far_npz:
+        return None
+    z = np.load(far_npz)
+    if "crop" not in z:
+        return None
+    crop = np.asarray(z["crop"], dtype=np.float64)
+    cap = cv2.VideoCapture(video)
+    src_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    cap.release()
+    if not src_h:
+        return None
+    sy = float(src_h) / C.ANALYSIS_SIZE[1]     # source px per analysis px
+    return float(crop[3]) / sy, FAR_EDGE_PX / sy
 
 
 def _height_plausible(h, cy, H_inv):
@@ -359,7 +532,8 @@ def _stack(near_npz, far_npz):
         raise ValueError("no detections given")
     if len(zs) == 1:
         z = zs[0]
-        return z["kp"], z["box"], z["conf"], float(z["fps"]), z
+        # No far pass: nothing can be cut by a band that was never cropped.
+        return z["kp"], z["box"], z["conf"], float(z["fps"]), z, z["kp"].shape[1]
     a, b = zs
     # The two passes must be on ONE timeline.  They are extracted at the same
     # pose_fps from the same source, so they should already agree; a mismatch
@@ -375,14 +549,21 @@ def _stack(near_npz, far_npz):
     kp = np.concatenate([a["kp"][:n], b["kp"][:n]], axis=1)
     box = np.concatenate([a["box"][:n], b["box"][:n]], axis=1)
     conf = np.concatenate([a["conf"][:n], b["conf"][:n]], axis=1)
-    return kp, box, conf, float(a["fps"]), a
+    # Candidate indices below this came from the near (whole-frame) pass, which
+    # has no crop and therefore no edge to be cut by.  At or above it they came
+    # from the far band -- the only ones FAR_EDGE_PX applies to.
+    return kp, box, conf, float(a["fps"]), a, int(a["kp"].shape[1])
 
 
 def build(video, dets_npz=None, far_npz=None, out=None, verbose=True):
     from walking.extract_pose import dets_path
 
     dets_npz = dets_npz or dets_path(video)
-    kp_all, box_all, conf_all, fps, z = _stack(dets_npz, far_npz)
+    kp_all, box_all, conf_all, fps, z, n_near = _stack(dets_npz, far_npz)
+    # The far band's lower edge, and how close a box bottom may come to it
+    # before it stops being a ground point.  See FAR_EDGE_PX.
+    band = _far_band_edge(video, far_npz)
+    n_cut = n_nolegs = 0
     n, k = conf_all.shape
     # The court map is read PER FRAME, not once.  A bumped camera leaves the
     # cached corners describing a court that is no longer where they say, and
@@ -419,6 +600,18 @@ def build(video, dets_npz=None, far_npz=None, out=None, verbose=True):
             h = float(box[3] - box[1])
             if not np.isfinite(h) or h < MIN_H_PX:
                 continue
+            # A far-pass box cut by the band's lower edge has no feet in it, so
+            # it has no ground point to project.  Drop it rather than place it
+            # somewhere nobody stood -- see FAR_EDGE_PX.
+            if band is not None and i >= n_near and box[3] >= band[0] - band[1]:
+                n_cut += 1
+                continue
+            # No lower body in the box means its bottom edge is not a ground
+            # point, whatever cut it off -- see FAR_NEED_LOWER_BODY.
+            if (FAR_NEED_LOWER_BODY and i >= n_near
+                    and not _has_lower_body(kp_all[f, i], box)):
+                n_nolegs += 1
+                continue
             cx, cy = C.project(H, box)
             sd = C.NEAR if C.is_near(cy) else C.FAR
             if not _trackable(cx, cy, sd):
@@ -450,6 +643,11 @@ def build(video, dets_npz=None, far_npz=None, out=None, verbose=True):
                         eligible=el_out, side=SIDE_OF_SLOT.astype("U4"),
                         fps=np.float64(fps), **extra)
     if verbose:
+        if band is not None:
+            print(f"[tracks] dropped {n_cut} far-band detections cut by the "
+                  f"band's lower edge (within {FAR_EDGE_PX:.0f} source px)"
+                  + (f", {n_nolegs} with no knee or ankle in the box"
+                     if FAR_NEED_LOWER_BODY else ""))
         _report(out, n)
     return out
 

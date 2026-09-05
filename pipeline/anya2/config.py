@@ -60,13 +60,18 @@ class NearServeConfig:
 
 @dataclass
 class FarServeConfig:
-    """Agent 2. Elevation-only trophy, plus stillness and a separate toss score."""
-    threshold: Optional[float] = None      # default 0.75
+    """Agent 2. Elevation-only trophy, weighted by stillness and the toss."""
+    threshold: Optional[float] = None      # default 0.60
     lead_s: Optional[float] = None         # default 0.90
     refract_s: Optional[float] = None      # default 3.0
-    w_still: Optional[float] = None        # default 0.30 -- weight of the
+    w_still: Optional[float] = None        # default 0.75 -- weight of the
                                            # pre-serve stillness veto, the term
                                            # that took precision 51% -> 65%
+    w_toss: Optional[float] = None         # default 0.60 -- weight of the toss
+                                           # factor.  AUC 81% against this
+                                           # detector's own false positives,
+                                           # the only term that separates them
+                                           # at all; see far_serve's TOSS block
     require_court: bool = True
     enabled: bool = True
 

@@ -253,7 +253,8 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
                              threshold=cfg.far.threshold or FS.THRESHOLD,
                              require_court=cfg.far.require_court,
                              lead_s=cfg.far.lead_s, refract_s=cfg.far.refract_s,
-                             w_still=cfg.far.w_still)
+                             w_still=cfg.far.w_still,
+                             w_toss=cfg.far.w_toss)
         dump_events(ev, os.path.join(d, f"{st}{FS.EVENTS_SUFFIX}"))
     if cfg.end.enabled:
         ev = PE.detect_video(video_path, verbose=False,

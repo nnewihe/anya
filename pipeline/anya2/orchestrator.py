@@ -203,12 +203,23 @@ class ReelConfig:
     recover_min_s: float = 3.0       # ...held this long to count as a point
 
     # ── rule 1: toss evidence adjusts a far serve's confidence ───────────
-    # Two independent readings of the same event, neither of which the far
-    # detector folds into its own score:
-    #
     # The evidence is `far_serve.toss_score` -- the tossing arm's own motion,
-    # AUC 75% against far false positives and correlated only +0.04 with the
-    # serve score, so it is genuinely new evidence.
+    # AUC 75% against far false positives when this rule was built.
+    #
+    # ITS INDEPENDENCE PREMISE NO LONGER HOLDS, and that is recorded here rather
+    # than quietly left standing.  This rule was justified by the toss being a
+    # reading "which the far detector does not fold into its own score", and by
+    # its +0.04 correlation with that score.  `far_serve` now WEIGHTS the toss
+    # directly (W_TOSS, after it measured AUC 81% against its own false
+    # positives -- the only term that separated them at all), so the two are no
+    # longer independent and this rule now adjusts on evidence that has already
+    # been counted once.
+    #
+    # It is left ENABLED and unchanged, because turning it off is a separate
+    # claim needing its own orchestrator eval, and because the two act at
+    # different points -- W_TOSS decides what is emitted, this shifts the
+    # confidence of what survived.  But the correlation must be re-measured
+    # before anyone cites the +0.04 again.
     #
     # A BALL toss detector was built and removed.  Re-aimed at the tossing wrist
     # with native-resolution SAHI tiling it detected the ball well (8 frames per

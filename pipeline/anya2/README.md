@@ -398,6 +398,19 @@ Each was found by measurement, and each was costing recall outright:
    player's own baseline — right on both sides at once. Clip 25 went 30% → 100%,
    with no near-side regression.
 
+### One label was wrong, and it mattered
+
+Clip 22 carried a far serve at **t = 0.0 s** that no threshold ever reached, and
+it was the serve that defined the top of the frontier. It was **not a serve** —
+the clip opens mid-point and the label marked a rally already in progress.
+Corrected in `ground_truth.json` on 2026-09-04 rather than chased.
+
+A label at t=0 is structurally unmeetable here: every pre-serve window lies
+before frame zero. **A recall target that only such a label creates is worth
+checking before tuning toward it** — reviewing the five remaining misses on
+video is what surfaced it, and it moved the corpus from 92 serves to 91 and the
+shipped result from 94.6% to 95.6%.
+
 ### Measured dead ends — do not retry these
 
 Two local cues were tested for separating far serves from far false positives,
@@ -647,8 +660,9 @@ minimum accepts as legitimate.
 
 ### The pose toss score (far_serve.toss_score)
 
-A **separate** score, never folded into the serve `p`, so the orchestrator can
-arbitrate. Read from the tossing arm only: the wrist started low, is offset
+A separate score, originally never folded into the serve `p` so the orchestrator
+could arbitrate. **That decision was reversed on 2026-09-04** — see "The toss was
+the strongest condition and it was not being used" below. Read from the tossing arm only: the wrist started low, is offset
 laterally at the top, is held above head height, and how far above it reaches —
 four ramps, averaged.
 
@@ -734,6 +748,331 @@ them.
 
 A consumer thresholding `adjusted_p ≥ 0.70` keeps 80% of true far serves and 45%
 of false ones — where raw `p` could barely tell them apart.
+
+## The toss was the strongest condition and it was not being used (2026-09-04)
+
+Three corpus corrections come first, because they change what every number below
+means.
+
+**Clips 37 and 63 carry far-serve labels on disk but are in `EXCLUDED`** —
+incompletely labelled, 4.5% and 1.4% marked live. Clip 63 alone contributes **99
+detections against absent labels**; including it drops pooled precision from
+62.6% to 36.3% and makes any tuning run chase a clip with no ground truth in it.
+
+**Clip 58 is set aside by decision, not by defect** — it is a **doubles match on
+clay**, and the only full-length one. Carried as a holdout it *dominated* every
+pooled row: 37 of 129 labelled serves and most of the errors, so it was silently
+choosing the operating point for the other twelve. Its own 43% recall is
+unchanged by anything here; the causes are the per-clip label lead and 15 serves
+with no trophy shape anywhere in the band, neither of which a weight reaches.
+
+**The corpus is therefore the twelve snippets, 92 labelled far serves.** The
+baseline on them was **87.0% / 76.9%**.
+
+### Every term in the score was at chance
+
+Splitting the detector's own output — 97 hits against 58 false positives — and
+measuring each term's ability to tell them apart:
+
+| term | weight in `p` | AUC, hits vs false positives |
+|---|---|---|
+| `trophy` | 0.45 | 55.1% |
+| `swing` | floor 0.45 | 53.0% |
+| `ready` | 0.20 | 58.0% |
+| `still` | 0.30 | 58.3% |
+| **`toss`** | **none — held out by design** | **80.8%** |
+
+`trophy` and `swing` sit at **median 1.00 on hits and on false positives alike**.
+They are the gate that *makes* a candidate and carry no information once one
+exists — so 0.45 of the shape weight was a near-constant diluting the two terms
+that did vary. The score's own AUC was 65.5%, barely above its best component.
+
+The one strong term was the one deliberately excluded. Its components measure far
+better against *this detector's own errors* than against the corpus-wide
+non-serve sample they were originally scored on: `low` 76%, `lat` 73%, `hold`
+73%, `peak` 68%, against the 64–66% recorded earlier. A false positive is by
+construction a raise, so **the negative sample decides which terms look useful**
+— and only the detector's own errors are the sample that matters.
+
+### The misses split exactly in half
+
+Of 32 missed serves: **16 had no trophy candidate within tolerance at all** (15
+of them on clip 58), and **16 were candidates suppressed by low `ready`** (median
+0.29).
+
+### The change
+
+| | before | after |
+|---|---|---|
+| `W_READY` | 0.20 | **0.00** |
+| `W_TOSS` | — | **0.60** |
+| `W_STILL` | 0.30 | **0.75** |
+| `THRESHOLD` | 0.75 | **0.60** |
+| absent measurement | scored 0.5 (or 0.0) | **skips its term** |
+
+**12 snippets: 87.9% / 76.9% → 95.6% / 82.9%** (F1 82.0 → 88.8). Six clips are
+now at 100% recall (22, 24, 25, 26, 35, 36); clip 26, the worst, went 6/11 →
+11/11, and clip 35 — the one clip none of this was built on — 13/15 → 15/15.
+Leave-one-clip-out reproduces 95.6% / 82.9% and picks threshold 0.60
+**unanimously across all 12 folds**.
+
+### An absent measurement was the strongest vote against
+
+`still`, `toss` and `swing` are each read over a window that can contain
+nothing — a track hole, an unresolved arm, or a serve so near the clip start
+that the window lies before frame zero. `still` and `toss` scored **0.5** there,
+described in the code as "not evidence either way"; `swing` scored **0.0**.
+
+Neither is neutral. A multiplicative term at weight *w* scores an absent
+measurement at 1 − *w*/2, and `swing` has a floor rather than a weight, so an
+unmeasurable candidate was multiplied by 0.63, then 0.70, then 0.45 — **a
+combined 0.20**. A candidate nobody could measure was demoted to a fifth of its
+score and called an abstention.
+
+It was costing real serves: four of the nine misses carried `still = 0.50`, and
+two of those were near the start of a clip where the stillness window *cannot*
+exist, so the penalty was unconditional. An absent measurement now **skips its
+term**.
+
+**The distinction that matters is absent vs measured-and-bad**, and it is
+sharpest on `swing`. A racket arm that was tracked and never rose is a raise
+that never became a strike — exactly what the term exists to veto, and it still
+scores 0.0. A racket arm that was never tracked is not that. Both used to
+produce the same 0.0. The `still`/`toss` half is worth 3.3 points of recall for
+1.3 of precision; the `swing` half is what makes 94.6% reachable at all — with
+swing absence still vetoing, that recall costs **11.6 more points of precision**.
+
+One consequence, measured rather than assumed: a candidate with *all three*
+terms absent is now admitted on `trophy` alone. That happens 3 times in 105
+detections (1 hit, 2 false positives — the weakest bucket at 33%; 1 or 2 absent
+terms run at 67–80%). No guard is added: removing them would cost a serve to
+remove two false positives, which is the wrong direction here, and three
+detections is not enough to build a condition on.
+
+### How much recall is left, and what it costs
+
+The candidate generator reaches **90 of 91 (98.9%)** — only one labelled far
+serve has no trophy candidate within tolerance at *any* threshold. Recall is
+therefore purely a scoring question, and the frontier prices it:
+
+| hits | recall | best precision |
+|---|---|---|
+| 84 | 92.3% | 82.4% |
+| 85 | 93.4% | 82.5% |
+| 86 | 94.5% | 82.7% |
+| **87** | **95.6%** | **82.9%** ← here |
+| 88 | 96.7% | 77.2% |
+| 89 | 97.8% | 63.6% |
+| 90 | 98.9% | 59.6% *(ceiling)* |
+
+**The chosen row is the maximum of that column.** Precision rises monotonically
+with recall up to 87 hits and collapses after it, so this is not a compromise
+between the two — no configuration anywhere scores better precision at any
+recall. The 88th serve costs 5.7 points, the 89th another 13.6.
+
+**The last serve is not a detector problem.** Clip 50 at 154.7 s produces no
+candidate because the far player is not tracked there — 12.9% and 9.0% of frames
+on the two far slots across that whole clip, and **0% in the eight seconds around
+the serve**. That is `perceive`/`tracks`, and no condition in this module reaches
+it.
+
+### One label was wrong, and it mattered
+
+Clip 22 carried a far serve at **t = 0.0 s** that no threshold ever reached, and
+it was the serve that defined the top of the frontier. It was **not a serve** —
+the clip opens mid-point and the label marked a rally already in progress.
+Corrected in `ground_truth.json` on 2026-09-04 rather than chased.
+
+A label at t=0 is structurally unmeetable here: every pre-serve window lies
+before frame zero. **A recall target that only such a label creates is worth
+checking before tuning toward it** — reviewing the five remaining misses on
+video is what surfaced it, and it moved the corpus from 92 serves to 91 and the
+shipped result from 94.6% to 95.6%.
+
+### Measured dead end
+
+**The stillness window is already optimal.** The hypothesis was that 5 s→1 s
+before the trophy penalises a server who *walks into position and then settles* —
+two misses had a perfect trophy, swing and toss and were killed by `still`
+alone. Sweeping the window over from ∈ {1.5 … 5.0} × to ∈ {0.2, 0.5, 1.0} moves
+the result by at most one detected event in any direction, and the shipped
+(5.0, 1.0) is the best F1 of the eighteen. The window is not the lever.
+
+### Why `ready` was dropped rather than reweighted
+
+Every variant retaining a ready weight scored worse at matched recall. `ready`
+asks whether the arms were quiet, `still` whether the feet were, and `toss` reads
+that same arm over a window chosen around the event — the third subsumes the
+first. `ready` is still computed and still reported in `detail`, because it is
+the term that explains half the misses. It no longer votes, and the CLI now
+prints it parenthesised, because `ready=0.00` beside `p=0.90` read as a bug.
+
+### What this breaks downstream
+
+**Rule 1's independence premise no longer holds.** The orchestrator adjusts a far
+serve's confidence by `toss_score`, justified by the toss being evidence "which
+the far detector does not fold into its own score" and by its **+0.04**
+correlation with `p`. `far_serve` now weights the toss at 0.60, so the rule
+adjusts on evidence already counted once. It is left **enabled and unchanged** —
+disabling it is a separate claim needing its own orchestrator eval, and the two
+act at different points (`W_TOSS` decides what is emitted, rule 1 shifts the
+confidence of what survived) — but **the +0.04 must be re-measured before it is
+cited again**. The comment in `orchestrator.py` records this.
+
+### What the corpus no longer contains
+
+With 58 set aside there is **no full-length match left** — every clip is a ~7
+minute snippet, and every constant is now fit on all twelve with only
+leave-one-out to defend it. Doubles is still represented (25 and 40). A full
+match, and clay, are not.
+
+## The near player's serve, scored as a far serve (2026-09-04)
+
+Six of the far detector's eighteen false positives were **the near server's own
+head and raised arm**, tracked as a far player. Found by reviewing every false
+positive on video; the mechanism is visible in a single annotated frame.
+
+**Side is decided only by geometry.** `tracks.build` computes
+`sd = C.NEAR if C.is_near(cy) else C.FAR` from the projected court-y of the box
+bottom, deliberately ignoring which pass found the person — *"A pass is an ROI,
+not a label"* — because the far band legitimately catches a near player at the
+net, and the whole-frame pass catches a far player who came forward.
+
+**The far band cuts the serving player in half.** At the trophy the near server
+extends up into the band. For clip 22 the band is source-y 705–1029 and the
+server's box runs 775→1026: the box bottom **is the crop boundary**, not their
+feet. Projected through a ground-plane homography that lands at court-y 16–19 m,
+`is_near` says far, and the fragment — a head with a wrist above it — is exactly
+the shape `far_serve` hunts. It does not merely get tracked as far, it scores a
+trophy.
+
+**Both guards missed, for different reasons.** `perceive._pose_pass` already
+refuses band detections sitting on the crop edge, and its `edge_px` is 2.0 — all
+six clear it by **0.5 to 2.0 px** (their bottoms are 2.5–4.0 px from the edge).
+A detector does not put a box edge on the image boundary; it lands a few pixels
+inside, so a 2 px tolerance tests for something that does not happen.
+`_height_plausible` is blind by construction: it is one-sided and rejects only
+boxes *too big* for their depth, while truncation makes the box too **small** —
+51 px where the intact player is 200 — which is exactly what a real player at
+18 m looks like.
+
+### The fix, and why it lives in `tracks`
+
+`tracks.build` now drops far-pass candidates whose box bottom is within
+`FAR_EDGE_PX` of the band's lower edge. It is repeated here rather than raised
+in `perceive` because changing the perceive-side constant invalidates every
+cached far pose pass — the most expensive stage in the pipeline — for a bound
+that wants measuring against results.
+
+| edge_px | hits/91 | fp | recall | precision | F1 |
+|---|---|---|---|---|---|
+| 2.0 | 87 | 18 | 95.6% | 82.9% | 88.8 |
+| **3.0** | **87** | **12** | **95.6%** | **87.9%** | **91.6** |
+| 3.5 | 87 | 14 | 95.6% | 86.1% | 90.6 |
+| 4.0 | 86 | 13 | 94.5% | 86.9% | 90.5 |
+| 6.0 | 85 | 13 | 93.4% | 86.7% | 89.9 |
+
+**Five points of precision at identical recall.** Clip 22 goes 5 false positives
+to 2, clip 35 goes 4 to 1.
+
+**6.0 was the obvious guess and it is wrong**, for a reason worth keeping: the
+band is grown *upward* from a ground strip about the far baseline, so a far
+player standing **inside** the baseline has their feet near the lower edge too.
+At 6.0 that deletes two of clip 23's labelled serves. The bound separates a cut
+box from a legitimately-forward player, and those are only a few pixels apart.
+
+**It is not monotonic** — 3.5 scores worse than 3.0. Dropping a candidate frees
+a slot, the freed slot is taken by somebody else, and they bring their own
+detections. Past 3.0 the number is set by slot-assignment churn rather than by
+the truncation criterion, so it must not be pushed further on this table alone.
+
+### Not a far-side-only change
+
+| detector | before | after |
+|---|---|---|
+| far serve | 95.6% / 82.9% | **96.7% / 88.0%** (with the teleport guard below) |
+| near serve | 88.9% / 86.2% | unchanged, to the detection |
+| point end | 59.1% / 50.3%, 0 trunc | 58.3% / 54.0%, 0 trunc |
+
+Two clips (26, 50) see their **near** slots change, because the band's lower edge
+legitimately catches a near player at the net and those detections are now
+dropped — correctly, since a cut box has no ground point whichever side it lands
+on, and the whole-frame pass sees that player intact anyway.
+
+### What the false positives actually are
+
+All eighteen were reviewed on video. **None was a missing serve**, so no ground
+truth was added.
+
+| mechanism | count |
+|---|---|
+| fragment of the near player (this bug) | 6 |
+| a person past the far baseline (court-y 27–30 m) | 7 |
+| genuine far-court person | 5 |
+
+About six were **ball tosses the server caught** — a real far player performing a
+real serve motion and aborting it. Nothing in a pose crop separates a toss caught
+from a toss struck until the strike fails to happen, so that class is open.
+
+### Anatomical rules on the far box: what works, and what sounds right but never fires
+
+The crop-edge test catches one CAUSE of a box with no feet in it. The general
+form is to test the box: the projection assumes the box bottom is where the
+person meets the ground, and a pose model says directly whether it is. Measured
+at the trophy over the six known mis-projections and 114 true far serves:
+
+| rule | rejects fragments | rejects real far |
+|---|---|---|
+| no confident ankle | 83% | 2% |
+| no confident knee | 83% | 1% |
+| no ankle **and** no knee | 83% | 1% |
+| hips below 0.85 of box height | 67% | 0% |
+| fewer than 12 confident keypoints | 33% | 1% |
+| head below 0.25 of box height | 50% | 13% |
+| **head below the hips (an upside-down box)** | **0%** | **0%** |
+
+**The anatomical *ordering* rules never fire.** A box "with the head at the
+bottom" sounds like this failure's signature and does not occur once: the band
+cuts the near player at the **waist**, so the fragment keeps its head at the top
+and looks perfectly well-formed. What it loses is the **feet**. On a whole
+player the hips sit 0.45–0.77 of the way down the box; on a cut one they are at
+0.88–1.02, because there is nothing below them. The invariant worth testing is
+the presence of the lower body, not the order of what is present.
+
+`FAR_NEED_LOWER_BODY` implements it (knee or ankle, falling back to hip
+position) and **ships off**. It removes the fragment class completely — 2 of the
+12 remaining false positives are still cut near players and it takes them to 0 —
+but does not pay for itself:
+
+| rules on | far serve | point end | fragments |
+|---|---|---|---|
+| edge 3.0 | 96.7% / 88.0% | 58.3% / 54.0% | 2 |
+| edge 3.0 + lower body | 95.6% / 87.9% | 57.5% / 51.8% | 0 |
+
+One far serve, one point end and 2.2 points of point-end precision, to remove
+two false positives that the orchestrator's rule 2 already targets. It is kept
+because it is the more general statement: on footage where truncation comes from
+an occluding player, the net post or the frame edge rather than the crop, this
+is the rule that catches it and `FAR_EDGE_PX` is not.
+
+### A slot is not an identity
+
+The serve the lower-body rule costs is **not one that rule rejects**. Clip 23's
+server at 377.8 s has every keypoint confident, both ankles, hips at 0.51, and
+sits 41 px clear of the band edge. It is lost because dropping *other* samples
+puts holes in its stillness window, and `self_move` read the resulting slot
+reassignment as motion — `still` fell from 1.00 to 0.00 while trophy, swing and
+toss all stayed at 1.00, 1.00 and 0.91.
+
+That is the clip-40 defect in another place: the window before one true serve
+there carries box-centre steps of **32 and 71 body heights per second** when a
+human sprint is about 5, and those two samples drag the median from 0.03 to
+0.29. `SELF_MOVE_MAX_BH_S = 5.0` now discards them — a teleport is not fast
+movement, it is the absence of a measurement, and `still` already treats an
+absent window as an abstention.
+
+Worth **+1.1 points of far-serve recall on its own** (95.6% → 96.7%), and it is
+what makes the 12-false-positive figure survivable at that recall.
 
 ## Acquisition and inference cost
 
