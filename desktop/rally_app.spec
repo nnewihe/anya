@@ -162,6 +162,12 @@ def _version_resource():
     )
 
 
+# The preview poster is optional — see the datas entry below.
+_poster_datas = (
+    [('assets/preview_poster.jpg', 'assets')]
+    if Path('assets/preview_poster.jpg').is_file() else []
+)
+
 _VERSION_RESOURCE = _version_resource() if _WINDOWS else None
 
 a = Analysis(
@@ -193,10 +199,34 @@ a = Analysis(
         # resolved by pipeline.scoreboard_reel.render.find_font()
         ('assets/fonts/Montserrat-SemiBold.ttf', 'assets/fonts'),
         ('assets/fonts/Montserrat-Bold.ttf', 'assets/fonts'),
+        # Still frame behind the gate screen's preview, shown when the streamed
+        # video can't be reached (GateScreen._fall_back_to_poster). Optional:
+        # the fallback degrades to text without it, and a missing datas entry
+        # is a hard build failure, so it is only listed when it exists.
+        *_poster_datas,
         # ffmpeg licences — macOS and Windows; see _license_datas above.
         *_license_datas,
     ],
     hiddenimports=[
+        # app.py imports these two INSIDE _show_app() rather than at module
+        # scope, so that a signed-out launch never pays for torch/ultralytics
+        # just to draw a paywall. That makes them invisible to static analysis.
+        # The pipeline.* entries below are what actually saves this — they are
+        # already explicit — but naming these keeps the reason on the record.
+        'highlight_tab',
+        'scoreboard_tab',
+        # Sign-in and entitlement (0.2.0). Stdlib-only, so nothing new comes
+        # with them; listed because gate_screen and account_dialog are reached
+        # through Qt signal connections as much as through imports.
+        'auth',
+        'authstore',
+        'authworker',
+        'entitlement',
+        'functions_client',
+        'firebase_config',
+        'gate_screen',
+        'account_dialog',
+        'oauth_loopback',
         # anya2 is the primary engine (see desktop/highlight_tab.ENGINE), and
         # several of its modules import `walking.*` INSIDE functions rather than
         # at module scope -- deliberately, to keep import time down -- so static
