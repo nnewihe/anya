@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Anya Tennis — beta</title>
-<meta name="description" content="Watch your matches in minutes, not hours. Anya Tennis turns a full match video into a reel of just the rallies, entirely on your own Mac.">
+<title>Anya Tennis</title>
+<meta name="description" content="Watch your matches in minutes, not hours. Anya Tennis turns a full match video into a reel of just the rallies, entirely on your own Mac. $40 a year or $5 a month, with a full refund within 14 days.">
 <link rel="icon" href="anya_logo.png">
 <style>
   :root {
@@ -116,6 +116,31 @@
   }
   a { color: var(--yellow); }
   footer { color: var(--dim); font-size: 13px; margin-top: 56px; }
+
+  /* Pricing. Two cards side by side above 560px, stacked below — the page is
+     read on phones as often as on the Mac the app will be installed on. */
+  .prices { display: flex; gap: 14px; margin: 22px 0 10px; flex-wrap: wrap; }
+  .price {
+    flex: 1 1 220px;
+    background: var(--surface);
+    border: 1px solid var(--outline);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .price.pick { border-color: var(--yellow); }
+  .price .amount { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; }
+  .price .per { color: var(--dim); font-size: 14px; }
+  .price .tag {
+    display: inline-block; margin-bottom: 8px;
+    color: var(--yellow); font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  }
+  .guarantee { color: var(--yellow); font-size: 14px; margin: 4px 0 0; }
+
+  .preview {
+    width: 100%; border-radius: 10px; margin: 8px 0 4px;
+    background: var(--surface); display: block;
+  }
+  .preview-cap { color: var(--dim); font-size: 13px; margin: 0 0 28px; }
 </style>
 </head>
 <body>
@@ -135,6 +160,30 @@
   gives you back a reel of just the rallies — no waiting between points, no
   walking to pick up balls. Everything happens on your own Mac; your video is
   never uploaded anywhere.</p>
+
+  <video class="preview" controls muted playsinline
+         poster="preview_poster.jpg" preload="none">
+    <source src="preview.mp4" type="video/mp4">
+  </video>
+  <p class="preview-cap">One minute: a full match in, a highlight reel out.</p>
+
+  <h2>PRICING</h2>
+  <div class="prices">
+    <div class="price pick">
+      <span class="tag">BEST VALUE</span>
+      <div class="amount">$40</div>
+      <div class="per">per year — works out at $3.33 a month</div>
+    </div>
+    <div class="price">
+      <span class="tag">&nbsp;</span>
+      <div class="amount">$5</div>
+      <div class="per">per month, cancel any time</div>
+    </div>
+  </div>
+  <p class="guarantee">Not for you? Cancel within 14 days for a full refund —
+  one button inside the app, no email required.</p>
+  <p class="meta">One account, and you can install it on your own Macs.
+  Download the app below and create your account when it opens.</p>
 
   <div class="cta">
     <a class="btn" id="dl-arm"
@@ -198,10 +247,47 @@
   <details>
     <summary>Is my video uploaded anywhere?</summary>
     <p>No. All the processing happens on your Mac, and no video, image or
-    frame ever leaves it. The only thing the app sends over the internet is a
-    request asking GitHub what the latest released version number is — no
-    account, no identifier, nothing about you or your matches. You can turn
-    even that off by setting <code>ANYA_NO_UPDATE_CHECK=1</code>.</p>
+    frame ever leaves it. There is no server that could receive one: the
+    models and the video tools are inside the app.</p>
+    <p>Three things do go over the internet, and that is the whole list.
+    Signing in and checking your subscription talks to Google (Firebase) and
+    exchanges your email address and a login token. Paying opens Stripe in
+    your browser — your card details go to Stripe, never to us and never
+    through the app. And on launch it asks GitHub what the latest version
+    number is, with no account and no identifier attached; you can turn that
+    one off with <code>ANYA_NO_UPDATE_CHECK=1</code>.</p>
+    <p>Nothing about your matches is ever sent: not filenames, not how many
+    reels you have made, not how long they were. See the
+    <a href="privacy.html">privacy policy</a>.</p>
+  </details>
+
+  <details>
+    <summary>Do I need to be online to use it?</summary>
+    <p>Only occasionally. The app checks your subscription when it starts, and
+    if it can't reach the internet it keeps working for up to 14 days on what
+    it already knows. A reel that is already running never stops because the
+    connection dropped — the check happens at launch, not while it is
+    working.</p>
+  </details>
+
+  <details>
+    <summary>How do I cancel, and how does the refund work?</summary>
+    <p>Open <strong>Account</strong> in the top-right of the app. Within 14
+    days of your first payment there is a <strong>Cancel &amp; refund</strong>
+    button: press it and your subscription ends immediately and the full
+    amount goes back to your card, usually within a few business days. No
+    email, no form, no explaining yourself.</p>
+    <p>That offer can be used once per account. After the 14 days, the same
+    Account screen has <strong>Manage subscription</strong>, which opens
+    Stripe where you can cancel at the end of the period you have paid for.
+    You keep access until then.</p>
+  </details>
+
+  <details>
+    <summary>I was a beta tester. Do I have to pay?</summary>
+    <p>No — you get a free year. Create an account with the same email address
+    you used during the beta and it is applied automatically; you will not be
+    asked for a card.</p>
   </details>
 
   <details>
@@ -235,8 +321,10 @@
   </details>
 
   <footer>
-    Beta software: expect rough edges, and please report them.
-    <a href="https://github.com/nnewihe/anya">Source on GitHub</a>.
+    <a href="terms.html">Terms</a> ·
+    <a href="privacy.html">Privacy</a> ·
+    <a href="https://github.com/nnewihe/anya">Source on GitHub</a>
+    <br>
     Includes <a href="https://ffmpeg.org">FFmpeg</a>, licensed under the GPL —
     see the Licenses folder in the DMG.
   </footer>

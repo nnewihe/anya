@@ -8,6 +8,37 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.2.0
+
+- **Anya Tennis is now a paid app.** $40 a year, or $5 a month. You create an
+  account the first time you open it, and everything works the same way once
+  you're in.
+
+- **If you tested the beta, you get a free year.** Create your account with
+  the same email address you used during the beta and it's applied
+  automatically — you won't be asked for a card. Thank you; thirteen builds of
+  finding things that were broken is what got it here.
+
+- **Not for you? Press one button and get your money back.** For the first 14
+  days there's a **Cancel & refund** button in **Account**, top-right. Your
+  subscription ends straight away and the full amount goes back to your card,
+  usually within a few business days. No email, no form, no explaining
+  yourself. It can be used once per account.
+
+- **It still runs entirely on your Mac, and your video still never leaves it.**
+  That hasn't changed and won't. Signing in and paying talk to Google and to
+  Stripe — nothing about your matches does. Your card details go to Stripe's
+  own page in your browser and never touch the app. There's a full
+  [privacy policy](https://nnewihe.github.io/anya/privacy.html) now.
+
+- **You don't need to be online to use it.** The app checks your subscription
+  when it opens; if it can't reach the internet it keeps working for up to 14
+  days on what it already knows. A reel that's already running never stops
+  because your connection dropped.
+
+- **It opens faster when you're signed out**, because it no longer loads the
+  match-analysis machinery just to show you the sign-in screen.
+
 ## 0.1.0-beta.13
 
 - **A bumped camera no longer wrecks the rest of the video.** The app
