@@ -64,6 +64,39 @@ def _start(worker, on_failed=None, **signals):
     return worker
 
 
+def fresh_id_token(session):
+    """A currently-valid ID token for `session`, refreshing if need be.
+
+    Firebase ID tokens last an hour. Anything that calls a Cloud Function
+    therefore cannot use the token cached at launch — the app is routinely open
+    far longer than that, and a stale token means every account action fails
+    with `unauthenticated` for someone who is perfectly well signed in.
+
+    Mutates and re-saves the session in place rather than returning a new one,
+    so the object app.py is holding stays current.
+    """
+    claims = {}
+    try:
+        claims = auth.decode_jwt_payload(session.last_id_token)
+    except ValueError:
+        pass
+
+    # 120s of headroom: the token has to still be valid when it arrives, not
+    # merely when it is sent.
+    exp = claims.get("exp") or 0
+    if session.last_id_token and time.time() < exp - 120:
+        return session.last_id_token
+
+    result = auth.refresh(session.refresh_token)
+    session.refresh_token = result["refresh_token"]
+    session.last_id_token = result["id_token"]
+    session.uid = result["uid"] or session.uid
+    session.email = result["email"] or session.email
+    authstore.touch_clock(session)
+    authstore.save(session)
+    return session.last_id_token
+
+
 def _session_from(result, previous=None):
     """Build (or update) a Session from an auth result and persist it."""
     session = Session(
@@ -240,15 +273,16 @@ class CheckoutWorker(_Worker):
 
     done = pyqtSignal(str)
 
-    def __init__(self, parent, id_token, plan):
+    def __init__(self, parent, session, plan):
         super().__init__(parent)
-        self._id_token, self._plan = id_token, plan
+        self._session, self._plan = session, plan
 
     def work(self):
         try:
-            url = functions_client.create_checkout_session(self._id_token, self._plan)
-        except functions_client.FunctionError as exc:
-            self.failed.emit(exc.message)
+            url = functions_client.create_checkout_session(
+                fresh_id_token(self._session), self._plan)
+        except (functions_client.FunctionError, auth.AuthError) as exc:
+            self.failed.emit(getattr(exc, "message", str(exc)))
             return
         if not url:
             self.failed.emit("Couldn't start checkout. Please try again.")
@@ -256,8 +290,8 @@ class CheckoutWorker(_Worker):
         self.done.emit(url)
 
 
-def start_checkout(parent, id_token, plan, on_done, on_failed):
-    return _start(CheckoutWorker(parent, id_token, plan), on_failed, done=on_done)
+def start_checkout(parent, session, plan, on_done, on_failed):
+    return _start(CheckoutWorker(parent, session, plan), on_failed, done=on_done)
 
 
 class CheckoutPollWorker(_Worker):
@@ -346,32 +380,32 @@ class AccountWorker(_Worker):
 
     done = pyqtSignal(object)
 
-    def __init__(self, parent, fn, id_token):
+    def __init__(self, parent, fn, session):
         super().__init__(parent)
-        self._fn, self._id_token = fn, id_token
+        self._fn, self._session = fn, session
 
     def work(self):
         try:
-            self.done.emit(self._fn(self._id_token))
-        except functions_client.FunctionError as exc:
-            self.failed.emit(exc.message)
+            self.done.emit(self._fn(fresh_id_token(self._session)))
+        except (functions_client.FunctionError, auth.AuthError) as exc:
+            self.failed.emit(getattr(exc, "message", str(exc)))
 
 
-def fetch_account(parent, id_token, on_done, on_failed):
-    return _start(AccountWorker(parent, functions_client.get_entitlement, id_token),
+def fetch_account(parent, session, on_done, on_failed):
+    return _start(AccountWorker(parent, functions_client.get_entitlement, session),
                   on_failed, done=on_done)
 
 
-def open_portal(parent, id_token, on_done, on_failed):
-    return _start(AccountWorker(parent, functions_client.create_portal_session, id_token),
+def open_portal(parent, session, on_done, on_failed):
+    return _start(AccountWorker(parent, functions_client.create_portal_session, session),
                   on_failed, done=on_done)
 
 
-def cancel_and_refund(parent, id_token, on_done, on_failed):
-    return _start(AccountWorker(parent, functions_client.cancel_and_refund, id_token),
+def cancel_and_refund(parent, session, on_done, on_failed):
+    return _start(AccountWorker(parent, functions_client.cancel_and_refund, session),
                   on_failed, done=on_done)
 
 
-def revoke_sessions(parent, id_token, on_done, on_failed):
-    return _start(AccountWorker(parent, functions_client.revoke_sessions, id_token),
+def revoke_sessions(parent, session, on_done, on_failed):
+    return _start(AccountWorker(parent, functions_client.revoke_sessions, session),
                   on_failed, done=on_done)

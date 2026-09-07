@@ -135,7 +135,7 @@ class AccountDialog(QDialog):
 
     def _load(self):
         self._worker = authworker.fetch_account(
-            self, self._session.last_id_token, self._on_loaded, self._on_failed)
+            self, self._session, self._on_loaded, self._on_failed)
         self._worker.finished.connect(self._release_worker)
 
     def _on_loaded(self, info):
@@ -179,7 +179,7 @@ class AccountDialog(QDialog):
     def _open_portal(self):
         self._status.setText("Opening Stripe in your browser…")
         self._worker = authworker.open_portal(
-            self, self._session.last_id_token,
+            self, self._session,
             lambda r: self._open(r.get("url")), self._on_action_failed)
         self._worker.finished.connect(self._release_worker)
 
@@ -207,7 +207,7 @@ class AccountDialog(QDialog):
         self._refund_btn.setEnabled(False)
         self._status.setText("Processing your refund…")
         self._worker = authworker.cancel_and_refund(
-            self, self._session.last_id_token, self._on_refunded, self._on_refund_failed)
+            self, self._session, self._on_refunded, self._on_refund_failed)
         self._worker.finished.connect(self._release_worker)
 
     def _on_refunded(self, _result):
@@ -231,7 +231,7 @@ class AccountDialog(QDialog):
     def _sign_out_everywhere(self):
         self._status.setText("Signing out everywhere…")
         self._worker = authworker.revoke_sessions(
-            self, self._session.last_id_token,
+            self, self._session,
             lambda _r: self._finish_sign_out(), self._on_action_failed)
         self._worker.finished.connect(self._release_worker)
 

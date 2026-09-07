@@ -379,7 +379,7 @@ class GateScreen(QWidget):
             return
         self._busy(True, "Opening checkout in your browser…")
         self._worker = authworker.start_checkout(
-            self, self._session.last_id_token, plan,
+            self, self._session, plan,
             self._on_checkout_url, self._on_auth_failed)
         self._worker.finished.connect(self._release_worker)
 
