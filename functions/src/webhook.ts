@@ -16,6 +16,13 @@
  *     the event's `created` and refuses to go backwards.
  */
 import * as admin from "firebase-admin";
+// FieldValue comes from the modular entry point, NOT from `admin.firestore.
+// FieldValue`. The namespaced form still TYPE-CHECKS against firebase-admin
+// v12's declarations but is `undefined` at runtime, so it compiles cleanly and
+// then throws "Cannot read properties of undefined (reading
+// 'serverTimestamp')" on the first webhook delivery. tsc cannot catch it;
+// only running the thing can.
+import { FieldValue } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { logger } from "firebase-functions";
 import type Stripe from "stripe";
@@ -28,17 +35,29 @@ import { stripe } from "./stripeClient";
 
 /** Claim the event id, or report that someone already did.
  *  `create` fails if the document exists, which is exactly the atomic
- *  test-and-set this needs — no transaction required. */
+ *  test-and-set this needs — no transaction required.
+ *
+ *  ONLY an already-exists failure means "seen it". Every other error has to
+ *  propagate: a catch-all here reports a duplicate, the caller answers 200,
+ *  and Stripe — which stops retrying on any 2xx — never delivers that event
+ *  again. A transient Firestore blip would silently cost a customer the
+ *  subscription they just paid for. Ask me how I know. */
 async function claimEvent(event: Stripe.Event): Promise<boolean> {
   try {
     await admin.firestore().doc(`stripeEvents/${event.id}`).create({
       type: event.type,
       created: event.created,
-      at: admin.firestore.FieldValue.serverTimestamp(),
+      at: FieldValue.serverTimestamp(),
     });
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // gRPC ALREADY_EXISTS is 6; the Admin SDK also surfaces it as a string.
+    const code = (err as { code?: number | string }).code;
+    if (code === 6 || code === "already-exists") return false;
+    logger.error("could not claim stripe event", {
+      id: event.id, code, err: String(err),
+    });
+    throw err;
   }
 }
 

@@ -42,6 +42,22 @@ TOKEN_AUDIENCE = PROJECT_ID
 GOOGLE_CLIENT_ID = os.environ.get("ANYA_GOOGLE_CLIENT_ID", "REPLACE_ME.apps.googleusercontent.com")
 GOOGLE_CLIENT_SECRET = os.environ.get("ANYA_GOOGLE_CLIENT_SECRET", "REPLACE_ME_NOT_A_SECRET")
 
+# ── Emulators ──────────────────────────────────────────────────────────────
+# Set ANYA_AUTH_EMULATOR_HOST=127.0.0.1:9099 (and ANYA_FUNCTIONS_BASE) to point
+# the whole client at `firebase emulators:start`. The emulator implements the
+# same Identity Toolkit REST surface, so nothing in auth.py changes shape --
+# only where it sends the request. Never set in a shipped build; the emulator
+# accepts any password and mints unsigned tokens.
+AUTH_EMULATOR_HOST = os.environ.get("ANYA_AUTH_EMULATOR_HOST", "")
+
+if AUTH_EMULATOR_HOST:
+    IDENTITY_BASE = f"http://{AUTH_EMULATOR_HOST}/identitytoolkit.googleapis.com/v1/accounts"
+    SECURETOKEN_URL = f"http://{AUTH_EMULATOR_HOST}/securetoken.googleapis.com/v1/token"
+else:
+    IDENTITY_BASE = "https://identitytoolkit.googleapis.com/v1/accounts"
+    SECURETOKEN_URL = "https://securetoken.googleapis.com/v1/token"
+
+
 # ── Cloud Functions ────────────────────────────────────────────────────────
 # Callable functions are POSTed directly rather than through a client SDK; the
 # callable protocol is just {"data": {...}} in and {"result": {...}} out.
@@ -77,4 +93,4 @@ def is_configured() -> bool:
     Lets the gate screen say "this build isn't configured for sign-in" rather
     than surfacing a raw Google API error to someone who cannot act on it.
     """
-    return "REPLACE_ME" not in WEB_API_KEY
+    return bool(AUTH_EMULATOR_HOST) or "REPLACE_ME" not in WEB_API_KEY

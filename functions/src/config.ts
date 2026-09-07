@@ -20,15 +20,27 @@ export const STRIPE_WEBHOOK_SECRET = defineSecret("STRIPE_WEBHOOK_SECRET");
  *  they don't authorize a charge. Set with `firebase functions:config` params
  *  or the FIREBASE_CONFIG env; kept as params so test and live modes differ by
  *  configuration rather than by a code change. */
-export const PRICE_ANNUAL = defineString("PRICE_ANNUAL");
-export const PRICE_MONTHLY = defineString("PRICE_MONTHLY");
+//
+// Every one of these carries an explicit default. A `defineString` with no
+// default is not merely undefined at runtime -- it makes the CLI PROMPT for a
+// value, which hangs `firebase emulators:start` and `firebase deploy` on an
+// interactive question. That is a genuinely confusing failure: the emulator
+// reports "valid functions are <nothing>" while actually sitting on a prompt.
+// An empty default is safe here because createCheckoutSession already refuses
+// with `failed-precondition` when the price is empty.
+export const PRICE_ANNUAL = defineString("PRICE_ANNUAL", { default: "" });
+export const PRICE_MONTHLY = defineString("PRICE_MONTHLY", { default: "" });
 
 /** Where Stripe sends the browser after checkout. Plain pages on Firebase
  *  Hosting; the desktop app is not watching this redirect (it polls its own
  *  token — see CheckoutPollWorker), so these only need to tell a human what
  *  happened. */
-export const SUCCESS_URL = defineString("SUCCESS_URL");
-export const CANCEL_URL = defineString("CANCEL_URL");
+export const SUCCESS_URL = defineString("SUCCESS_URL", {
+  default: "https://nnewihe.github.io/anya/",
+});
+export const CANCEL_URL = defineString("CANCEL_URL", {
+  default: "https://nnewihe.github.io/anya/",
+});
 
 export const REGION = "us-central1";
 

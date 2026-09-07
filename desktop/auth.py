@@ -29,13 +29,12 @@ import urllib.request
 
 from firebase_config import (
     GOOGLE_CLIENT_ID,
+    IDENTITY_BASE as _IDENTITY_BASE,
+    SECURETOKEN_URL as _SECURETOKEN_URL,
     TOKEN_AUDIENCE,
     TOKEN_ISSUER,
     WEB_API_KEY,
 )
-
-_IDENTITY_BASE = "https://identitytoolkit.googleapis.com/v1/accounts"
-_SECURETOKEN_URL = "https://securetoken.googleapis.com/v1/token"
 
 # Interactive: a person has pressed a button and is watching a spinner, so a
 # slow connection is worth waiting out. update_check.py uses 5s because

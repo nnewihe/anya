@@ -16,6 +16,9 @@ functions/lib/
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
+pglite-debug.log
+database-debug.log
+pubsub-debug.log
 
 # Credentials that must never reach the repo or the bundle. The client only
 # ever carries public identifiers (see desktop/firebase_config.py); anything
