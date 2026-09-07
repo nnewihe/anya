@@ -213,6 +213,15 @@ serves.**
 | **58 (holdout)** | **44** | **65.9%** | **55.8%** |
 | pooled | **107** | **90.7%** | **76.4%** |
 
+> ⚠️ **Clip 58 was dropped from the corpus on 2026-09-06** — its labels merge
+> multiple points (median rally 14.8 s against 6.2–9.3 s elsewhere). See
+> `parse_ground_truth.EXCLUDED`. The clip-58 and pooled rows below are therefore
+> **stale**: `eval.py` no longer scores that clip, and the pooled row will change
+> the next time these detectors are re-run. The exclusion was decided from
+> point-end evidence; **it has not been re-measured for the serve detectors**,
+> and the two `LABEL_CONVENTION_S` entries for 58 in `eval.py` are now inert.
+> The per-clip rows for every other clip are unaffected.
+
 Nine of eleven scored clips are at 100% recall. **Clips 23 and 40 have no near
 serves and the detector fires zero times on either** — 40 being doubles, so two
 near players stand at the baseline through 13 far-serve rallies without
@@ -294,6 +303,15 @@ far pass finished; clip 35 was out of the corpus entirely until relabelled.
 | 43 | 0 | — | 3 fires |
 | **58 (holdout)** | **37** | **51.4%** | **27.5%** |
 | pooled, all 13 clips | **129** | **79.8%** | **64.8%** |
+
+> ⚠️ **Clip 58 was dropped from the corpus on 2026-09-06** — its labels merge
+> multiple points (median rally 14.8 s against 6.2–9.3 s elsewhere). See
+> `parse_ground_truth.EXCLUDED`. The clip-58 and pooled rows below are therefore
+> **stale**: `eval.py` no longer scores that clip, and the pooled row will change
+> the next time these detectors are re-run. The exclusion was decided from
+> point-end evidence; **it has not been re-measured for the serve detectors**,
+> and the two `LABEL_CONVENTION_S` entries for 58 in `eval.py` are now inert.
+> The per-clip rows for every other clip are unaffected.
 
 Bias +0.07 s. **Every far serve on every far-dominant clip is found.** The clips
 that look terrible are near-dominant — 1, 4 and 2 far serves against 11, 11 and 5
@@ -432,7 +450,14 @@ request: the shipped policy makes the ball trace primary, and that is not
 dependable on clay, where the ball is low-contrast against the surface for much
 of its flight.
 
-Scored ±2.0 s over all **236 labelled ends on 13 clips**:
+> ⚠️ **The table below is superseded.** It was scored over 13 clips including
+> clip 58, which has since been dropped from the corpus for merging multiple
+> points into one label — and which supplied a third of the ends. The current
+> figure is **58.3% / 54.0% over 127 ends on 10 clips**; see "the live gate,
+> re-swept" below. The rows are kept because the ball-trace comparison is still
+> the reason this module exists.
+
+Scored ±2.0 s over all **236 labelled ends on 13 clips** (historical):
 
 | | recall | precision | bias | truncations |
 |---|---|---|---|---|
@@ -441,11 +466,69 @@ Scored ±2.0 s over all **236 labelled ends on 13 clips**:
 | **anya2 pose-only** (all 13 clips) | 49.6% | 40.2% | −0.27 s | **0** |
 | **anya2 pose-only** (clip 35, out-of-sample) | 60.0% | 60.0% | −0.92 s | **0** |
 
-Better recall than the ball-based policy with no ball at all; behind on
-precision. **Zero truncations on every clip** — no detected end lands more than
-2 s early, so the harmful error (deleting live tennis from the reel) does not
-occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and clip
-40 (doubles) are the weak ones at ~30–38%.
+### The live gate, re-swept — and clip 58 dropped from the corpus
+
+**Result: the gate did not move. The corpus did.**
+
+The gate was swept end to end (`LIVE_SMOOTH_S`, `LIVE_HI`/`LIVE_LO`,
+`LIVE_MIN_S`, `LIVE_SCALE_PCT`, `REFRACT_S`) over the eleven clips still
+carrying cached `_anya2_walk.npz` and `_anya2_endsig.npz`. Pooled over all 208
+ends, `LIVE_SMOOTH_S` 4.0 s → 6.0 s looked decisive: precision 40.9% → 49.5%
+for 2.4 points of recall, and 8 of 11 leave-one-clip-out folds picked 6.0 s
+blind. **It was an artifact of one clip.**
+
+Clip 58 carried **81 of the 208 ends** and is the only clip that wants heavy
+smoothing — alone it improves monotonically past 8 s. It therefore dominated
+the pooled row *and* every LOCO training fold. Its labelled rallies run to a
+median of **14.8 s against 6.2–9.3 s on every other clip**, which is the
+signature of labels that merge several points into one block. It has been
+**dropped from the corpus** (`parse_ground_truth.EXCLUDED`) — for the opposite
+reason to clips 37 and 63, which have too few labels rather than too coarse
+ones.
+
+Re-scored on the 10 trusted clips, 127 ends, through `eval.py`:
+
+| smoothing | recall | precision | fp | F1 |
+|---|---|---|---|---|
+| 3.0 s | 62.2% | 49.7% | 80 | 55.2% |
+| **4.0 s — kept** | **58.3%** | 54.0% | 63 | 56.1% |
+| 5.0 s | 52.0% | 55.5% | 53 | 53.7% |
+| 5.5 s | 53.5% | **60.2%** | **45** | **56.7%** |
+| 6.0 s | 50.4% | 59.3% | 44 | 54.5% |
+| 7.0 s | 42.5% | 55.1% | 44 | 48.0% |
+
+On the clips we trust, 6.0 s trades **7.9 points of recall for 5.3 of
+precision** and has the worst F1 of the three candidates. No fold picks it
+under either objective: 7 of 10 pick 4.0 s selecting on precision-at-fixed-
+recall, 7 of 10 pick 5.5 s selecting on F1, and **both per-fold picks score
+below plain 4.0 s on held-out clips.** 5.5 s is the one defensible alternative;
+4.0 s is kept for its recall and its held-out F1.
+
+### Where the detector actually stands (10 clips, 127 ends)
+
+| | recall | precision | bias | truncations |
+|---|---|---|---|---|
+| **anya2 pose-only** | **58.3%** | **54.0%** | −0.34 s | **0** |
+
+Better than the pooled row ever showed. The old "precision is the known gap"
+framing at 40.2% was clip 58's arithmetic, not the detector's behaviour.
+
+### What the 63 false positives are
+
+Every one was cut to video and reviewed:
+
+- **48 of 63 are a DUPLICATE end**, fired a median of **+10.3 s** after a real
+  one that was already detected or missed. 23 are within 10 s. This is the
+  dominant failure by a wide margin and `REFRACT_S = 6.0` is sized just under
+  it — it fires zero times.
+- **15 of 63 fired mid-rally**, the live score dipping below `LIVE_LO` during a
+  point.
+- A visible sub-family of the duplicates is **an empty court** — a changeover
+  with nobody tracked. With no player, activity is 0, the live score wobbles on
+  noise and falls again, and each fall is an "end". See the `nan_to_num(nan=0.0)`
+  note below: this family exists because absence is scored as stillness.
+
+The refractory, not the smoothing, is where the next real gain is.
 
 ### Four measurements, in the order they killed the obvious designs
 
@@ -496,8 +579,20 @@ occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and cl
 
 ### Known gaps
 
-- **Precision, and clips 58 and 40.** Half the corpus' ends are on clip 58 and
-  it scores 38.3%/25.0%. The pooled row is dominated by it.
+- **Duplicate ends, and clip 40.** 48 of the 63 false positives are a second
+  end ~10 s after a real one; extending `REFRACT_S` past 6 s is untested and is
+  the obvious next experiment. Clip 40 (doubles) is the weakest clip at
+  38.5%/29.4%, and it has a plausible near player in only **20% of frames**
+  against 40–81% elsewhere — a substrate problem, not a gate problem.
+- **Absence is scored as stillness.** `live_score` maps an untracked side to 0.0
+  activity via `nan_to_num`, which is indistinguishable from a player standing
+  still, so a missing track votes "dead". `quiet_mask`, twelve lines away,
+  explicitly refuses to do this. 14% of live frames have no near track and 1.1%
+  have neither side.
+- **`idle_hands` is inert.** It never exceeds **0.54** anywhere in the corpus
+  (every other union signal reaches 1.00), wins the `max()` on 0.5% of frames,
+  and **never** when the union is ≥ 0.5. The module would behave identically
+  without it.
 - **The near-slot shim.** The walking classifier is fed from anya2's near tracks
   through a shim npz; near coverage varies 42%–88% by clip, and on clip 23 the
   `settle` and `stance_drop` signals produce no usable onsets at all.

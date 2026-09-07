@@ -68,6 +68,24 @@ EXCLUDED = {
     # never excluded, so the reason no longer holds and it rejoins the corpus.
     "37": "incompletely labelled (4.5% marked live)",
     "63": "incompletely labelled (1.4% marked live)",
+    # 58 is the 55-minute match, and it is excluded for the OPPOSITE reason to
+    # 37 and 63: not too few labels but labels that are too COARSE.  Its
+    # labelled rallies have a median duration of 14.8 s and run to 46.5 s,
+    # against 6.2-9.3 s on every one of the ten other trusted clips -- the
+    # signature of a label that merges several points (serve, fault, second
+    # serve, or consecutive points) into one block.
+    #
+    # It was excluded because it was silently deciding parameters.  It carried
+    # 81 of the corpus's 208 point-end labels, so it dominated both the pooled
+    # row and every leave-one-clip-out training fold, and it is the only clip
+    # that prefers heavy smoothing: `point_end.LIVE_SMOOTH_S` was moved 4.0 ->
+    # 6.0 s on evidence that came almost entirely from this clip and did not
+    # replicate on any of the other ten.  See that constant's comment.
+    #
+    # Its point-end false positives are also not obviously errors: 33 of them
+    # land INSIDE a labelled rally, in blocks of median 23.0 s, which is what a
+    # correctly detected end looks like when the label spans two points.
+    "58": "labels merge multiple points (median rally 14.8s vs 6-9s corpus-wide)",
     "68": "no ground_truth.json — derived labels only, 10/45 bootstrap agreement",
 }
 ALLOW_EXCLUDED = False

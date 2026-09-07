@@ -225,9 +225,41 @@ def end_signal(video, tracks_npz=None) -> Dict[str, np.ndarray]:
 # emphatically not playing, and only a multiplicative term can say so.  It is
 # the same arbitration shape the near serve detector's swing term has, for the
 # same reason.
-LIVE_SMOOTH_S = 4.0       # 8 s separates live from dead slightly better but
-                          # blurs the EDGE, and the edge is what is being timed:
-                          # at 8 s the best F1 is 40.3% against 42.8% at 4 s.
+LIVE_SMOOTH_S = 4.0       # Swept 2-12 s twice.  Over the WHOLE corpus 6.0 s
+                          # looked clearly better than this (precision 40.9% ->
+                          # 49.5% for 2.4 points of recall) and it was briefly
+                          # set to 6.0 on that basis.  It was wrong, and the way
+                          # it was wrong is worth keeping:
+                          #
+                          # Clip 58 carried 81 of the 208 labelled ends, and it
+                          # is the one clip that wants MORE smoothing -- alone it
+                          # improves monotonically out past 8 s.  Its labelled
+                          # rallies run to a median of 14.8 s against 6-9 s on
+                          # every other clip, which is the signature of labels
+                          # that merge several points into one block, so its
+                          # preference is probably a labelling artifact rather
+                          # than a fact about tennis.  It dominated the pooled
+                          # row and every leave-one-clip-out training fold.
+                          #
+                          # Re-scored WITHOUT it, over 127 ends on 10 clips,
+                          # 6.0 s trades 7.9 points of recall for 5.3 of
+                          # precision (58.3%/54.0% -> 50.4%/59.3%) and has the
+                          # worst F1 of the three candidates: 4.0 s 56.1%,
+                          # 5.5 s 56.7%, 6.0 s 54.5%.  No fold picks 6.0 s under
+                          # either objective -- 7 of 10 pick 4.0 s when selecting
+                          # on precision at fixed recall, 7 of 10 pick 5.5 s when
+                          # selecting on F1, and both per-fold picks score BELOW
+                          # plain 4.0 s on held-out clips.
+                          #
+                          # 5.5 s is the one defensible alternative (best clean-
+                          # corpus precision and F1, 45 false positives against
+                          # 63).  4.0 s is kept because it has the best recall
+                          # and the best held-out F1, and because the case for
+                          # moving came from the clip that has since been
+                          # dropped from the corpus.
+                          #
+                          # The earlier note here -- "8 s blurs the edge, F1
+                          # 40.3% against 42.8% at 4 s" -- remains true.
 LIVE_SCALE_PCT = 90       # per-clip normaliser.  Activity is in body heights per
                           # second, so its absolute level depends on how large
                           # the players are in frame -- a fixed threshold would

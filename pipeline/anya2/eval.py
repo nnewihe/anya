@@ -80,6 +80,13 @@ TRUNC_S = 2.0
 # (hands-together vs trophy onset), so part of this gap is detector-side anchor
 # bias that happens to be visible only on the clip with the largest offset.
 # These numbers are MEASURED, not derived from a stated convention.
+#
+# BOTH ENTRIES ARE NOW INERT: clip 58 was dropped from the corpus on
+# 2026-09-06 (see parse_ground_truth.EXCLUDED) because its labels merge
+# multiple points, which is a coarser problem than the lead this correction was
+# built for.  They are kept rather than deleted because they are a measurement,
+# and because `--allow-excluded`-style access to 58 still needs them to be
+# scored fairly if anyone re-opens it.
 LABEL_CONVENTION_S = {
     ("58", NEAR_SERVE): 0.80,
     ("58", FAR_SERVE): 2.63,
