@@ -1,0 +1,37 @@
+rules_version = '2';
+
+// The desktop app reads its own user document and nothing else. Every write
+// that matters -- entitlements, subscription state, the one-shot refund flag --
+// comes from a Cloud Function or the Stripe webhook, which run with Admin
+// credentials and bypass these rules entirely.
+//
+// The important consequence: a client that patches out its local entitlement
+// check still cannot grant itself anything, because the grant lives in a custom
+// claim minted server-side. See desktop/authstore.py on why the local cache is
+// friction rather than DRM -- this file is where the real enforcement is.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Hashed emails of the beta testers who get a free year. Readable by
+    // nobody: it is consulted by the beforeUserCreated blocking function,
+    // which runs with Admin credentials. Hashed rather than plaintext so that
+    // a rules mistake leaks a set of digests, not a customer list.
+    match /grandfathered/{emailHash} {
+      allow read, write: if false;
+    }
+
+    // Processed Stripe event ids, for webhook idempotency. Server-only.
+    match /stripeEvents/{eventId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
