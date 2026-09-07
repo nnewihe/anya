@@ -98,6 +98,22 @@ done
 # not resolve `../` pathspecs — from desktop/ it reports every one of these as
 # untracked, which would make the check pass or fail for the wrong reason.
 ROOT="$(git rev-parse --show-toplevel)"
+
+# The loop below lists `desktop` as a DIRECTORY pathspec, and `git ls-files
+# --error-unmatch` is satisfied by a directory as long as ANY file under it is
+# tracked. So a brand-new, never-added desktop/foo.py -- exactly the failure
+# this section exists to catch -- would sail straight through. Check the
+# directory's own python files explicitly first.
+UNTRACKED_PY="$(git -C "$ROOT" ls-files --others --exclude-standard \
+                    'desktop/*.py' 'walking/*.py' 'pipeline/*.py' || true)"
+if [ -n "$UNTRACKED_PY" ]; then
+    echo "error: these python files are not tracked in git:" >&2
+    echo "$UNTRACKED_PY" | sed 's/^/       /' >&2
+    echo "       The app imports from these directories, so a clean clone of" >&2
+    echo "       this tag could not rebuild the release. Commit them first." >&2
+    exit 1
+fi
+
 for path in \
     pipeline/rally_reel pipeline/scoreboard_reel pipeline/utilities.py \
     walking desktop \
