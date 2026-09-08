@@ -5,7 +5,30 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.13"
+APP_VERSION = "0.1.0-beta.14"
+# beta.14 — nothing but an announcement. No pipeline change, no detector
+# change, no fix.
+#   The next version makes Anya Tennis a paid app, and the worst way to
+#   introduce a price is for it to appear one morning without warning. This
+#   build exists so that every tester learns about it inside the app they
+#   already have, roughly a fortnight before it happens, and learns the part
+#   that matters to them first: they are grandfathered a free year.
+#   The whole change is app.py's notice banner and the dialog behind it, plus
+#   these notes and a CHANGELOG section. Deliberately built from the beta.13
+#   tree rather than from the branch carrying the paid work, so this cannot
+#   accidentally ship the paywall it is warning about -- a tester who installs
+#   beta.14 gets the same app they had, with one strip at the top.
+#   Dismissal is remembered, which is the one genuinely new mechanism here
+#   (QSettings; the app has never needed to remember anything before). The
+#   update banner reappears every launch because installing an update is
+#   actionable every launch. An announcement is not: re-showing it to someone
+#   who has read it and pressed the X is nagging, and nagging the people who
+#   did thirteen builds of QA for free is a poor way to open a conversation
+#   about money.
+#   No date is quoted anywhere in the copy. "The next version" is true and
+#   stays true; a date would be a promise made before the Firebase project,
+#   the Stripe account and the preview video exist, and a missed one would
+#   cost more trust than the announcement buys.
 # beta.13 — the court map is a function of time, so a bumped camera no longer
 # invalidates the rest of the video.
 #   Calibration is four corners clicked ONCE, on one reference frame, turned
