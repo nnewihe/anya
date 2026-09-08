@@ -35,11 +35,9 @@ firebase functions:secrets:set STRIPE_WEBHOOK_SECRET
 firebase functions:config:export   # or set them at deploy time
 ```
 
-In Stripe, create one Product with two recurring Prices — $40/year and
-$5/month — and put their ids in `PRICE_ANNUAL` / `PRICE_MONTHLY`. Enable
-Stripe Tax and set the product's tax code before the first live charge:
-we are merchant of record on a direct integration, so the tax is ours to
-collect.
+For the Stripe side — Product, both Prices, Stripe Tax, the Customer portal,
+webhook forwarding, and the test cards — follow **[STRIPE_SETUP.md](STRIPE_SETUP.md)**.
+Do that in test mode first; it ends with a full subscribe, unlock and refund.
 
 ## Developing
 
