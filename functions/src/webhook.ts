@@ -92,6 +92,29 @@ async function isStale(uid: string, eventCreated: number): Promise<boolean> {
   return eventCreated < last;
 }
 
+/**
+ * Where the current period ends — from wherever this payload keeps it.
+ *
+ * `current_period_end` moved OFF the Subscription and onto its ITEMS in Stripe
+ * API 2025-03-31.basil. A webhook endpoint delivers events in the ACCOUNT's
+ * default API version, which is not the version stripe-node is pinned to, so
+ * both shapes legitimately arrive here and the SDK's types only describe one.
+ *
+ * This was not theoretical: with the SDK on 2025-02-24.acacia and events
+ * arriving as 2026-08-26.dahlia, every customer.subscription.* handler threw
+ * "Cannot use undefined as a Firestore value" and Stripe retried until it gave
+ * up. It hid because checkout.session.completed RE-FETCHES the subscription
+ * through the pinned SDK and so saw the old shape -- meaning granting access
+ * worked and only REVOKING it was broken. A cancelled or unpaid subscriber
+ * would have kept access for the rest of the period.
+ */
+function periodEndOf(sub: Stripe.Subscription): number | null {
+  const top = (sub as unknown as { current_period_end?: number }).current_period_end;
+  if (typeof top === "number") return top;
+  const item = sub.items?.data?.[0] as unknown as { current_period_end?: number } | undefined;
+  return typeof item?.current_period_end === "number" ? item.current_period_end : null;
+}
+
 async function applySubscription(
   uid: string, sub: Stripe.Subscription, eventCreated: number
 ): Promise<void> {
@@ -102,12 +125,22 @@ async function applySubscription(
 
   const priceId = sub.items.data[0]?.price?.id ?? "";
   const plan = planOf(priceId, PRICE_ANNUAL.value(), PRICE_MONTHLY.value());
-  const ent = sub.status === "canceled" || sub.status === "incomplete_expired"
+  const dead = sub.status === "canceled" || sub.status === "incomplete_expired";
+  const periodEnd = periodEndOf(sub);
+
+  if (!dead && periodEnd === null) {
+    // A live subscription whose period end we cannot find. Throwing makes
+    // Stripe retry and puts it in the logs; the alternative -- guessing, or
+    // writing `revoked()` -- would cut off someone who has paid.
+    logger.error("live subscription with no resolvable current_period_end", {
+      uid, id: sub.id, status: sub.status,
+    });
+    throw new Error(`no current_period_end on subscription ${sub.id}`);
+  }
+
+  const ent = dead
     ? revoked()
-    : entitlementFromSubscription({
-        status: sub.status,
-        current_period_end: sub.current_period_end,
-      });
+    : entitlementFromSubscription({ status: sub.status, current_period_end: periodEnd! });
 
   await applyEntitlement(uid, ent, plan, {
     subscription: {
@@ -115,7 +148,8 @@ async function applySubscription(
       status: sub.status,
       priceId,
       plan: plan === "a" ? "annual" : plan === "m" ? "monthly" : null,
-      currentPeriodEnd: sub.current_period_end,
+      // Never undefined: Firestore rejects the whole write if any field is.
+      currentPeriodEnd: periodEnd,
       cancelAtPeriodEnd: sub.cancel_at_period_end,
     },
     lastEventCreated: eventCreated,

@@ -26,17 +26,36 @@ stripe login
 That opens a browser and pairs the CLI with your account. It defaults to test
 mode, which is what we want.
 
-**Check you are in test mode before anything else.** Everything below assumes
-it, and the difference is invisible until you have charged a real card:
+**Check which mode you are in before anything else** — and note that the
+obvious check does not work.
 
 ```bash
-stripe config --list
+stripe whoami
 ```
 
-Keys shown should begin `sk_test_` / `pk_test_`. In the Dashboard, the
-**Test mode** toggle (top right) must be on — test and live have entirely
-separate products, prices, customers and webhook endpoints, and an object
-created in one does not exist in the other.
+On modern Stripe the CLI pairs with an *account*, not a key. `stripe config
+--list` shows an account id and a display name and **no key prefix at all**,
+and the CLI defaults to **live**. Reading it for `sk_test_` tells you nothing.
+If a command prints
+
+```
+▸ Running in <Your Business> · live (acct_...)
+```
+
+then every object you create lands in your real account. This is not
+hypothetical: it is how the Product and both Prices in this project were first
+created in live mode, following an earlier draft of this very file.
+
+**Use a sandbox.** `stripe sandbox create`, or the account switcher in the
+dashboard. A sandbox is a **separate account with its own account id** — the
+key giveaway is that `acct_` differs from your live one, whereas classic test
+mode reuses the same id.
+
+> **A sandbox inherits NOTHING from your live account.** Not Stripe Tax, not
+> the Customer portal, not products, not prices. Every configuration step
+> below has to be done again inside the sandbox. Two of them (Tax and the
+> portal) fail at *checkout* time rather than at setup time, so it is worth
+> confirming both before you try to pay.
 
 ---
 
@@ -164,6 +183,16 @@ It prints:
 ```
 > Ready! Your webhook signing secret is whsec_xxxxxxxxxxxx
 ```
+
+> **If you create a webhook endpoint in the dashboard or API instead of using
+> `stripe listen`, pin its `api_version` when you create it.** An endpoint
+> delivers events in the *account's* default API version, which will not be
+> the version `stripe-node` is pinned to in `stripeClient.ts`. That mismatch
+> is real and it moved a field: `current_period_end` sits on the Subscription
+> in older versions and on its ITEMS from `2025-03-31.basil`. `api_version` is
+> **create-only** — it cannot be changed afterwards. `webhook.ts` reads both
+> shapes so this cannot break us again, but a pinned endpoint is still one
+> fewer thing that can drift.
 
 Put **that** value in `STRIPE_WEBHOOK_SECRET` and restart the emulator. It is
 **not** the same as the signing secret of a Dashboard webhook endpoint — a
@@ -325,3 +354,7 @@ Not yet — but so it is written down:
 | Plan shows as "Subscription", not "Annual" | `PRICE_ANNUAL` doesn't match the real price id. Silent by design. |
 | Emulator says `valid functions are` (nothing) | A Firebase param has no value and the CLI is sitting on a prompt. |
 | Amounts are 100× wrong | `--unit-amount` is in cents. |
+| Objects appear in your LIVE dashboard | The CLI defaults to live. `stripe config --list` will not warn you — see step 1. |
+| Tax/portal configured but checkout still fails | You configured them in the live account. A sandbox is a separate account and inherits none of it. |
+| `customer.subscription.*` events all fail, but checkout works | Endpoint API version differs from the SDK's, and `current_period_end` moved onto subscription items. Granting access keeps working while revoking silently breaks. |
+| A callable returns 403 where others return 401 | Cloud Run is refusing the invocation: that function lost its public invoker binding, usually after a failed deploy was retried with `--only`. Delete the function and redeploy it. |
