@@ -20,8 +20,17 @@ code and takes an afternoon to rediscover:
      binding port 0 works without registering each one.
   2. Firebase console -> Authentication -> Sign-in method -> Google -> Web SDK
      configuration -> "Whitelist client IDs from external projects" -> add the
-     desktop client ID. Without this step signInWithIdp rejects a perfectly
-     good Google token with INVALID_IDP_RESPONSE.
+     desktop client ID.
+
+     Measured, 2026-09-09: with the desktop client created inside the SAME GCP
+     project as Firebase, signInWithIdp accepted the token and the whole flow
+     passed end to end. The whitelist is described by Google as being for
+     clients from EXTERNAL projects, which is consistent with it being
+     unnecessary here -- but this is one observation, not a documented
+     guarantee, so keep the step in the setup notes. If signInWithIdp ever
+     starts returning INVALID_IDP_RESPONSE on a good token, this is the first
+     thing to check, and an OAuth client created in a different project would
+     certainly need it.
 
 Deliberately provider-agnostic where it can be, because Apple is next. Apple
 will not fit this module as it stands: it rejects http and IP-literal redirect

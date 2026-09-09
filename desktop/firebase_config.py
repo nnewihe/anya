@@ -39,8 +39,13 @@ TOKEN_ISSUER = f"https://securetoken.google.com/{PROJECT_ID}"
 TOKEN_AUDIENCE = PROJECT_ID
 
 # ── Google sign-in (OAuth client of type "Desktop app") ────────────────────
-GOOGLE_CLIENT_ID = os.environ.get("ANYA_GOOGLE_CLIENT_ID", "REPLACE_ME.apps.googleusercontent.com")
-GOOGLE_CLIENT_SECRET = os.environ.get("ANYA_GOOGLE_CLIENT_SECRET", "REPLACE_ME_NOT_A_SECRET")
+GOOGLE_CLIENT_ID = os.environ.get(
+    "ANYA_GOOGLE_CLIENT_ID",
+    "REPLACE_ME.apps.googleusercontent.com",
+)
+GOOGLE_CLIENT_SECRET = os.environ.get(
+    "ANYA_GOOGLE_CLIENT_SECRET", "REPLACE_ME_NOT_A_SECRET"
+)
 
 # ── Emulators ──────────────────────────────────────────────────────────────
 # Set ANYA_AUTH_EMULATOR_HOST=127.0.0.1:9099 (and ANYA_FUNCTIONS_BASE) to point
