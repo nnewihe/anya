@@ -20,7 +20,7 @@ graphs apart is worth more than running one language everywhere.
 | `src/grandfather.ts` | `beforeUserCreated`: a free year for the beta testers. |
 | `src/stripeClient.ts` | Lazy Stripe client, find-or-create Customer. |
 | `src/config.ts` | Secret and parameter declarations. |
-| `scripts/seed-grandfathered.ts` | Seed the allowlist; comp an account. |
+| `scripts/grandfather.js` | Seed the free-year allowlist; comp an account. Plain node, no build step; `hash` mode needs no credentials. |
 
 ## First-time setup
 

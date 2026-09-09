@@ -11,7 +11,7 @@
  * are `false` for everyone, but a rules mistake should leak a set of digests
  * rather than a customer list.
  *
- * Seed it with functions/scripts/seed-grandfathered.ts.
+ * Seed it with functions/scripts/grandfather.js.
  */
 import { getFirestore } from "firebase-admin/firestore";
 import { createHash } from "crypto";

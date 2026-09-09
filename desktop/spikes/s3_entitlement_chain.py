@@ -415,7 +415,7 @@ def main():
     gf_email = f"tester-{secrets.token_hex(4)}@example.com"
     digest = hashlib.sha256(gf_email.strip().lower().encode()).hexdigest()
 
-    # Seed the allowlist the way scripts/seed-grandfathered.ts would — i.e.
+    # Seed the allowlist the way scripts/grandfather.js would — i.e.
     # with admin credentials. `Bearer owner` is the emulator's documented
     # stand-in for those.
     #
