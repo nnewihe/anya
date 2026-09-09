@@ -30,8 +30,8 @@ import os
 # Set for real when the project is created (Phase 0/S1). Left as obvious
 # placeholders rather than empty strings so a half-configured build fails with
 # a recognisable 400 from Google instead of a confusing "API key not valid".
-PROJECT_ID = os.environ.get("ANYA_FIREBASE_PROJECT", "anya-tennis")
-WEB_API_KEY = os.environ.get("ANYA_FIREBASE_API_KEY", "REPLACE_ME_WEB_API_KEY")
+PROJECT_ID = os.environ.get("ANYA_FIREBASE_PROJECT", "anya-tennis-61658")
+WEB_API_KEY = os.environ.get("ANYA_FIREBASE_API_KEY", "AIzaSyAQDx6qI6uf7zJhg-g4HgAPlKvrd8S93xM")
 
 # Issuer/audience the ID token must carry. Derived rather than hardcoded so a
 # staging project only needs PROJECT_ID overridden.

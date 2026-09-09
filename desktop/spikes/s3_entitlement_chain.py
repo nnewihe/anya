@@ -42,6 +42,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# --real drives the LIVE Firebase project instead of the emulator. It runs
+# only what does not depend on deployed Cloud Functions -- real sign-up, real
+# token refresh, and the real Firestore rules -- and says plainly what it is
+# skipping. Worth running even so: it is the only thing that checks the rules
+# actually deployed, and the emulator has been wrong about rules before.
+REAL = "--real" in sys.argv
+
 PROJECT = os.environ.get("ANYA_SPIKE_PROJECT", "demo-anya")
 AUTH_HOST = os.environ.get("ANYA_AUTH_EMULATOR_HOST", "127.0.0.1:9099")
 FUNCTIONS_HOST = os.environ.get("ANYA_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001")
@@ -50,13 +57,16 @@ REGION = "us-central1"
 WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "whsec_spike_secret")
 
 # Point the client modules at the emulator BEFORE importing them: both read
-# their environment at import time.
-os.environ["ANYA_AUTH_EMULATOR_HOST"] = AUTH_HOST
-os.environ["ANYA_FIREBASE_PROJECT"] = PROJECT
-os.environ["ANYA_FIREBASE_API_KEY"] = "emulator-key"   # emulator ignores it
-os.environ["ANYA_FUNCTIONS_BASE"] = f"http://{FUNCTIONS_HOST}/{PROJECT}/{REGION}"
+# their environment at import time. Under --real, leave the environment alone
+# so firebase_config's own committed defaults (the live project) apply.
+if not REAL:
+    os.environ["ANYA_AUTH_EMULATOR_HOST"] = AUTH_HOST
+    os.environ["ANYA_FIREBASE_PROJECT"] = PROJECT
+    os.environ["ANYA_FIREBASE_API_KEY"] = "emulator-key"   # emulator ignores it
+    os.environ["ANYA_FUNCTIONS_BASE"] = f"http://{FUNCTIONS_HOST}/{PROJECT}/{REGION}"
 
 import auth                 # noqa: E402
+import firebase_config as cfg  # noqa: E402
 import entitlement as ent   # noqa: E402
 import functions_client     # noqa: E402
 from authstore import Session  # noqa: E402
@@ -129,7 +139,107 @@ def subscription_event(uid, *, status="active", period_end=None, event_id=None,
     }
 
 
+def firestore_request(path, id_token, method="GET", body=None):
+    """Talk to REAL Firestore as the signed-in user, so the deployed rules --
+    not the emulator's copy of them -- are what answers."""
+    url = (f"https://firestore.googleapis.com/v1/projects/{cfg.PROJECT_ID}"
+           f"/databases/(default)/documents/{path}")
+    req = urllib.request.Request(
+        url, method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {id_token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+def delete_account(id_token):
+    req = urllib.request.Request(
+        f"{cfg.IDENTITY_BASE}:delete?key={cfg.WEB_API_KEY}",
+        data=json.dumps({"idToken": id_token}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        urllib.request.urlopen(req, timeout=20)
+        return True
+    except Exception:
+        return False
+
+
+def main_real():
+    """Everything provable against the live project before functions deploy."""
+    print(f"S3 --real: live project {cfg.PROJECT_ID}")
+    print(f"    auth={cfg.IDENTITY_BASE}")
+    email = f"spike-{secrets.token_hex(4)}@example.com"
+
+    step("1. Real sign-up against Google's Identity Toolkit")
+    created = auth.sign_up(email, "spike-password-123")
+    uid = created["uid"]
+    check("signUp returned a session", bool(created["id_token"]), f"uid={uid}")
+
+    session = Session(refresh_token=created["refresh_token"], uid=uid,
+                      email=created["email"], last_id_token=created["id_token"],
+                      hwm=int(time.time()))
+    claims = auth.decode_jwt_payload(session.last_id_token)
+    check("the token is structurally ours",
+          auth.token_looks_like_ours(claims, uid),
+          f"iss={claims.get('iss')}")
+    check("a new account carries no entitlement claim", "ent" not in claims)
+    check("evaluate() reads that as UNENTITLED",
+          ent.evaluate(session, online_ok=True).state is ent.EntState.UNENTITLED)
+
+    step("2. Real token refresh (the mechanism the checkout poll rides on)")
+    before = session.refresh_token
+    refreshed = auth.refresh(session.refresh_token)
+    check("refresh returned a new ID token", bool(refreshed["id_token"]))
+    check("uid survives the refresh", refreshed["uid"] == uid)
+    check("the snake_case response normalised correctly",
+          refreshed["email"] == email, refreshed["email"])
+    session.refresh_token = refreshed["refresh_token"]
+    session.last_id_token = refreshed["id_token"]
+
+    step("3. The DEPLOYED Firestore rules")
+    own = firestore_request(f"users/{uid}", session.last_id_token)
+    check("a user may READ its own document", own in (200, 404),
+          f"HTTP {own} (404 = permitted, document not created yet)")
+
+    wrote = firestore_request(
+        f"users?documentId={uid}", session.last_id_token, "POST",
+        {"fields": {"entitlement": {"mapValue": {"fields": {
+            "active": {"booleanValue": True}}}}}})
+    check("a user may NOT write its own document", wrote == 403,
+          f"HTTP {wrote} — this is what stops a patched client granting itself a year")
+
+    other = firestore_request("users/some-other-uid", session.last_id_token)
+    check("a user may not read ANOTHER user's document", other == 403, f"HTTP {other}")
+
+    gf = firestore_request("grandfathered/deadbeef", session.last_id_token)
+    check("the grandfathered allowlist is unreadable", gf == 403, f"HTTP {gf}")
+
+    ev = firestore_request("stripeEvents/evt_x", session.last_id_token)
+    check("the webhook idempotency log is unreadable", ev == 403, f"HTTP {ev}")
+
+    step("4. Cleanup")
+    check("probe account deleted", delete_account(session.last_id_token))
+
+    print()
+    if _failures:
+        print(f"\033[31mS3 --real FAIL — {len(_failures)} check(s):\033[0m")
+        for f in _failures:
+            print(f"  - {f}")
+        return 1
+    print("\033[32mS3 --real PASS\033[0m — live auth and the deployed rules behave.")
+    print("Not covered here (Cloud Functions are not deployed yet): the webhook,")
+    print("the entitlement claim, and the callables. Run without --real for those")
+    print("against the emulator, and rerun this after `firebase deploy`.")
+    return 0
+
+
 def main():
+    if REAL:
+        return main_real()
     email = f"spike-{secrets.token_hex(4)}@example.com"
     print(f"S3: entitlement chain against the emulator  (project={PROJECT})")
     print(f"    auth={AUTH_HOST}  functions={FUNCTIONS_HOST}  user={email}")
