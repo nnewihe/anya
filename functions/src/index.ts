@@ -10,9 +10,9 @@
  * Firestore and never talks to Stripe. It reads its own user document, calls
  * the callables here, and trusts the custom claim these functions mint.
  */
-import * as admin from "firebase-admin";
+import { initializeApp } from "firebase-admin/app";
 
-admin.initializeApp();
+initializeApp();
 
 export {
   createCheckoutSession,

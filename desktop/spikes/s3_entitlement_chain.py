@@ -54,7 +54,11 @@ AUTH_HOST = os.environ.get("ANYA_AUTH_EMULATOR_HOST", "127.0.0.1:9099")
 FUNCTIONS_HOST = os.environ.get("ANYA_FUNCTIONS_EMULATOR_HOST", "127.0.0.1:5001")
 FIRESTORE_HOST = os.environ.get("FIRESTORE_EMULATOR_HOST", "127.0.0.1:8080")
 REGION = "us-central1"
-WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "whsec_spike_secret")
+WEBHOOK_SECRET = os.environ.get(
+    "STRIPE_WEBHOOK_SECRET",
+    "whsec_PLACEHOLDER_replace_via_STRIPE_SETUP_md" if "--real" in sys.argv
+    else "whsec_spike_secret",
+)
 
 # Point the client modules at the emulator BEFORE importing them: both read
 # their environment at import time. Under --real, leave the environment alone
@@ -221,8 +225,62 @@ def main_real():
     ev = firestore_request("stripeEvents/evt_x", session.last_id_token)
     check("the webhook idempotency log is unreadable", ev == 403, f"HTTP {ev}")
 
-    step("4. Cleanup")
+    step("4. The DEPLOYED callables")
+    try:
+        info = functions_client.get_entitlement(session.last_id_token)
+        check("getEntitlement answered", isinstance(info, dict), json.dumps(info)[:100])
+        check("reports not entitled", not (info.get("entitlement") or {}).get("active"))
+        check("no refund offered without a payment",
+              not (info.get("refund") or {}).get("eligible"),
+              (info.get("refund") or {}).get("reason"))
+    except functions_client.FunctionError as exc:
+        check("getEntitlement answered", False, f"{exc.status}: {exc.message}")
+
+    step("5. The DEPLOYED webhook -> claim -> refreshed token")
+    # Signed with whatever STRIPE_WEBHOOK_SECRET the deploy is carrying. While
+    # that is still the placeholder this proves the whole chain without a
+    # Stripe account; once the real secret is set, rerun and it proves it with
+    # Stripe's own signature.
+    hook = (f"https://{REGION}-{cfg.PROJECT_ID}.cloudfunctions.net/stripeWebhook")
+    body = json.dumps(subscription_event(uid), separators=(",", ":")).encode()
+    ts = int(time.time())
+    mac = hmac.new(WEBHOOK_SECRET.encode(), f"{ts}.".encode() + body,
+                   hashlib.sha256).hexdigest()
+    req = urllib.request.Request(
+        hook, data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "Stripe-Signature": f"t={ts},v1={mac}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            status, text = r.status, r.read().decode()
+    except urllib.error.HTTPError as exc:
+        status, text = exc.code, exc.read().decode()
+    check("signed event accepted in production", status == 200, f"HTTP {status} {text[:60]}")
+
+    got = {}
+    for attempt in range(30):
+        refreshed = auth.refresh(session.refresh_token)
+        session.refresh_token = refreshed["refresh_token"]
+        session.last_id_token = refreshed["id_token"]
+        got = auth.decode_jwt_payload(session.last_id_token)
+        if got.get("ent"):
+            break
+        time.sleep(1)
+    check("a refreshed token carries ent=1", got.get("ent") == 1,
+          f"after {attempt + 1} refresh(es)")
+    check("and entExp", isinstance(got.get("entExp"), int), f"entExp={got.get('entExp')}")
+    check("evaluate() now unlocks the app",
+          ent.evaluate(session, online_ok=True).allows_app)
+
+    step("6. Cleanup")
     check("probe account deleted", delete_account(session.last_id_token))
+    print(f"    (removing Firestore docs for {uid} — needs the firebase CLI)")
+    import subprocess
+    for path in (f"users/{uid}",):
+        subprocess.run(["firebase", "firestore:delete", path, "--force",
+                        "--project", cfg.PROJECT_ID],
+                       capture_output=True, timeout=120)
+    print("    done")
 
     print()
     if _failures:
@@ -230,10 +288,13 @@ def main_real():
         for f in _failures:
             print(f"  - {f}")
         return 1
-    print("\033[32mS3 --real PASS\033[0m — live auth and the deployed rules behave.")
-    print("Not covered here (Cloud Functions are not deployed yet): the webhook,")
-    print("the entitlement claim, and the callables. Run without --real for those")
-    print("against the emulator, and rerun this after `firebase deploy`.")
+    print("\033[32mS3 --real PASS\033[0m — the whole chain, in production.")
+    print("Signed webhook -> custom claim -> refreshed token -> unlocked app, against")
+    print("the live project, the deployed rules and the deployed functions.")
+    print()
+    print("The one thing still standing in for Stripe is the SIGNATURE: the event is")
+    print("signed with whatever STRIPE_WEBHOOK_SECRET the deploy carries. Set the real")
+    print("one (functions/STRIPE_SETUP.md) and rerun, and even that is Stripe's own.")
     return 0
 
 

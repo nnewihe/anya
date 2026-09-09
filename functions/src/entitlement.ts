@@ -7,7 +7,8 @@
  * account screen reads) and the custom claim (what the desktop app trusts
  * offline) — and splitting that logic across call sites is how they drift.
  */
-import * as admin from "firebase-admin";
+import { getAuth } from "firebase-admin/auth";
+import { getFirestore } from "firebase-admin/firestore";
 import { DAY_SECONDS, ISSUER_SLACK_DAYS } from "./config";
 
 export type EntSource = "stripe" | "grandfathered" | "comp";
@@ -61,7 +62,7 @@ export async function applyEntitlement(
   plan: "a" | "m" | null,
   extra: Record<string, unknown> = {}
 ): Promise<void> {
-  const db = admin.firestore();
+  const db = getFirestore();
 
   await db.doc(`users/${uid}`).set(
     {
@@ -74,13 +75,13 @@ export async function applyEntitlement(
 
   // Preserve any claims we don't own rather than replacing the whole object:
   // setCustomUserClaims overwrites, and a future unrelated claim would vanish.
-  const user = await admin.auth().getUser(uid);
+  const user = await getAuth().getUser(uid);
   const existing = { ...(user.customClaims ?? {}) };
   delete existing.ent;
   delete existing.entExp;
   delete existing.pl;
 
-  await admin.auth().setCustomUserClaims(
+  await getAuth().setCustomUserClaims(
     uid,
     ent.active
       ? { ...existing, ent: 1, entExp: ent.until, ...(plan ? { pl: plan } : {}) }

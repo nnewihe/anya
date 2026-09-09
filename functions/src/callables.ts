@@ -7,7 +7,8 @@
  * property is that `request.auth.uid` is derived from a verified token, so no
  * caller can act for another user by asking nicely.
  */
-import * as admin from "firebase-admin";
+import { getAuth } from "firebase-admin/auth";
+import { getFirestore } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { logger } from "firebase-functions";
 
@@ -35,7 +36,7 @@ function requireUid(auth: { uid: string } | undefined): string {
 }
 
 async function userDoc(uid: string) {
-  const snap = await admin.firestore().doc(`users/${uid}`).get();
+  const snap = await getFirestore().doc(`users/${uid}`).get();
   return (snap.data() ?? {}) as Record<string, any>;
 }
 
@@ -73,7 +74,7 @@ export const createCheckoutSession = onCall(opts, async (request) => {
     cancel_url: CANCEL_URL.value() || "https://nnewihe.github.io/anya/",
   });
 
-  await admin.firestore().doc(`users/${uid}`).set(
+  await getFirestore().doc(`users/${uid}`).set(
     { email, stripeCustomerId: customerId, updatedAt: Math.floor(Date.now() / 1000) },
     { merge: true }
   );
@@ -216,7 +217,7 @@ export const cancelAndRefund = onCall(opts, async (request) => {
  *  that, and it is why it ships in the first release rather than later. */
 export const revokeSessions = onCall({ region: REGION }, async (request) => {
   const uid = requireUid(request.auth);
-  await admin.auth().revokeRefreshTokens(uid);
+  await getAuth().revokeRefreshTokens(uid);
   logger.info("refresh tokens revoked", { uid });
   return { ok: true };
 });

@@ -15,14 +15,13 @@
  *     subscription.updated must not overwrite a newer one. Every write records
  *     the event's `created` and refuses to go backwards.
  */
-import * as admin from "firebase-admin";
 // FieldValue comes from the modular entry point, NOT from `admin.firestore.
 // FieldValue`. The namespaced form still TYPE-CHECKS against firebase-admin
 // v12's declarations but is `undefined` at runtime, so it compiles cleanly and
 // then throws "Cannot read properties of undefined (reading
 // 'serverTimestamp')" on the first webhook delivery. tsc cannot catch it;
 // only running the thing can.
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 import { logger } from "firebase-functions";
 import type Stripe from "stripe";
@@ -44,7 +43,7 @@ import { stripe } from "./stripeClient";
  *  subscription they just paid for. Ask me how I know. */
 async function claimEvent(event: Stripe.Event): Promise<boolean> {
   try {
-    await admin.firestore().doc(`stripeEvents/${event.id}`).create({
+    await getFirestore().doc(`stripeEvents/${event.id}`).create({
       type: event.type,
       created: event.created,
       at: FieldValue.serverTimestamp(),
@@ -79,7 +78,7 @@ async function uidFor(
     } catch {
       // fall through
     }
-    const q = await admin.firestore()
+    const q = await getFirestore()
       .collection("users").where("stripeCustomerId", "==", customerId).limit(1).get();
     if (!q.empty) return q.docs[0].id;
   }
@@ -88,7 +87,7 @@ async function uidFor(
 
 /** True if we have already applied something newer than this event. */
 async function isStale(uid: string, eventCreated: number): Promise<boolean> {
-  const snap = await admin.firestore().doc(`users/${uid}`).get();
+  const snap = await getFirestore().doc(`users/${uid}`).get();
   const last = (snap.data()?.lastEventCreated as number | undefined) ?? 0;
   return eventCreated < last;
 }
@@ -156,7 +155,7 @@ export const stripeWebhook = onRequest(
       // Release the idempotency claim so Stripe's retry can actually retry;
       // leaving it in place would turn a transient failure into a permanently
       // dropped event.
-      await admin.firestore().doc(`stripeEvents/${event.id}`).delete().catch(() => {});
+      await getFirestore().doc(`stripeEvents/${event.id}`).delete().catch(() => {});
       logger.error("webhook handler failed", { id: event.id, type: event.type, err: String(err) });
       res.status(500).send("handler error");
     }
@@ -175,7 +174,7 @@ async function handle(event: Stripe.Event): Promise<void> {
 
       // firstPaymentAt anchors the 14-day refund window and must be written
       // exactly once — a later renewal must not restart the clock.
-      const ref = admin.firestore().doc(`users/${uid}`);
+      const ref = getFirestore().doc(`users/${uid}`);
       const existing = await ref.get();
       if (!existing.data()?.firstPaymentAt) {
         await ref.set(
@@ -224,7 +223,7 @@ async function handle(event: Stripe.Event): Promise<void> {
       const invoice = event.data.object as Stripe.Invoice;
       const uid = await uidFor(null, invoice.customer as string);
       if (uid) {
-        await admin.firestore().doc(`users/${uid}`).set(
+        await getFirestore().doc(`users/${uid}`).set(
           { paymentProblem: true, updatedAt: Math.floor(Date.now() / 1000) },
           { merge: true }
         );

@@ -13,7 +13,7 @@
  *
  * Seed it with functions/scripts/seed-grandfathered.ts.
  */
-import * as admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import { createHash } from "crypto";
 import { beforeUserCreated } from "firebase-functions/v2/identity";
 import { logger } from "firebase-functions";
@@ -29,7 +29,7 @@ export const onUserCreated = beforeUserCreated({ region: REGION }, async (event)
   const uid = event.data?.uid;
   if (!email || !uid) return;
 
-  const hit = await admin.firestore().doc(`grandfathered/${emailHash(email)}`).get();
+  const hit = await getFirestore().doc(`grandfathered/${emailHash(email)}`).get();
   const now = Math.floor(Date.now() / 1000);
 
   const base = {
@@ -41,7 +41,7 @@ export const onUserCreated = beforeUserCreated({ region: REGION }, async (event)
   };
 
   if (!hit.exists) {
-    await admin.firestore().doc(`users/${uid}`).set(base, { merge: true });
+    await getFirestore().doc(`users/${uid}`).set(base, { merge: true });
     return;
   }
 
@@ -50,7 +50,7 @@ export const onUserCreated = beforeUserCreated({ region: REGION }, async (event)
   // document now; the first getEntitlement call reconciles it into a claim.
   // (A blocking function CAN return customClaims, but only for the session it
   // is creating, which would silently expire on the next refresh.)
-  await admin.firestore().doc(`users/${uid}`).set(
+  await getFirestore().doc(`users/${uid}`).set(
     {
       ...base,
       entitlement: { active: true, until: now + 365 * DAY_SECONDS, source: "grandfathered" },
