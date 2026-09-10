@@ -58,6 +58,38 @@ custom claim was minted. The claim — not the document — is what the desktop 
 trusts, and the two drifting apart is the failure mode `applyEntitlement`
 exists to prevent.
 
+## Verified in production
+
+Against the live project `anya-tennis-61658`, on 9 September 2026 — not against
+emulators. Worth recording because "it passes on the emulator" and "it works"
+turned out to be different things three times in one day.
+
+| Path | |
+|---|---|
+| Email/password + Google sign-in | real accounts, real Identity Toolkit |
+| Firestore rules | own doc readable; **own doc NOT writable** (403); other users, the allowlist and the event log all 403 |
+| Real Stripe payment → entitlement | test card → webhook → custom claim → unlocked, 190 s |
+| Self-serve refund | subscription cancelled, $40.00 refunded, second attempt refused |
+| Cancellation → status | only after the `current_period_end` fix; see `periodEndOf()` |
+| Grandfathered free year | Google sign-in → `beforeUserCreated` → `pendingClaim` → reconciled on first `getEntitlement`, 365 days |
+
+Re-run the first five with `python3 desktop/spikes/s3_entitlement_chain.py --real`.
+
+What the emulator did NOT catch, and only deploying did:
+
+- **Blocking-function audience.** Gen-2 blocking functions run on Cloud Run but
+  Identity Platform registers the `cloudfunctions.net` alias, so firebase-admin
+  rejected its own token and *every sign-up returned 503*. The emulator does
+  not verify that token at all.
+- **Webhook payload version.** An endpoint delivers events in the *account's*
+  API version, not the SDK's. `current_period_end` moved onto subscription
+  items, so every `customer.subscription.*` handler threw — while
+  `checkout.session.completed` kept working, because it re-fetches through the
+  pinned SDK. Granting access worked; revoking it did not.
+- **Invoker bindings.** A function whose deploy fails and is retried with
+  `--only` can come back without its public invoker binding: 403 to callers,
+  healthy in the console.
+
 ## Things that will bite
 
 - **A new claim only appears in a freshly minted ID token.** After a webhook
