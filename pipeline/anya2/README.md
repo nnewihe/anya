@@ -514,6 +514,56 @@ points with **no segment at all**, scored as full-duration truncations, which no
 hysteresis setting changes (11, 11, 10 across the three rows). Optimising PES
 here is largely optimising a serve-recall problem through the wrong knob.
 
+### The nine points the reel never covers
+
+They carry 78% of the objective's penalty, so they are worth naming. Every one
+fails the same way twice: **no serve was detected at all**, and `recover_missed`
+— the live-score second line of defence — did not fire either, because live
+never reaches its 0.75 threshold inside the rally (observed max 0.22–0.92,
+median 0.06–0.68). No orchestrator rule drops any of them; nothing reaches the
+in-rally gate, the rapid-repeat filter or the service-run DP to be dropped.
+
+| clip / pt | side | best serve candidate | shortfall | near trk | far trk |
+|---|---|---|---|---|---|
+| 26 / 9 | far | far @ 319.9 s, p=0.988 | *fires, 1.3 s after a 3.4 s rally* | 1.00 | 0.60 |
+| 35 / 0 | far | far @ **−0.6 s**, p=0.665 | +0.085 | 0.28 | 1.00 |
+| 36 / 9 | near | near @ 270.7 s, p=0.616 | +0.084 | 1.00 | 0.96 |
+| 36 / 10 | near | near @ 280.2 s, p=0.692 | **+0.008** | 1.00 | 1.00 |
+| 43 / 0 | near | none at any score | — | 1.00 | 0.83 |
+| 50 / 5 | far | far @ 150.4 s, p=0.265 | +0.485 | 0.21 | **0.06** |
+| 58 / 4 | near | far @ 239.7 s, p=0.465 | +0.285 | 0.90 | 1.00 |
+| 58 / 60 | far | none at any score | — | 1.00 | **0.50** |
+| 58 / 61 | far | none at any score | — | 1.00 | **0.58** |
+
+Four distinct causes, and only one of them is about point ends:
+
+1. **Threshold near-misses (36/9, 36/10)** — tracking is perfect and the
+   detector scored 0.616 and 0.692 against a 0.70 bar. 36/10 misses by **0.008**.
+   Dropping the near threshold to 0.61 recovers both, at whatever precision cost
+   the near detector's own sweep says.
+2. **Far-player tracking (50/5, 58/60, 58/61)** — far coverage of 0.06, 0.50 and
+   0.58 inside the rally. Clip 50's far coverage is 0.20 *clip-wide*. A far serve
+   cannot be detected from a far player who is not there; this is a perception
+   problem, not a detector one.
+3. **Label artifacts (35/0, 26/9)** — 35/0 starts at 0.1 s, so the serve happened
+   before the clip did, and the detector still found it at −0.6 s. 26/9 is a
+   3.4 s labelled rally whose serve is detected 1.3 s *after* it ends, i.e. the
+   detection belongs to the next labelled rally. Both are scoring artifacts.
+4. **Genuine detector failures (43/0, 58/4)** — good tracking, no candidate at
+   any score. Two of 208.
+
+The corpus context that makes this legible: **30% of labelled points have a
+neighbouring point within 5 s** and the median inter-point gap is 10.3 s, when
+real tennis runs 15–25 s. The labels mark live ball-in-play stretches, so a
+fault or a let becomes two adjacent "points". Points with a sub-5 s neighbour are
+3× likelier to end up uncovered (8.1% against 2.7%), which is a real effect but
+not the dominant one — 62 points have such a neighbour and only 5 are uncovered.
+
+**The actionable item is `recover_live_thr`.** It exists precisely to catch
+points no serve detector found, and on all nine it never fires. Lowering it from
+0.75 would recover 43/0 (live peaks 0.92) and 35/0 (0.85) at least, and is a far
+cheaper fix than moving a serve threshold.
+
 ### The truncation column was measuring the wrong thing
 
 **"Zero truncations on every clip" was a metric artifact, and the reel truncated

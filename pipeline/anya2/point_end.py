@@ -239,26 +239,28 @@ LIVE_SCALE_PCT = 90       # per-clip normaliser.  Activity is in body heights pe
 # exponentially penalised when early -- over all 208 labelled ends on 11 clips:
 #
 #     hi / lo        PES     within +/-2 s   >2 s early   >2 s late   median err
-#     0.50 / 0.35   +0.040        71             49           88        +0.9 s
-#     0.40 / 0.25   +0.051        75             41           92        +1.2 s  <--
-#     0.35 / 0.25   +0.085        72             38           98        +1.8 s
-#     0.35 / 0.20   +0.102        64             31          113        +2.5 s
-#     0.30 / 0.20   +0.102        62             31          115        +2.9 s
-#     0.30 / 0.15   +0.064        57             23          128        +5.1 s
-#     0.25 / 0.12   +0.028        48             24          136        +8.3 s
+#     0.50 / 0.35   +0.065        64             48           96        +1.1 s
+#     0.45 / 0.30   +0.065        66             44           98        +1.5 s
+#     0.40 / 0.25   +0.093        67             40          101        +1.8 s  <--
+#     0.35 / 0.25   +0.096        65             37          106        +2.5 s
+#     0.35 / 0.20   +0.085        55             31          122        +4.3 s
+#     0.30 / 0.20   +0.086        53             31          124        +4.5 s
+#     0.30 / 0.15   +0.088        54             21          133        +7.1 s
 #
-# NOT THE TOP OF THE PES COLUMN, and chosen at the user's direction knowing
-# that.  0.35/0.20 maximises the objective at +0.102, but it does not do so by
-# putting more ends on the labelled time -- it does the opposite.  Points
-# landing inside the +/-2 s plateau FALL from 71 to 64 and the median error
-# grows to +2.5 s; what improves is only that fewer ends land early, bought by
-# holding the live state open longer so every falling edge arrives later.  The
-# objective rewards that because late costs it only linearly.
+# 0.40/0.25 is at once the top of the PES column (0.35/0.25 is +0.003 above it,
+# inside the noise of this corpus) and the best row on the column that says
+# "the end was right" -- 67 ends inside +/-2 s, more than any other setting.
+# When those two columns agree there is nothing to trade off, which is the
+# happy case and not the usual one; an earlier pass of this table, run against
+# STALE far-serve artifacts, had them disagreeing and the choice was made on
+# the plateau column at the user's direction.  It survived the correction.
 #
-# 0.40/0.25 is the best setting on the column that says "the end was right":
-# 75 points inside +/-2 s, more than any other row, with median error +1.2 s and
-# the early count still down from 49 to 41.  It gives up 0.05 of PES for 11 more
-# correctly-timed ends and 1.3 s of median accuracy.
+# The general shape is still worth knowing, because it will reappear: pushing
+# the bar DOWN does not put more ends on the labelled time, it holds the live
+# state open longer so every falling edge lands later.  Below 0.35/0.25 the
+# plateau column collapses (65 -> 55) while the early count keeps falling, and
+# an objective that charges exponentially for early and only linearly for late
+# will happily buy that trade.  The plateau column is what stops it.
 #
 # The histogram is what settles it.  Binned by how early, the mistimed ends are
 # one mode against the plateau edge and nothing beyond it:
