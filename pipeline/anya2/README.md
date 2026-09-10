@@ -514,6 +514,56 @@ points with **no segment at all**, scored as full-duration truncations, which no
 hysteresis setting changes (11, 11, 10 across the three rows). Optimising PES
 here is largely optimising a serve-recall problem through the wrong knob.
 
+### Near serve — the wrist-separation term is gone
+
+The trophy was a product of three terms and one of them, `split` (the two
+wrists ≥ 0.149 body heights apart), **assumed a measurement the perception
+cannot make**. A player who serves side-on with the racket arm on the far side
+of their body occludes that arm through the toss, and the pose model puts *both*
+wrist keypoints on the visible arm. On Data/43's two missed serves the wrists sit
+**18 px apart on a 221 px body** (0.081 BH) and **8 px on a 229 px body**
+(0.037 BH). The other two trophy terms score 1.000 on the same samples, so the
+product was zero for want of evidence that was never there — and no threshold
+recovers it: at a `split` minimum of 0.04 the first serve reaches only 0.343 and
+the second is still exactly 0.000.
+
+`TROPHY_USE_SPLIT = False`. Scored over 96 labelled near serves on 11 clips at
+the ±5 s tolerance that credits the label-timing cases:
+
+| | recall | precision | F1 | misses |
+|---|---|---|---|---|
+| with `split` | 93.8% | **80.4%** | 86.5 | 6 |
+| **without** | **97.9%** | 76.4% | 85.8 | **2** |
+
+Both Data/43 misses go, as do 36@271.6 and 38@59.8. The two survivors are a
+**0.9-second labelled "rally"** and a matching reshuffle — neither reachable by
+any threshold. End to end the objective goes **+0.141 → +0.236** and points the
+reel never covers drop **8 → 5**, because serve recall feeds straight into
+coverage, which dominates the objective.
+
+The cost is 7 new false positives, and they are exactly the family `split`
+existed to reject: **5 of 7 are mid-rally**, a player with both arms up during
+live play. `lo_elev` does not cover that case — it saturates at 1.0 above
+−0.052 BH, so it only rejects a genuinely *one-armed* gesture (hand to cap, a
+wave), which it still does.
+
+Two things were measured and are worth recording:
+
+* **`live_gate_near` does not catch them.** Swept 0.5→0.9, **5 of 7 survive at
+  every setting** and PES gets *worse* (+0.236 → +0.207). The live score is low
+  at these moments despite them sitting inside labelled rallies.
+* **Most are harmless anyway.** Two are dropped by the orchestrator and four
+  land inside segments that are majority live tennis, where a spurious start
+  just re-anchors a segment the reel was keeping. Only **two** do real damage
+  (36@380.8, 38@193.6), stretching a segment across mostly-dead footage. Both
+  fire *between* points, 4–6 s before a real serve, so the targeted fix is a
+  tighter start-merge window rather than restoring `split`.
+
+Reviewed on video, at least two of the seven (58@46.4, 24@382.8) look like real
+serves inside over-long labelled rallies — 58's "rally 26–68 s" is 42 seconds
+and almost certainly spans more than one point — so the precision drop above is
+probably overstated.
+
 ### The nine points the reel never covers
 
 They carry 78% of the objective's penalty, so they are worth naming. Every one
