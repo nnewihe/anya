@@ -234,9 +234,81 @@ LIVE_SCALE_PCT = 90       # per-clip normaliser.  Activity is in body heights pe
                           # mean a different thing on every camera.  The clip's
                           # own 90th percentile is what makes the hysteresis
                           # levels below portable.
-LIVE_HI = 0.50            # enter "live" above this fraction of that scale
-LIVE_LO = 0.35            # ...and leave it below this
+# Swept against `orchestrator.point_end_score` -- closeness of the chosen point
+# end to the labelled one, flat inside +/-2 s, linear-decaying when late and
+# exponentially penalised when early -- over all 208 labelled ends on 11 clips:
+#
+#     hi / lo        PES     within +/-2 s   >2 s early   >2 s late   median err
+#     0.50 / 0.35   +0.040        71             49           88        +0.9 s
+#     0.40 / 0.25   +0.051        75             41           92        +1.2 s  <--
+#     0.35 / 0.25   +0.085        72             38           98        +1.8 s
+#     0.35 / 0.20   +0.102        64             31          113        +2.5 s
+#     0.30 / 0.20   +0.102        62             31          115        +2.9 s
+#     0.30 / 0.15   +0.064        57             23          128        +5.1 s
+#     0.25 / 0.12   +0.028        48             24          136        +8.3 s
+#
+# NOT THE TOP OF THE PES COLUMN, and chosen at the user's direction knowing
+# that.  0.35/0.20 maximises the objective at +0.102, but it does not do so by
+# putting more ends on the labelled time -- it does the opposite.  Points
+# landing inside the +/-2 s plateau FALL from 71 to 64 and the median error
+# grows to +2.5 s; what improves is only that fewer ends land early, bought by
+# holding the live state open longer so every falling edge arrives later.  The
+# objective rewards that because late costs it only linearly.
+#
+# 0.40/0.25 is the best setting on the column that says "the end was right":
+# 75 points inside +/-2 s, more than any other row, with median error +1.2 s and
+# the early count still down from 49 to 41.  It gives up 0.05 of PES for 11 more
+# correctly-timed ends and 1.3 s of median accuracy.
+#
+# The histogram is what settles it.  Binned by how early, the mistimed ends are
+# one mode against the plateau edge and nothing beyond it:
+#
+#     s early   0.50/0.35   0.40/0.25   0.35/0.20
+#      2-3          23          21          14
+#      3-4          11           5           5
+#      4-5           2           2           1
+#      5-6           2           2           1
+#      6+            0           0           0      <- all mistimed ends
+#
+# EVERY genuinely mistimed end in the corpus is under 6 s early, at every
+# setting, with a median of ~2.7 s and p90 ~4.0 s.  There is no catastrophic
+# mid-rally tail for the exponential to punish -- at 2.7 s early the score is
+# still +0.35, positive -- so the penalty term is barely engaging and the PES
+# ranking is driven mostly by the eleven points with NO segment at all, which
+# are scored as full-duration truncations and which no hysteresis setting
+# changes (11, 11, 10 across the three rows).  Optimising PES here is largely
+# optimising a serve-recall problem through the wrong knob.
+#
+# It is not one clip: with clip 58 excluded the ranking is unchanged.  Every
+# other parameter was re-checked at this hysteresis and none of them moved
+# (FAR_VETO_W 0.8, TURN_HOLD_S 0, confident pairing, LIVE_SMOOTH_S 4.0,
+# est_duration_pct 85).
+LIVE_HI = 0.40            # enter "live" above this fraction of that scale
+LIVE_LO = 0.25            # ...and leave it below this
 LIVE_MIN_S = 2.0          # ignore live runs shorter than this
+
+# How much of the union's veto the FAR activity term is subject to.  1.0 is the
+# original shape (the near-only union multiplied the max of both players);
+# 0.0 exempts the far player from it entirely.  Neither end is right, and the
+# corpus says so plainly -- swept over all 208 labelled ends on 11 clips, with
+# the turn_away hold gate and confidence-aware pairing both on:
+#
+#     w      recall  precision | whole  trunc_s  dead_s
+#     1.0     48.1%     37.6%  |   123      100    1179
+#     0.9     49.5%     38.4%  |   126      100    1143
+#     0.8     50.5%     39.3%  |   128       93    1213   <-- here
+#     0.7     49.5%     38.1%  |   127       90    1272
+#     0.6     48.6%     37.5%  |   129       83    1304
+#     0.5     47.1%     36.3%  |   131       78    1333
+#     0.4     42.3%     32.4%  |   134       71    1367
+#     0.2     37.0%     28.2%  |   135       76    1463
+#     0.0     35.6%     26.7%  |   138       78    1553
+#
+# Recall and precision BOTH peak at 0.8 and fall away in both directions, which
+# is the shape a real optimum has.  Truncation keeps improving down to 0.4, but
+# only by buying it with recall, precision and 154 s of extra dead time -- the
+# detector stops finding ends at all and the reel runs on estimates instead.
+FAR_VETO_W = 0.8
 
 
 def live_score(parts: Dict[str, np.ndarray], video, tracks_npz=None,
@@ -249,7 +321,35 @@ def live_score(parts: Dict[str, np.ndarray], video, tracks_npz=None,
     with np.errstate(invalid="ignore"):
         near = np.nan_to_num(np.nanmax(act[list(T.NEAR_SLOTS)], axis=0), nan=0.0)
         far = np.nan_to_num(np.nanmax(act[list(T.FAR_SLOTS)], axis=0), nan=0.0)
-    raw = np.fmax(near, far) * (1.0 - parts["union"])
+    # THE UNION VETOES ONLY THE NEAR PLAYER, because the near player is all it
+    # is evidence about.  Every one of its five members -- walk and near_end's
+    # four -- is computed from the near pose shim that `run._end_signals`
+    # builds, so `union` says "the near player is not playing" and nothing
+    # whatever about the far one.  Multiplying the MAX of both by (1 - union)
+    # let a near-player posture erase the far player's activity, which is
+    # exactly backwards on the commonest truncating case: the near player hits
+    # an approach and stands watching (settle saturates) while the far player
+    # sprints to run it down.  The point is emphatically live and the score went
+    # to zero.
+    #
+    # Vetoing inside the max instead keeps the arbitration the module was built
+    # on -- a near player travelling is active and is not playing -- while
+    # leaving far-side evidence able to carry a rally on its own.  No new
+    # parameter; the far term is simply no longer answerable to near-player
+    # posture.
+    # ...but exempting the far player OUTRIGHT is the opposite error, and the
+    # corpus charges for it: at FAR_VETO_W = 0 the detected segments run 24.3 s
+    # on average against 15.7 s at 1.0, because after the point ends nothing
+    # vetoes the far player walking to the ball, so the falling edge arrives
+    # late and the reel gains 54% more dead time.  Truncation is fixed and
+    # replaced by overrun.
+    #
+    # The honest reading is that the union is WEAK evidence about the far
+    # player rather than none: the two players' states are strongly correlated,
+    # because a point ends for both of them at the same instant.  A partial
+    # veto says exactly that, and the corpus picks the weight.
+    raw = np.fmax(near * (1.0 - parts["union"]),
+                  far * (1.0 - FAR_VETO_W * parts["union"]))
     w = max(1, int(round((LIVE_SMOOTH_S if smooth_s is None else float(smooth_s)) * fps)))
     sm = np.convolve(raw, np.ones(w) / w, mode="same")
     return sm / max(np.percentile(sm, LIVE_SCALE_PCT), 1e-6)

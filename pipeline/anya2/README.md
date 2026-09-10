@@ -442,10 +442,135 @@ Scored ±2.0 s over all **236 labelled ends on 13 clips**:
 | **anya2 pose-only** (clip 35, out-of-sample) | 60.0% | 60.0% | −0.92 s | **0** |
 
 Better recall than the ball-based policy with no ball at all; behind on
-precision. **Zero truncations on every clip** — no detected end lands more than
-2 s early, so the harmful error (deleting live tennis from the reel) does not
-occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and clip
-40 (doubles) are the weak ones at ~30–38%.
+precision. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and
+clip 40 (doubles) are the weak ones at ~30–38%.
+
+### The point-end objective
+
+`orchestrator.point_end_score` is **the** metric, at the user's direction;
+everything else in `score_reel` is diagnostic. It scores **the point end the
+system chose** — `Segment.end_t`, before pre- or post-roll — against the
+labelled end. Deliberately not the cut point: roll is a separate, later decision
+about how much air to leave around a correct answer, and folding it in lets a
+tuning run paper over a bad end by padding it.
+
+That does **not** make the two independent. Roll cannot shift a scored `end_t`
+directly, but it changes where segments end, `smooth` then merges a different
+set of them, and the segment covering a given rally is no longer the same one —
+moving post-roll 1.0 → 2.0 took PES +0.051 → +0.008. The coupling runs through
+`merge_gap_s`, not the arithmetic, so re-check PES after moving roll.
+
+With `e = end_t − gt_end`:
+
+| range | score |
+|---|---|
+| `\|e\| ≤ 2 s` | **1.0**, flat — a point end is a moment a couple of seconds wide |
+| `e > +2 s` | linear from 1 down to **0** at the next labelled point start; never negative |
+| `e < −2 s` | `2 − exp((\|e\| − 2) / 2)` — crosses zero at 3.39 s early, −5.4 at 6 s |
+
+**The penalty saturates at −10, which the corpus forced.** Uncapped, one point
+of 208 was 88.2% of the objective and the worst three were 98.9% — that is
+tuning against a single moment of clip 58. The cap is also the honest shape: an
+end 15 s early and one 21 s early destroyed the same rally. Set
+`EARLY_MAX_PENALTY = None` for the pure exponential; `pes_errors` is reported
+either way.
+
+Tuned against it over 208 ends on 11 clips, **only the hysteresis moved** —
+`LIVE_HI/LO` 0.50/0.35 → **0.40/0.25**. `FAR_VETO_W = 0.8`, `TURN_HOLD_S = 0`,
+confident pairing, `LIVE_SMOOTH_S = 4.0` and `est_duration_pct = 85` were all
+re-checked at the new hysteresis and all held.
+
+| hi / lo | PES | within ±2 s | >2 s early | >2 s late | median err |
+|---|---|---|---|---|---|
+| 0.50 / 0.35 | +0.040 | 71 | 49 | 88 | +0.9 s |
+| **0.40 / 0.25** | +0.051 | **75** | 41 | 92 | +1.2 s |
+| 0.35 / 0.20 | **+0.102** | 64 | 31 | 113 | +2.5 s |
+| 0.30 / 0.15 | +0.064 | 57 | 23 | 128 | +5.1 s |
+
+**0.40/0.25 is not the top of the PES column, and was chosen knowing that.**
+0.35/0.20 maximises the objective, but not by putting more ends on the labelled
+time — it does the opposite. Points inside the ±2 s plateau *fall* from 71 to
+64 and median error grows to +2.5 s; what improves is only that fewer ends land
+early, bought by holding the live state open longer so every falling edge
+arrives later. The objective rewards that because late costs it only linearly.
+0.40/0.25 is the best row on the column that says *the end was right*.
+
+**The histogram settles it.** Binned by how early, the mistimed ends are one
+mode against the plateau edge and nothing beyond it:
+
+| s early | 0.50/0.35 | 0.40/0.25 | 0.35/0.20 |
+|---|---|---|---|
+| 2–3 | 23 | 21 | 14 |
+| 3–4 | 11 | 5 | 5 |
+| 4–5 | 2 | 2 | 1 |
+| 5–6 | 2 | 2 | 1 |
+| 6+ | 0 | 0 | 0 |
+
+Every genuinely mistimed end in the corpus is **under 6 s early**, at every
+setting, median ~2.7 s and p90 ~4.0 s. There is no catastrophic mid-rally tail
+for the exponential to punish — at 2.7 s early the score is still +0.35 — so the
+penalty barely engages, and the PES ranking is driven mostly by the eleven
+points with **no segment at all**, scored as full-duration truncations, which no
+hysteresis setting changes (11, 11, 10 across the three rows). Optimising PES
+here is largely optimising a serve-recall problem through the wrong knob.
+
+### The truncation column was measuring the wrong thing
+
+**"Zero truncations on every clip" was a metric artifact, and the reel truncated
+anyway.** `eval.py` counts a truncation only when a *matched* end lands more
+than 2 s early. At 40.2% precision the majority of emitted ends match no label
+at all, so every end that cut a rally short by landing mid-point was invisible
+to the one column that existed to catch it.
+
+What made that harmful rather than merely wrong was `_pair_once`, which took
+`cand[0]` — the **earliest** end in the point's window, unconditionally. With
+most candidates being false positives, that rule systematically preferred a
+mid-rally artifact over the real end whenever both fell in the window.
+
+`score_reel` now carries the reel-level question instead: for a rally the reel
+got *some* of, how many seconds of its **tail** are missing. Three fixes,
+decomposed over all 208 labelled ends on 11 clips:
+
+| | recall | precision | whole | trunc pts | trunc_s | dead_s |
+|---|---|---|---|---|---|---|
+| shipped before | 47.1% | 36.3% | 108 | 21 | 127 | 926 |
+| + `turn_away` hold gate | 48.1% | 37.6% | 115 | 21 | 122 | 959 |
+| + confidence-aware pairing | 47.1% | 36.3% | 117 | 20 | 106 | 1100 |
+| + far-veto weight 0.8 | 49.5% | 37.7% | 119 | 18 | 119 | 998 |
+| **all three** | **50.5%** | **39.3%** | **128** | **17** | **93** | 1213 |
+
+Each is positive alone and they compose. 12 of the 17 remaining truncated points
+are on clip 58.
+
+1. **The union vetoed a player it knows nothing about.** All five members —
+   walking and `near_end`'s four — are computed from the *near* pose shim, yet
+   `raw = max(near, far) * (1 - union)` let near-player posture erase the far
+   player's activity. The commonest truncating case is exactly that: the near
+   player hits an approach and stands watching (`settle` saturates) while the
+   far player sprints to run it down. Exempting the far term *outright* is the
+   opposite error and costs more than it buys — detected segments run 24.3 s
+   against 15.7 s, because nothing then vetoes the far player walking to the
+   ball after the point. The union is *weak* evidence about the far player, not
+   none; `FAR_VETO_W = 0.8` is where recall and precision both peak.
+
+2. **`turn_away` fired on forehands — and the gate for it does NOT ship.** The
+   `conf` ramp already handled a player seen edge-on, but not rotation *past*
+   square: an open-stance takeback inverts the shoulder order with real
+   magnitude. Ungated, the signal fires above 0.5 on **3.3% of live tennis**,
+   and eroding it over a 2 s hold window cuts that 8.5× to 0.39%. That
+   measurement is real and reproducible — and the gate still loses end to end,
+   on every arm and every column, producing *more* badly-early ends rather than
+   fewer (see `near_end.TURN_HOLD_S`, which ships at **0.0**). Suppressing the
+   signal raises the live score and moves ends later. A half-window phase shift
+   was tried, on the theory that the centred erosion was merely delaying genuine
+   turns, and did not help either. The row above is its score under the earlier
+   reel-based metric, kept because it is what the decomposition measured; it is
+   not a claim that the gate is on.
+
+3. **Pairing threw away the discriminator it already had.** `detect_ends`
+   computes `p` = how far the live score falls *and stays fallen*; a real end
+   scores near 1, a mid-rally dip low. Picking the argmax instead of the
+   earliest costs nothing and needs no new evidence.
 
 ### Four measurements, in the order they killed the obvious designs
 
@@ -936,7 +1061,7 @@ anything else, so it exercises the stride logic at 8 rather than the usual 2-4.
 |---|---|---|---|---|
 | near serve | 5 | **100%** | **100%** | above |
 | far serve | 15 | **93.3%** | **93.3%** | well above |
-| point end | 20 | **60.0%** | **60.0%** (0 truncations) | above |
+| point end | 20 | **60.0%** | **60.0%** | above |
 
 All three land at or above their corpus averages, and the far-serve precision is
 the second-best on any clip. That is the strongest evidence available here that
