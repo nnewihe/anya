@@ -28,3 +28,10 @@ serviceAccount*.json
 .env
 .env.*
 .runtimeconfig.json
+
+# Google OAuth Desktop client id and secret, injected at build time.
+# NOT committed even though RFC 8252 calls an installed app's secret
+# non-confidential — this repository is public, and a scraped id+secret lets
+# someone show our consent screen to our own users.
+# See desktop/oauth_client.example.py.
+desktop/oauth_client.py

@@ -297,6 +297,11 @@ class GateScreen(QWidget):
         self._blurb.setText(
             f"{cfg.PRICE_ANNUAL_DISPLAY} or {cfg.PRICE_MONTHLY_DISPLAY}. "
             f"Full refund within {cfg.REFUND_WINDOW_DAYS} days.")
+        # A build made from a checkout without desktop/oauth_client.py can do
+        # email sign-in but not Google. Hide the button rather than offering
+        # one that always fails — see oauth_client.example.py.
+        self._google_btn.setVisible(cfg.google_configured())
+
         if not cfg.is_configured():
             self._set_status(
                 "This build isn't configured for sign-in yet.", error=True)

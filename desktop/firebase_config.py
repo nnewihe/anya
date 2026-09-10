@@ -39,15 +39,35 @@ TOKEN_ISSUER = f"https://securetoken.google.com/{PROJECT_ID}"
 TOKEN_AUDIENCE = PROJECT_ID
 
 # ── Google sign-in (OAuth client of type "Desktop app") ────────────────────
-GOOGLE_CLIENT_ID = os.environ.get(
-    "ANYA_GOOGLE_CLIENT_ID",
-    "REPLACE_ME.apps.googleusercontent.com",
-)
-GOOGLE_CLIENT_SECRET = os.environ.get(
-    "ANYA_GOOGLE_CLIENT_SECRET", "REPLACE_ME_NOT_A_SECRET"
-)
+# The real values live in oauth_client.py, which is GITIGNORED, or in the
+# environment. They are deliberately absent from this file: see
+# oauth_client.example.py for why a secret that RFC 8252 calls
+# non-confidential still must not be committed to a PUBLIC repository.
+#
+# Imported in a try/except so a checkout without the file still runs, builds
+# and passes its tests -- Google sign-in is simply not offered, and
+# is_configured() says so rather than the app failing at launch.
+try:
+    from oauth_client import (  # type: ignore[import-not-found]
+        GOOGLE_CLIENT_ID as _CID,
+        GOOGLE_CLIENT_SECRET as _CSECRET,
+    )
+except ImportError:  # pragma: no cover - depends on a local, untracked file
+    _CID = _CSECRET = ""
 
-# ── Emulators ──────────────────────────────────────────────────────────────
+GOOGLE_CLIENT_ID = os.environ.get(
+    "ANYA_GOOGLE_CLIENT_ID", _CID or "REPLACE_ME.apps.googleusercontent.com")
+GOOGLE_CLIENT_SECRET = os.environ.get(
+    "ANYA_GOOGLE_CLIENT_SECRET", _CSECRET or "REPLACE_ME")
+
+
+def google_configured() -> bool:
+    """False when this build cannot offer Google sign-in, so the gate screen
+    can hide the button rather than showing one that always fails."""
+    return "REPLACE_ME" not in GOOGLE_CLIENT_ID
+
+
+# -- Emulators --------------------------------------------------------------
 # Set ANYA_AUTH_EMULATOR_HOST=127.0.0.1:9099 (and ANYA_FUNCTIONS_BASE) to point
 # the whole client at `firebase emulators:start`. The emulator implements the
 # same Identity Toolkit REST surface, so nothing in auth.py changes shape --
