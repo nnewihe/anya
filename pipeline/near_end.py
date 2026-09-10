@@ -19,9 +19,11 @@ This module computes four such signals, each per pose sample, each in [0, 1]:
                   after the last ball is.
 
     turn_away     the shoulder line rotates so the player faces the CAMERA
-                  rather than the net.  The near player plays with their back to
-                  this camera, so turning toward it is turning away from the
-                  point.
+                  rather than the net, AND STAYS THERE.  The near player plays
+                  with their back to this camera, so turning toward it is
+                  turning away from the point -- but a forehand takeback rotates
+                  the shoulders past square too, and only duration tells the two
+                  apart, so the score is eroded over a hold window.
 
     stance_drop   loss of the ready stance: the wrists fall to or below the hip
                   line, the two-handed grip opens, and the knees straighten out
@@ -134,6 +136,68 @@ TURN_FULL_BH = 0.14         # separation at which the facing read is at full
                             # confidence
 TURN_WIN_S = 0.8            # a rally turn (chasing a lob) is a fast pivot back;
                             # an end-of-point turn is held
+                            # Measured: share of samples scoring turn_away >
+                            # 0.5, over labelled LIVE play against labelled
+                            # dead time, on the four clips it was swept on
+                            # (22/24/25/26, pooled at the bottom):
+                            #
+                            #   hold    0.0        1.0        2.0        3.0
+                            #   22   4.78/18.1  1.64/14.6  0.25/11.7  0.00/9.9
+                            #   24   3.09/42.1  2.19/31.7  0.84/22.5  0.13/15.8
+                            #   25   3.05/ 6.6  0.71/ 3.5  0.00/ 1.6  0.00/0.9
+                            #   26   2.42/10.6  1.47/ 6.8  0.57/ 4.2  0.13/3.3
+                            #   ALL  3.32/15.8  1.45/11.4  0.39/ 8.1  0.06/6.2
+                            #
+                            # Ungated, this signal fires on 3.3% of LIVE TENNIS
+                            # -- that is the forehand takeback reading as a
+                            # point end, and it is what the gate is for.  At
+                            # 2.0 that falls 8.5x to 0.39% while the dead-time
+                            # mass only halves, taking the dead/live ratio from
+                            # 4.8 to 20.7.  3.0 buys little more live
+                            # suppression and gives up another quarter of the
+                            # real signal.
+                            #
+                            # NOTE FOR THE LEGACY ENGINE: `rally_reel/energy.py`
+                            # reads SIGNAL_NAMES too, and its
+                            # `energy_turn_away_weight` (0.5, called there "the
+                            # cleanest separator of the four") was tuned against
+                            # the UNGATED signal.  The gate lowers this signal's
+                            # level, so that weight is no longer the tuned
+                            # optimum for it.  anya2 is the default engine
+                            # (ANYA_ENGINE=legacy opts out), so nothing shipping
+                            # is affected -- but re-tune that weight before
+                            # trusting a legacy run, or set TURN_HOLD_S = 0.
+                            # OFF BY DEFAULT, against that evidence, because the
+                            # metric that governs disagrees with it.  Scored end
+                            # to end on the point-end objective (`orchestrator.
+                            # point_end_score` -- closeness of the final cut-out
+                            # to the labelled end), the gate loses on all four
+                            # arms it was tested on and on every column:
+                            #
+                            #   roll  w    hold   PES     0..5s  >2s early
+                            #   3.0  0.8   0.0   -0.145     84      13
+                            #   3.0  0.8   2.0   -0.245     78      15
+                            #   4.0  0.8   0.0   -0.101     82      11
+                            #   4.0  0.8   2.0   -0.176     74      13
+                            #
+                            # It does not merely cost timing, it produces MORE
+                            # badly-early cuts, which is the opposite of what it
+                            # was built for.  The separation table below is
+                            # still real -- this signal does fire on live tennis
+                            # and the gate does stop it -- but suppressing it
+                            # raises the live score, moves ends later, and the
+                            # end-to-end result is worse.  Left in, measured,
+                            # and off: set to 2.0 to re-enable.
+TURN_HOLD_S = 0.0           # ...and this is what WOULD MAKE that sentence true.
+                            # The
+                            # score is eroded to its minimum over this window,
+                            # so an inversion has to survive the whole of it.
+                            # It costs up to half a window of lead on a genuine
+                            # turn, which the union can afford: turn_away's own
+                            # median is +14.8 s, so it is never the member that
+                            # times a point end -- it is a member that has to
+                            # stop firing during play.  Set to 0 to disable the
+                            # gate and recover the pre-gate signal exactly.
 
 # ── stance_drop ──────────────────────────────────────────────────────────
 # Ready: wrists carried at or above the hip line, hands together on the racket,
@@ -199,6 +263,28 @@ def _smooth(x, fps, win_s, movmean):
     lag is a real change to the timing, not an implementation detail.
     """
     return movmean(x, max(1, int(round(win_s * fps))))
+
+
+def _moverode(x, w):
+    """Centred running MINIMUM over `w` samples -- a morphological erosion.
+
+    The dual of `pipeline.anya2.signals.movmax`, and written the same way: by
+    shifts rather than a stride trick, so the edges degrade to a shorter window
+    instead of to NaN.  A turn in the first second of a clip is still a turn.
+
+    NaN is treated as +inf (via `fmin`), which is the correct polarity here for
+    the same reason `movmax` treats it as -inf: a sample with no player is not
+    evidence that the inversion lapsed, and letting it erode the signal would
+    make an occlusion look like a player turning back to the net.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    if w <= 1:
+        return x
+    out = x.copy()
+    for d in range(1, w // 2 + 1):
+        out[:-d] = np.fmin(out[:-d], x[d:])
+        out[d:] = np.fmin(out[d:], x[:-d])
+    return out
 
 
 def _nan_to_zero(x):
@@ -300,7 +386,40 @@ def near_signals(kp, bbox, fps: float,
     # discriminative signal can only dilute it.  Left out rather than
     # down-weighted: there is no weight at which it pays.
     turn_raw = np.clip(conf * facing_cam, 0.0, 1.0)
+    # THE INVERSION HAS TO HOLD.  The `conf` ramp above already handles a player
+    # seen EDGE-ON -- at true side-on the shoulders project on top of each other,
+    # `sep` collapses and the sample contributes nothing.  What it does not
+    # handle is rotation PAST square: an open-stance forehand takeback or a
+    # closed-stance backhand turns the shoulders beyond 90 degrees, `sho_dx`
+    # inverts with real magnitude, and `facing_cam` climbs on a player who is
+    # mid-swing.  That is live tennis scoring as a point end, and it is the same
+    # failure family as the near serve detector's residual false positives being
+    # reverse and buggy-whip forehands.
+    #
+    # Duration is what separates the two, and nothing else does: a takeback
+    # inversion REVERSES within a few tenths of a second because the swing
+    # unwinds it, while a player who has turned to the back fence stays turned.
+    # A longer moving mean cannot express that -- it cannot tell a brief full
+    # inversion from a sustained partial one, which are the two cases -- so the
+    # gate is an EROSION: the score is the minimum over the hold window, which
+    # is high only where the inversion held across the whole of it.
+    #
+    # Applied to the already-smoothed signal rather than to `turn_raw`, so a
+    # single dropped shoulder keypoint cannot zero a genuine turn; TURN_WIN_S
+    # has absorbed that before the min ever sees it.
+    #
+    # A HALF-WINDOW PHASE SHIFT WAS TRIED AND REMOVED.  A centred erosion also
+    # delays a genuine sustained turn -- the minimum over [i - w/2, i + w/2]
+    # cannot rise until half the window has elapsed -- so the obvious reading
+    # of "the gate scores worse end to end" was that its phase, not its logic,
+    # was wrong.  Shifting it back by w/2 is legitimate offline (the same
+    # licence `_smooth` takes by being centred at all) and it did NOT help: the
+    # gate still lost on every arm, on every column, while the shift cost real
+    # live/dead separation (the live-firing rate went back from 0.39% to 1.38%).
+    # The delay was not the explanation, so the shift bought nothing.
     turn_away = _smooth(turn_raw, fps, TURN_WIN_S, _movmean)
+    if TURN_HOLD_S > 0:
+        turn_away = _moverode(turn_away, max(1, int(round(TURN_HOLD_S * fps))))
 
     # ── stance_drop ──────────────────────────────────────────────────────
     # Image y grows downward, so hip_y - wrist_y is positive above the hip.

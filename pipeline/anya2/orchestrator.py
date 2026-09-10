@@ -139,6 +139,14 @@ class ReelConfig:
     est_duration_pad_s: float = 1.5
     next_start_guard_s: float = 4.0  # never run a segment closer than this to
                                      # the next serve
+    end_pick_confident: bool = True  # choose the highest-confidence end in the
+                                     # window rather than the earliest.  See
+                                     # `_pair_once` for why the earliest was
+                                     # the wrong rule and what `p` measures.
+                                     # False restores the old behaviour, so the
+                                     # two are A/B-comparable on the corpus.
+    end_pick_tol: float = 0.05       # confidences within this are a tie, and a
+                                     # tie goes to the earlier end
 
     # ── smoothness ───────────────────────────────────────────────────────
     # Roll is the single biggest lever on how much tennis survives, and it is
@@ -161,10 +169,84 @@ class ReelConfig:
     # is the exchange rate.
     # Set to 1.0/1.0 at the user's direction, tightening the reel.  The table
     # above is what that costs against the corpus; re-measured at 1.0/1.0 below.
+    #
+    # RE-MEASURED at post 1.0, over all 208 labelled ends on 11 clips, with the
+    # three point-end fixes (far veto 0.8, turn hold 2.0, confident pairing) on.
+    # `trunc` counts points losing more than 2 s off the TAIL -- the error an
+    # early end makes, which `eval.py` cannot see and `score_reel` now can:
+    #
+    #     post   whole  partial  trunc  trunc_s  dead_s  live kept
+    #     1.0     128      69      17      93     1213     86.9%
+    #     2.0     138      60       9      59     1376     88.7%   <-- here
+    #     3.0     146      52       5      32     1529     89.7%
+    #
+    # So post-roll at 1.0 WAS costing truncations, and the exchange rate is
+    # good: 1.0 -> 2.0 halves the truncated points and buys 10 whole points for
+    # 163 s across 11 clips -- about 0.8 s of dead time per point.  Set to 2.0
+    # at the user's direction on that table.
+    #
+    # Note that roll and the point-end objective are NOT independent, though it
+    # is natural to assume they are: PES reads `end_t`, so roll cannot shift a
+    # scored value directly.  It moves the score anyway -- 1.0 -> 2.0 took PES
+    # +0.051 -> +0.008 and the within-2 s count 75 -> 71 -- because roll changes
+    # where segments END, `smooth` then merges a different set of them, and the
+    # segment that covers a given rally (and therefore the `end_t` scored for
+    # it) is not the same one.  The coupling runs through `merge_gap_s`, not
+    # through the arithmetic.
+    #
+    # So the two still cannot be tuned in one pass, but neither can they be
+    # tuned in strict isolation: re-check PES after moving roll.
+    #
+    # AND UNDER `point_end_score` -- the objective that now governs -- post-roll
+    # is the single dominant parameter, worth several times any detector knob:
+    #
+    #     post    PES     0..5s   >2s early   median err
+    #     1.0   -0.583      70        26        +1.9 s
+    #     1.5   -0.509      73        24        +2.7 s
+    #     2.0   -0.405      73        19        +3.5 s
+    #     2.5   -0.313      76        16        +4.2 s
+    #     3.0   -0.250      78        15        +4.9 s
+    #     4.0   -0.101      82        11        +5.9 s   <-- optimum
+    #     5.0   -0.175      60        13        +8.0 s
+    #
+    # That ranking is a direct consequence of the objective's shape: an
+    # exponential penalty for cutting early against a merely linear decay for
+    # running late will always buy insurance with post-roll.  Whether 4.0 is
+    # the right PRODUCT answer is a separate question from whether it maximises
+    # this number -- it adds ~3 s of dead time to every point in the reel.
     pre_roll_s: float = 1.0
-    post_roll_s: float = 1.0
-    merge_gap_s: float = 6.0         # segments closer than this are joined
-                                     # rather than cut apart
+    post_roll_s: float = 2.0
+    merge_gap_s: float = 4.0         # segments closer than this are joined
+                                     # rather than cut apart.
+    # Lowered from 6.0 because at 6.0 the join CHAINS: three legitimately-spaced
+    # starts on clip 36 (367, 381, 403 s) became one 54 s segment that was only
+    # 27% live tennis, each join licensing the next.  Swept over 208 labelled
+    # ends on 11 clips:
+    #
+    #     merge_gap   PES     within2s  whole  dead_s  segs  cuts/min
+    #        6.0    +0.236       65      153    1550    146     1.6
+    #        4.0    +0.313       75      150    1442    168     1.8   <-- here
+    #        3.0    +0.330       76      146    1426    177     1.8
+    #        2.0    +0.353       79      146    1407    190     2.0
+    #        0.0    +0.473       95      128    1369    250     2.7
+    #
+    # The objective improves all the way down, and most of that is real: a
+    # joined segment carries the LAST point's end_t, so every earlier point in
+    # the chain is scored against an end tens of seconds late.  But whole points
+    # fall away with it, and "every point in the reel" is the brief.  4.0 buys
+    # 10 more correctly-timed ends and 108 s of dead time for 3 whole points and
+    # 0.2 more cuts per minute; below it the whole-point cost accelerates.
+    #
+    # WHAT THIS DOES NOT FIX, and why it cannot: consecutive segments whose ends
+    # were ESTIMATED sit exactly `post_roll - (next_start_guard - pre_roll)` =
+    # 2.0 - (4.0 - 1.0) = 1.0 s apart, by construction -- the guard's intended
+    # dead space is eaten by post-roll.  Clip 38's 91 s segment is seven such
+    # segments chained at 1.0-2.7 s, and breaking it needs merge_gap below 1.0,
+    # which costs 25 whole points.  Widening next_start_guard_s instead reaches
+    # it at 6.0-8.0 but doubles truncations (6 -> 12), because a longer guard
+    # cuts every estimated end short.  Clip 38's real problem is upstream: 8
+    # labelled points covered by 6 starts, four of them ending on an estimate.
+    # That is point-end recall, not smoothing, and it should be fixed there.
     min_segment_s: float = 4.0       # anything shorter is a flash, not a point
 
     # ── thresholds on the incoming streams ───────────────────────────────
@@ -532,11 +614,14 @@ def pair_ends(starts: Sequence[PointStart], ends: Sequence[Event],
 
     The end is chosen in this order:
 
-      DETECTED   the first end event that falls in the plausible window for
-                 this point -- later than `min_point_s` (before that it is the
-                 serve motion itself), earlier than `max_point_s` (after that
-                 it is a missed end and some later, unrelated quiet), and before
-                 the next serve.
+      DETECTED   the MOST CONFIDENT end event in the plausible window for this
+                 point -- later than `min_point_s` (before that it is the serve
+                 motion itself), earlier than `max_point_s` (after that it is a
+                 missed end and some later, unrelated quiet), and before the
+                 next serve.  Most confident rather than earliest because at
+                 40.2% precision most candidates in a window are artefacts, and
+                 picking the earliest chose them by construction; see
+                 `_pair_once`.
 
       ESTIMATED  no end was detected in the window, so the point is assumed to
                  have run for `estimate_point_s` -- a high percentile of THIS
@@ -548,18 +633,21 @@ def pair_ends(starts: Sequence[PointStart], ends: Sequence[Event],
     Point-end recall is 49.6% against 90.7%/82.2% for the serves, so requiring a
     pair would discard half the points.
     """
-    et = sorted(float(e.t) for e in ends if e.p >= cfg.end_threshold)
-    et_arr = np.array(et) if et else np.zeros(0)
+    kept = sorted(((float(e.t), float(e.p)) for e in ends
+                   if e.p >= cfg.end_threshold), key=lambda x: x[0])
+    et_arr = np.array([t for t, _ in kept]) if kept else np.zeros(0)
+    ep_arr = np.array([p for _, p in kept]) if kept else np.zeros(0)
 
     # Two passes: the first only to learn this clip's typical point length from
     # the ends that WERE detected, the second to use it for the ones that were
     # not.  One pass cannot do it -- the estimate is derived from the same
     # pairing it feeds.
-    segs = _pair_once(starts, et_arr, cfg, duration, cfg.default_point_s)
-    return _pair_once(starts, et_arr, cfg, duration, estimate_point_s(segs, cfg))
+    segs = _pair_once(starts, et_arr, ep_arr, cfg, duration, cfg.default_point_s)
+    return _pair_once(starts, et_arr, ep_arr, cfg, duration,
+                      estimate_point_s(segs, cfg))
 
 
-def _pair_once(starts, et_arr, cfg, duration, est_s):
+def _pair_once(starts, et_arr, ep_arr, cfg, duration, est_s):
     segs: List[Segment] = []
     for i, ps in enumerate(starts):
         nxt = starts[i + 1].t if i + 1 < len(starts) else None
@@ -569,9 +657,39 @@ def _pair_once(starts, et_arr, cfg, duration, est_s):
             hi = min(hi, nxt - cfg.next_start_guard_s)
         end_t, src = None, ""
         if et_arr.size and hi > lo:
-            cand = et_arr[(et_arr >= lo) & (et_arr <= hi)]
+            sel = (et_arr >= lo) & (et_arr <= hi)
+            cand = et_arr[sel]
             if cand.size:
-                end_t, src = float(cand[0]), "detected"
+                # THE MOST CONFIDENT END IN THE WINDOW, NOT THE FIRST ONE.
+                # Taking `cand[0]` handed the point to the earliest candidate
+                # unconditionally, and with point-end precision at 40.2% most
+                # candidates are false positives -- so the rule was
+                # systematically choosing a mid-rally artefact over the real
+                # end whenever both fell in the window.  That is the truncation
+                # mechanism, and the eval never saw it: `eval.py` counts a
+                # truncation only for a MATCHED end landing early, so the 60%
+                # of ends that match no label were invisible to the one column
+                # that was supposed to catch this.
+                #
+                # `detect_ends` already computes the discriminator and the
+                # orchestrator was throwing it away.  Its `p` is how far the
+                # live score falls AND STAYS fallen over the next 4 s: a real
+                # end drops to the floor and scores near 1, while a mid-rally
+                # dip is followed by more play and scores low.  Picking the
+                # argmax uses evidence that was already paid for.
+                cp = ep_arr[sel]
+                if cfg.end_pick_confident:
+                    # Near-equal confidences resolve to the EARLIER end, which
+                    # is why this is a tolerance and not a bare argmax: `p` is a
+                    # mean over a 4 s window and separates a real end from an
+                    # artefact by tenths, not by hundredths.  Inside the
+                    # tolerance the two candidates are not distinguishable and
+                    # the earlier one costs less dead time.
+                    ok = np.flatnonzero(cp >= cp.max() - cfg.end_pick_tol)
+                    j = int(ok[0])
+                else:
+                    j = 0
+                end_t, src = float(cand[j]), "detected"
         if end_t is None:
             # An UNDETECTED end must not mean "run to the next serve": with
             # point-end recall at 49.6% that would keep every inter-point gap on
@@ -845,6 +963,133 @@ def recover_missed(segs: List[Segment], live, fps: float, cfg: ReelConfig,
 # matters to a viewer is whether the tennis is all there, how much waiting was
 # left in, and how often the picture cuts. Those are the numbers below.
 
+# ── the point-end objective ──────────────────────────────────────────────
+# THE metric, at the user's direction, and the one to tune against.  Everything
+# else in `score_reel` is diagnostic: it explains why this number moved.
+#
+# It scores THE POINT END THE SYSTEM CHOSE -- `Segment.end_t`, before pre- or
+# post-roll is applied -- against the labelled end.  Deliberately not the cut
+# point: roll is a separate, later decision about how much air to leave around
+# a correct answer, and folding it in here lets a tuning run paper over a bad
+# end by padding it.  Optimising this number optimises point-end detection and
+# nothing else.
+#
+# The shape, with e = end_t - gt_end:
+#
+#   |e| <= PLATEAU_S            score 1.  A point end is not a timestamp, it is
+#                               a moment a couple of seconds wide, and inside
+#                               that band there is nothing to choose between
+#                               two answers.
+#
+#   e > PLATEAU_S               decays LINEARLY from 1 to 0 at the next
+#                               labelled point start.  Late is waste, not
+#                               damage, and it never goes negative.
+#
+#   e < -PLATEAU_S              decays EXPONENTIALLY from 1 and CROSSES INTO
+#                               PENALTY: 2 - exp((|e| - PLATEAU_S) / EARLY_TAU).
+#                               Zero at 3.39 s early, -5.4 at 6 s, and falling
+#                               fast after that.  Cutting early deletes tennis
+#                               and the damage compounds.
+PLATEAU_S = 2.0
+EARLY_TAU = 2.0
+# ...and this is where the penalty SATURATES, which the corpus forced rather
+# than the design asking for it.  Uncapped, the exponential stops measuring the
+# reel and starts measuring its single worst point: on the previous objective
+# one point of 208, cut 21.4 s early, was 88.2% of the whole number and the
+# worst three were 98.9%.
+#
+# The cap is also the honest shape.  The exponential encodes "losing the last
+# seconds of a rally loses the winner", and that argument runs out once the
+# point is gone: an end 15 s early and one 21 s early have destroyed the same
+# rally, and calling the second 11x worse states something about tennis that is
+# not true.
+#
+# Set to None for the pure exponential; `pes_errors` is reported either way, so
+# the uncapped number is always recoverable.
+EARLY_MAX_PENALTY = 10.0
+# A rally with no segment at all is scored as if its end landed at its own
+# start -- early by the full rally duration.  Scoring it zero instead would let
+# a tuning run quietly DISCARD the points it finds hard rather than risk
+# mistiming them, and buy a better score by showing less tennis.
+MISS_IS_FULL_TRUNCATION = True
+
+
+def _pe_score(e: float, gap: float) -> float:
+    """Score one point end. `e` is signed error, `gap` is end -> next start."""
+    if abs(e) <= PLATEAU_S:
+        return 1.0
+    if e > PLATEAU_S:
+        # Linear from 1 at +PLATEAU_S to 0 at the next point's start.  A gap at
+        # or inside the plateau leaves no room to decay across, so anything
+        # beyond it is simply worthless rather than dividing by ~zero.
+        span = gap - PLATEAU_S
+        if span <= 1e-6:
+            return 0.0
+        return max(0.0, 1.0 - (e - PLATEAU_S) / span)
+    v = 2.0 - float(np.exp((-e - PLATEAU_S) / EARLY_TAU))
+    if EARLY_MAX_PENALTY is not None:
+        v = max(v, -EARLY_MAX_PENALTY)
+    return v
+
+
+def point_end_score(segs, rallies) -> Dict:
+    """Per-point closeness of the CHOSEN point end to the labelled one.
+
+    `segs` is the orchestrator's segment dicts (needs `end_t`, `start`, `stop`
+    and `end_source`); `rallies` is `load_rallies`' output.  Returns the mean
+    score plus the signed per-point errors, so a caller can see the
+    distribution rather than only its mean.
+    """
+    if not rallies:
+        return {"score": float("nan"), "errors": [], "n": 0}
+    gaps = [rallies[i + 1]["start_s"] - rallies[i]["end_s"]
+            for i in range(len(rallies) - 1)]
+    # The last rally has no next start to decay toward, so it borrows the
+    # clip's own typical gap.  Median rather than mean: one changeover is
+    # minutes long and would make the last point almost impossible to score
+    # badly.
+    fallback = float(np.median(gaps)) if gaps else 20.0
+
+    scores, errors, sources = [], [], []
+    n_early = n_missed = 0
+    for i, x in enumerate(rallies):
+        a, b = x["start_s"], x["end_s"]
+        nxt = rallies[i + 1]["start_s"] if i + 1 < len(rallies) else b + fallback
+        gap = max(nxt - b, 1e-6)
+        # The segment that COVERS this rally supplies the end.  Several can
+        # touch one point once merging has run, and it is the last of them that
+        # carries the end the system settled on.
+        over = [s for s in segs if s["stop"] > a and s["start"] < b]
+        if not over:
+            n_missed += 1
+            sources.append("missed")
+            if not MISS_IS_FULL_TRUNCATION:
+                scores.append(0.0)
+                errors.append(float("nan"))
+                continue
+            e = -(b - a)
+        else:
+            top = max(over, key=lambda s: s["end_t"])
+            e = top["end_t"] - b
+            sources.append(top["end_source"])
+        errors.append(e)
+        if e < -PLATEAU_S:
+            n_early += 1
+        scores.append(_pe_score(e, gap))
+    return {
+        "score": float(np.mean(scores)),
+        "errors": errors,
+        "sources": sources,
+        "n": len(scores),
+        "n_early": n_early,
+        "n_missed": n_missed,
+        "n_plateau": sum(1 for e in errors
+                         if np.isfinite(e) and abs(e) <= PLATEAU_S),
+        "median_err": float(np.median([e for e in errors if np.isfinite(e)]))
+                      if errors else float("nan"),
+    }
+
+
 def score_reel(res: Dict, clip_dir: str) -> Dict:
     """Measure a reel against the labelled rallies."""
     from parse_ground_truth import load_rallies
@@ -855,11 +1100,30 @@ def score_reel(res: Dict, clip_dir: str) -> Dict:
 
     full = partial = 0
     live_kept = live_total = 0.0
+    # TRUNCATION IS MEASURED HERE OR IT IS NOT MEASURED AT ALL.  `eval.py`'s
+    # truncation column only ever sees ends that MATCHED a label, so at 40.2%
+    # point-end precision the majority of emitted ends -- and every one that
+    # cuts a rally short by landing mid-point -- were invisible to it.  That is
+    # why the corpus read "zero truncations" while the reel truncated.
+    #
+    # The reel-level question is different and blunt: for a rally the reel got
+    # SOME of, how many seconds of its tail are missing.  Tail specifically,
+    # because that is the error an early end makes; a late start is a separate
+    # error that `points_partial` already folds in.
+    trunc_s = 0.0
+    trunc_n = 0
     for x in r:
         a, b = x["start_s"], x["end_s"]
         live_total += b - a
         kept = sum(max(0.0, min(b, q) - max(a, p)) for p, q in segs)
         live_kept += min(kept, b - a)
+        if kept > 0:
+            last = max((min(b, q) for p, q in segs if min(b, q) > max(a, p)),
+                       default=a)
+            lost = max(0.0, b - last)
+            trunc_s += lost
+            if lost > 2.0:
+                trunc_n += 1
         if kept >= (b - a) - 0.25:
             full += 1
         elif kept > 0:
@@ -867,8 +1131,17 @@ def score_reel(res: Dict, clip_dir: str) -> Dict:
 
     reel_s = sum(q - p for p, q in segs)
     dead_kept = max(0.0, reel_s - live_kept)
+    # The objective reads `end_t` and `end_source`, so it gets the segment
+    # dicts rather than the (start, stop) pairs the coverage maths above uses.
+    pes = point_end_score(res["segments"], r)
     return {
         "clip": os.path.basename(clip_dir),
+        "point_end_score": pes["score"],
+        "pes_early": pes["n_early"], "pes_missed": pes["n_missed"],
+        "pes_median_err": pes["median_err"],
+        "pes_plateau": pes["n_plateau"],
+        "pes_errors": pes["errors"],
+        "pes_sources": pes["sources"],
         "n_points": len(r), "n_segments": len(segs),
         "points_whole": full, "points_partial": partial,
         "points_missing": len(r) - full - partial,
@@ -877,17 +1150,26 @@ def score_reel(res: Dict, clip_dir: str) -> Dict:
         "compression": reel_s / span_s if span_s else float("nan"),
         "dead_kept_s": dead_kept,
         "dead_per_point_s": dead_kept / max(len(r), 1),
+        "trunc_s": trunc_s,
+        "trunc_per_point_s": trunc_s / max(len(r), 1),
+        "points_truncated": trunc_n,
         "cuts_per_min": len(segs) / (span_s / 60.0) if span_s else float("nan"),
     }
 
 
 def _fmt_score(s: Dict) -> str:
-    return (f"  {s['clip']:>4}  pts {s['n_points']:>3}  segs {s['n_segments']:>3} | "
+    # The objective leads; everything after the first bar is why it moved.
+    return (f"  {s['clip']:>4}  PES {s['point_end_score']:+6.3f} "
+            f"(early {s['pes_early']:>3} miss {s['pes_missed']:>2} "
+            f"med {s['pes_median_err']:+5.1f}s) | "
+            f"pts {s['n_points']:>3}  segs {s['n_segments']:>3} | "
             f"whole {s['points_whole']:>3} partial {s['points_partial']:>3} "
             f"missing {s['points_missing']:>3} | "
             f"live kept {100*s['live_retained']:5.1f}%  "
             f"reel {100*s['compression']:5.1f}% of span  "
-            f"dead/pt {s['dead_per_point_s']:5.1f}s  cuts/min {s['cuts_per_min']:4.1f}")
+            f"dead/pt {s['dead_per_point_s']:5.1f}s  "
+            f"trunc {s['points_truncated']:>3} ({s['trunc_per_point_s']:4.1f}s/pt)  "
+            f"cuts/min {s['cuts_per_min']:4.1f}")
 
 
 if __name__ == "__main__":
