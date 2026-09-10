@@ -216,8 +216,37 @@ class ReelConfig:
     # this number -- it adds ~3 s of dead time to every point in the reel.
     pre_roll_s: float = 1.0
     post_roll_s: float = 2.0
-    merge_gap_s: float = 6.0         # segments closer than this are joined
-                                     # rather than cut apart
+    merge_gap_s: float = 4.0         # segments closer than this are joined
+                                     # rather than cut apart.
+    # Lowered from 6.0 because at 6.0 the join CHAINS: three legitimately-spaced
+    # starts on clip 36 (367, 381, 403 s) became one 54 s segment that was only
+    # 27% live tennis, each join licensing the next.  Swept over 208 labelled
+    # ends on 11 clips:
+    #
+    #     merge_gap   PES     within2s  whole  dead_s  segs  cuts/min
+    #        6.0    +0.236       65      153    1550    146     1.6
+    #        4.0    +0.313       75      150    1442    168     1.8   <-- here
+    #        3.0    +0.330       76      146    1426    177     1.8
+    #        2.0    +0.353       79      146    1407    190     2.0
+    #        0.0    +0.473       95      128    1369    250     2.7
+    #
+    # The objective improves all the way down, and most of that is real: a
+    # joined segment carries the LAST point's end_t, so every earlier point in
+    # the chain is scored against an end tens of seconds late.  But whole points
+    # fall away with it, and "every point in the reel" is the brief.  4.0 buys
+    # 10 more correctly-timed ends and 108 s of dead time for 3 whole points and
+    # 0.2 more cuts per minute; below it the whole-point cost accelerates.
+    #
+    # WHAT THIS DOES NOT FIX, and why it cannot: consecutive segments whose ends
+    # were ESTIMATED sit exactly `post_roll - (next_start_guard - pre_roll)` =
+    # 2.0 - (4.0 - 1.0) = 1.0 s apart, by construction -- the guard's intended
+    # dead space is eaten by post-roll.  Clip 38's 91 s segment is seven such
+    # segments chained at 1.0-2.7 s, and breaking it needs merge_gap below 1.0,
+    # which costs 25 whole points.  Widening next_start_guard_s instead reaches
+    # it at 6.0-8.0 but doubles truncations (6 -> 12), because a longer guard
+    # cuts every estimated end short.  Clip 38's real problem is upstream: 8
+    # labelled points covered by 6 starts, four of them ending on an estimate.
+    # That is point-end recall, not smoothing, and it should be fixed there.
     min_segment_s: float = 4.0       # anything shorter is a flash, not a point
 
     # ── thresholds on the incoming streams ───────────────────────────────

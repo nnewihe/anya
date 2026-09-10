@@ -564,6 +564,41 @@ serves inside over-long labelled rallies — 58's "rally 26–68 s" is 42 second
 and almost certainly spans more than one point — so the precision drop above is
 probably overstated.
 
+### The join chains, so the merge window came down
+
+Two false positives were stretching segments across mostly-dead footage, and the
+cause was not the detections — it was `smooth`'s join step. At `merge_gap_s =
+6.0` the join **chains**: three legitimately-spaced starts on clip 36 (367, 381,
+403 s) became one **54 s segment that was 27% live tennis**, each join licensing
+the next.
+
+| merge_gap | PES | within ±2 s | whole | dead_s | segs | cuts/min |
+|---|---|---|---|---|---|---|
+| 6.0 | +0.236 | 65 | **153** | 1550 | 146 | 1.6 |
+| **4.0** | **+0.313** | **75** | 150 | **1442** | 168 | 1.8 |
+| 3.0 | +0.330 | 76 | 146 | 1426 | 177 | 1.8 |
+| 2.0 | +0.353 | 79 | 146 | 1407 | 190 | 2.0 |
+| 0.0 | +0.473 | 95 | 128 | 1369 | 250 | 2.7 |
+
+The objective improves all the way down, and most of that is real: a joined
+segment carries the **last** point's `end_t`, so every earlier point in the chain
+is scored against an end tens of seconds late. But whole points fall away with
+it, and "every point in the reel" is the brief. **4.0** buys 10 more
+correctly-timed ends and 108 s of dead time for 3 whole points and 0.2 more cuts
+per minute; below it the whole-point cost accelerates. Clip 36's segment becomes
+three totalling 45 s at 33% live.
+
+**Clip 38's 91 s segment is not reachable this way, and the reason is
+structural.** Consecutive segments whose ends were *estimated* sit exactly
+`post_roll − (next_start_guard − pre_roll)` = 2.0 − (4.0 − 1.0) = **1.0 s**
+apart — the guard's intended dead space is eaten by post-roll. Clip 38 is seven
+such segments chained at 1.0–2.7 s, so breaking it needs `merge_gap` below 1.0,
+which costs **25 whole points**. Widening `next_start_guard_s` reaches it at
+6.0–8.0 but doubles truncations (6 → 12), because a longer guard cuts every
+estimated end short. Clip 38's real problem is upstream — 8 labelled points
+covered by 6 starts, four ending on an estimate — and belongs to point-end
+recall, not smoothing.
+
 ### The nine points the reel never covers
 
 They carry 78% of the objective's penalty, so they are worth naming. Every one
