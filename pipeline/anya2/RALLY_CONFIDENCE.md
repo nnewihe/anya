@@ -436,16 +436,56 @@ not the fallback. And **0.10 produces a longer reel and fewer whole points than
 0.15**, so the peak is not a length effect. Dwell is flat 1.5–3.0 s; 1.5 s is
 taken because it reaches the same retention in a shorter reel.
 
-### Open question before step 4
+### The fall is measured against the point's own peak
 
-`end_lo` is a fixed threshold on a **per-clip normalised** curve (defect 2 —
-`SCALE_PCT` divides by the clip's own 90th percentile). That is exactly the
-portability hazard the contract section warns about, and it has not been
-tested across clips with very different live fractions. **A per-point relative
-fall** — end when confidence drops to a fraction of that point's own peak —
-would sidestep the normaliser entirely and is the first thing to try. Step 4
-deletes the old path; it should wait until this is settled, because the old
-path is the only fallback if the fixed threshold turns out not to travel.
+`end_mode="relative"` is the default: a point ends where confidence has fallen
+to `end_rel` (0.10) of its **own running peak**, sustained for `end_dwell_s`
+(2.5 s). Running peak accumulated from the serve, not a max over the window, so
+the bar can only rise as the rally develops — a max would let a burst *after* a
+quiet stretch retroactively raise the threshold and turn an ended point back
+into a live one.
+
+**Why relative, given the numbers are a wash:**
+
+| mode | whole / 154 | live kept | reel % | end R | end P | trunc |
+|---|---|---|---|---|---|---|
+| `events` (old policy) | 129 | 94.8% | 62.5% | 27.3% | 70.0% | 0 |
+| `absolute` 0.15 | 137 | 95.6% | 69.1% | 20.1% | 67.4% | 0 |
+| **`relative` 0.10 / 2.5** | **137** | **95.9%** | 72.6% | 13.0% | 50.0% | **0** |
+| `both` 0.35 / 0.15 | 137 | **96.3%** | 69.7% | 19.5% | 66.7% | 0 |
+
+All three curve modes reach the same **137 whole points at zero truncations**.
+The decision is therefore not made on these numbers. `conf` is normalised per
+clip (`rally.SCALE_PCT`), so an absolute level means a different thing on every
+clip and is only as portable as that normaliser — defect 2, still open. A ratio
+against the point's own peak is **scale-free**, and that is the whole reason to
+prefer it.
+
+The corpus cannot test the claim: all 12 clips are in-sample. This is a choice
+made on the construction, not on the measurement, and it is worth saying so.
+
+**`both` is available and is not the default.** It retains the best live
+fraction, but it keeps the absolute threshold and therefore the portability it
+was meant to remove — at `lo=0.15` the absolute term is the binding one, and
+sweeping `end_rel` from 0.25 to 0.45 changes nothing at all.
+
+**What relative pays for its independence:** a longer reel (72.6% of span
+against 69.7%), weaker end-event precision because its ends land later, and
+**45 of 154 points falling back to an estimated duration** against 29 under the
+events policy. The relative rule simply fires less often.
+
+**The clip-40 regression is gone.** The doubles clip that lost a whole point and
+9 points of live retention under the absolute rule recovers completely: whole
+10 → 11, live 87.0% → 95.9%, and its ends are the most accurate in the corpus
+(recall 53.8%, precision 77.8%).
+
+**The regression moved to clip 43**, which loses one whole point (6 → 5) and
+6 points of live retention. Its cause is the fallback, not the rule: the
+relative fall never triggers there, so all its points use an estimated
+duration, and with fewer than three curve ends to learn from
+`estimate_point_s` drops to the 9.0 s global default. A clip where the rule
+never fires is the case the fallback is worst at, and that is the next thing to
+improve.
 
 ## Orchestrator: where the reasoning moves
 

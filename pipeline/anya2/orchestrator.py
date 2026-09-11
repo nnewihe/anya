@@ -211,14 +211,38 @@ class ReelConfig:
                                      # player actually hitting the ball.  Off
                                      # restores the single-player shim.
     end_policy: str = "curve"
-    end_mode: str = "relative"       # "absolute": fall below `end_lo`.
-                                     # "relative": fall to `end_rel` of THIS
-                                     # point's own running peak.  See
-                                     # `pair_ends_curve`.
-    end_rel: float = 0.35            # relative mode: fraction of the point's
-                                     # own peak that counts as fallen
-    end_lo: float = 0.15             # absolute mode: confidence below this
-    end_dwell_s: float = 1.5         # ...and must stay there this long before
+    end_mode: str = "relative"
+    # "relative": the point has fallen to `end_rel` of its OWN running peak.
+    # "absolute": it has fallen below `end_lo`.
+    # "both":     both, which is the later of the two and so the most cautious.
+    #
+    # RELATIVE IS THE DEFAULT BECAUSE OF WHAT IT DOES NOT DEPEND ON.  `conf` is
+    # normalised per clip (rally.SCALE_PCT divides by the clip's own 90th
+    # percentile), so an absolute level means a different thing on every clip
+    # and is only as portable as that normaliser.  A ratio against the point's
+    # own peak is scale-free: it survives the normaliser, a different camera,
+    # and a clip whose live fraction is unusual.  The corpus cannot measure
+    # that -- all 12 clips are in-sample -- so this is a choice made on the
+    # construction rather than on the numbers, and the numbers are a wash:
+    #
+    #     mode                     whole/154  live kept  reel%  end R  end P
+    #     events (old policy)        129        94.8%    62.5%  27.3%  70.0%
+    #     absolute 0.15               137        95.6%    69.1%  20.1%  67.4%
+    #     relative 0.10 dwell 2.5     137        95.9%    72.6%  13.0%  50.0%
+    #     both     0.35 / 0.15        137        96.3%    69.7%  19.5%  66.7%
+    #
+    # All three curve modes reach the same 137 whole points at zero
+    # truncations.  `both` retains the best live fraction and is available, but
+    # it keeps the absolute threshold and therefore the portability it was
+    # meant to remove -- at lo=0.15 the absolute term is the binding one, and
+    # sweeping `end_rel` from 0.25 to 0.45 changes nothing.  Relative pays for
+    # its independence with a longer reel (72.6% of span against 69.7%) and
+    # with end-event precision, because its ends land later.  Under the brief
+    # -- conservative ends, a late end costs only dead time -- that is the side
+    # to err on.
+    end_rel: float = 0.10            # fraction of the point's own running peak
+    end_lo: float = 0.15             # absolute/both modes only
+    end_dwell_s: float = 2.5         # ...and must stay there this long before
                                      # the fall is believed.  The dwell is what
                                      # separates a lull from an end: a rally
                                      # contains long quiet beats while the
@@ -227,8 +251,9 @@ class ReelConfig:
                                      # 38-75% for live/dead -- at or below
                                      # chance on the hardest clips.
     #
-    # `end_lo` swept over the 12 clips, at dwell 1.5 s.  Whole points is the
-    # unit that matters -- a point is either all there or it is not:
+    # `end_lo` swept over the 12 clips at dwell 1.5 s, in ABSOLUTE mode.  Whole
+    # points is the unit that matters -- a point is either all there or it is
+    # not.  Retained because the null row is the control for every mode:
     #
     #     end_lo      whole/154    live kept    reel % of span
     #      (null)       101         87.4%          55.4%     <-- curve ignored
@@ -700,6 +725,14 @@ def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
                 s0 = max(0, int(round(ps.t * fps)))
                 pk = np.maximum.accumulate(conf[s0:b])[a - s0:]
                 below = conf[a:b] < (cfg.end_rel * np.maximum(pk, 1e-6))
+            elif cfg.end_mode == "both":
+                # Both conditions, which is strictly the LATEST of the two and
+                # therefore the most conservative: the point has fallen well
+                # below what it itself reached AND is quiet in absolute terms.
+                s0 = max(0, int(round(ps.t * fps)))
+                pk = np.maximum.accumulate(conf[s0:b])[a - s0:]
+                below = ((conf[a:b] < (cfg.end_rel * np.maximum(pk, 1e-6)))
+                         & (conf[a:b] < lo))
             else:
                 below = conf[a:b] < lo
             # A sustained-low run of `dwell` samples: the first index whose

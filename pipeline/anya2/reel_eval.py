@@ -90,7 +90,7 @@ def main():
     ap.add_argument("--dwell", nargs="*", type=float, default=[None])
     ap.add_argument("--rel", nargs="*", type=float, default=[None])
     ap.add_argument("--mode", nargs="*", default=[None],
-                    choices=[None, "absolute", "relative"])
+                    choices=[None, "absolute", "relative", "both"])
     ap.add_argument("--include-58", action="store_true")
     ap.add_argument("--brief", action="store_true", help="totals only")
     a = ap.parse_args()
