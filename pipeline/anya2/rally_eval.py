@@ -73,7 +73,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 from parse_ground_truth import DATA_ROOT, discover, load_rallies  # noqa: E402
 
 from pipeline.anya2 import point_end as PE  # noqa: E402
+from pipeline.anya2 import rally as RC  # noqa: E402
 from pipeline.anya2.eval import clip_video, labelled_span  # noqa: E402
+
+# Clip 58 is 46% of every scored frame in the corpus, so a pooled row that
+# includes it is largely clip 58's row.  Excluded by default at the user's
+# direction; pass --include-58 to score it.
+DEFAULT_EXCLUDE = ("58",)
 
 
 def live_timeline(clip_dir, fps, n):
@@ -139,19 +145,34 @@ def best_f1(x, y, n_thr=200):
     return best, bt
 
 
-def curve(video, smooth_s=None, tracks_npz=None):
-    """The CURRENT rally confidence curve, unchanged. Returns (x, fps)."""
-    parts = PE.end_signal(video, tracks_npz)
-    x = PE.live_score(parts, video, tracks_npz, smooth_s=smooth_s)
-    return np.asarray(x, dtype=float), float(parts["fps"])
+def curve(video, smooth_s=None, tracks_npz=None, arm="current"):
+    """One arm's curve. Returns (x, fps).
+
+    Both arms run off the SAME cached pose passes, so the construction is the
+    only variable -- the discipline the camera-tracking A/B used.
+    """
+    if arm == "current":
+        parts = PE.end_signal(video, tracks_npz)
+        x = PE.live_score(parts, video, tracks_npz, smooth_s=smooth_s)
+        return np.asarray(x, dtype=float), float(parts["fps"])
+    if arm == "rally":
+        r = RC.compute(video, tracks_npz, smooth_s=smooth_s)
+        return np.asarray(r["conf"], dtype=float), float(r["fps"])
+    if arm == "rally_noabs":
+        # The ablation: rally.py's plumbing with the absence term switched off,
+        # so a difference between this and `rally` is the TERM rather than any
+        # other change made on the way out of point_end.py.
+        r = RC.compute(video, tracks_npz, smooth_s=smooth_s, w_absence=0.0)
+        return np.asarray(r["conf"], dtype=float), float(r["fps"])
+    raise ValueError(arm)
 
 
-def score_clip(clip_dir, smooth_s=None):
+def score_clip(clip_dir, smooth_s=None, arm="current"):
     video = clip_video(clip_dir)
     if video is None:
         return None, "no video"
     try:
-        x, fps = curve(video, smooth_s=smooth_s)
+        x, fps = curve(video, smooth_s=smooth_s, arm=arm)
     except FileNotFoundError as e:
         return None, f"missing artifact: {os.path.basename(str(e).split(': ')[-1])}"
     except Exception as e:                       # noqa: BLE001
@@ -169,40 +190,47 @@ def main():
     ap.add_argument("--data_root", default=DATA_ROOT)
     ap.add_argument("--clips", nargs="*", default=None)
     ap.add_argument("--smooth", nargs="*", type=float, default=[None],
-                    help="LIVE_SMOOTH_S values to sweep (default: the module's own)")
+                    help="smoothing values to sweep (default: the module's own)")
+    ap.add_argument("--arm", nargs="*", default=["current"],
+                    choices=["current", "rally", "rally_noabs"])
+    ap.add_argument("--include-58", action="store_true",
+                    help="score clip 58 too; it is 46%% of the corpus by frames")
     a = ap.parse_args()
 
     dirs = ([os.path.join(a.data_root, c) for c in a.clips]
             if a.clips else discover(a.data_root))
+    if not a.clips and not a.include_58:
+        dirs = [d for d in dirs
+                if os.path.basename(d.rstrip("/")) not in DEFAULT_EXCLUDE]
 
-    for sm in a.smooth:
-        label = "module default" if sm is None else f"{sm:g} s"
-        print(f"\n=== rally confidence, smoothing {label} "
-              f"(current construction, unchanged) ===")
-        print(f"  {'clip':>5} {'frames':>7} {'live%':>6} {'AUC':>7} {'bestF1':>7} {'@thr':>6}")
-        rows, skipped = [], []
-        for d in dirs:
-            c = os.path.basename(d.rstrip("/"))
-            r, err = score_clip(d, smooth_s=sm)
-            if r is None:
-                skipped.append((c, err))
-                continue
-            rows.append((c, r))
-            print(f"  {c:>5} {r['n']:7d} {100 * r['live_frac']:5.1f}% "
-                  f"{100 * r['auc']:6.1f}% {100 * r['f1']:6.1f}% {r['thr']:6.3f}")
-        if rows:
-            # Pooled over CONCATENATED frames, not an average of per-clip AUCs:
-            # an 81-rally clip and a 6-rally clip do not get equal votes.
-            X = np.concatenate([r["x"] for _, r in rows])
-            Y = np.concatenate([r["y"] for _, r in rows])
-            pa = auc(X, Y)
-            pf, pt = best_f1(X, Y)
-            print(f"  {'POOL':>5} {len(X):7d} {100 * Y.mean():5.1f}% "
-                  f"{100 * pa:6.1f}% {100 * pf:6.1f}% {pt:6.3f}   ({len(rows)} clips)")
-            mean_auc = float(np.nanmean([r["auc"] for _, r in rows]))
-            print(f"  mean per-clip AUC {100 * mean_auc:.1f}%")
-        for c, err in skipped:
-            print(f"  {c:>5}   SKIPPED -- {err}")
+    for arm in a.arm:
+     for sm in a.smooth:
+         label = "module default" if sm is None else f"{sm:g} s"
+         print(f"\n=== arm {arm!r}, smoothing {label} ===")
+         print(f"  {'clip':>5} {'frames':>7} {'live%':>6} {'AUC':>7} {'bestF1':>7} {'@thr':>6}")
+         rows, skipped = [], []
+         for d in dirs:
+             c = os.path.basename(d.rstrip("/"))
+             r, err = score_clip(d, smooth_s=sm, arm=arm)
+             if r is None:
+                 skipped.append((c, err))
+                 continue
+             rows.append((c, r))
+             print(f"  {c:>5} {r['n']:7d} {100 * r['live_frac']:5.1f}% "
+                   f"{100 * r['auc']:6.1f}% {100 * r['f1']:6.1f}% {r['thr']:6.3f}")
+         if rows:
+             # Pooled over CONCATENATED frames, not an average of per-clip AUCs:
+             # an 81-rally clip and a 6-rally clip do not get equal votes.
+             X = np.concatenate([r["x"] for _, r in rows])
+             Y = np.concatenate([r["y"] for _, r in rows])
+             pa = auc(X, Y)
+             pf, pt = best_f1(X, Y)
+             print(f"  {'POOL':>5} {len(X):7d} {100 * Y.mean():5.1f}% "
+                   f"{100 * pa:6.1f}% {100 * pf:6.1f}% {pt:6.3f}   ({len(rows)} clips)")
+             mean_auc = float(np.nanmean([r["auc"] for _, r in rows]))
+             print(f"  mean per-clip AUC {100 * mean_auc:.1f}%")
+         for c, err in skipped:
+             print(f"  {c:>5}   SKIPPED -- {err}")
 
 
 if __name__ == "__main__":

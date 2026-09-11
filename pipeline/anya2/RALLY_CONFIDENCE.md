@@ -1,9 +1,10 @@
 # Rally confidence — refocusing agent 3, and moving the reasoning into agent 4
 
-> Status: **step 1 done, the rest is design.** "Baseline, measured" below is
-> measured, by `rally_eval.py`, on the current construction. Everything from
-> "Rally confidence: the contract" onward is design and is not measured on the
-> construction it proposes.
+> Status: **steps 1 and 2 done.** `rally.py` is built and measured;
+> `rally_eval.py` scores it. The orchestrator rewrite (step 3) is still design.
+> **Clip 58 is excluded from every corpus number below**, at the user's
+> direction — it was 46% of all scored frames, so pooled rows were largely its
+> row. It is still run as a holdout where that is informative, and labelled.
 
 ## The change in one paragraph
 
@@ -169,6 +170,91 @@ non-rally union — walking classifier plus `near_end`'s four signals, all fed
 from the near track through a shim — is being computed from a player who is not
 there. A far-side union term is not a refinement; on these clips it is most of
 the footage.
+
+## Step 2 result: `rally.py`
+
+Built, measured, shipped. **Corpus minus clip 58, 12 clips, 58,884 scored
+frames.**
+
+| arm | mean per-clip AUC | pooled AUC | pooled best-F1 |
+|---|---|---|---|
+| `current` — `point_end.live_score`, 4 s | 87.7% | 86.7% | 73.2% |
+| `rally_noabs` — 5 s, absence off | 88.6% | 87.4% | 73.5% |
+| **`rally` — 5 s + absence** | **89.7%** | **88.6%** | **75.7%** |
+
+The ablation arm exists so the two changes separate: the window is worth +0.9
+mean AUC and **the absence term is worth +1.1**, so the new term is the larger
+of the two. Both arms run off the same cached pose passes, so the construction
+is the only variable.
+
+### The absence term, and how the obvious version of it earned nothing
+
+The user's observation — longer stretches with the players unmeasured mean dead
+time is more likely — is correct and is now in the construction. What the
+measurement changed is *which* absence carries it.
+
+Absence is applied **after** the smoothing. Before it, it is a no-op: with
+nobody tracked, activity is already zero and `raw` is already zero. What the
+term actually removes is the **smoothing leak** — a 5 s window at the edge of a
+long empty stretch spreading real activity into footage with no one on court.
+Killing that leak sharpens the edge the orchestrator has to find, which is why
+it beats simply widening the window.
+
+**A joint "nobody on court" term was built first and is worth nothing.** The
+live-prevalence table says it should be decisive — both-absent is 0.0% live
+from 3 s on, while near-only absence is still 15.6% live at 15 s:
+
+| w_near | w_far | w_both | mean per-clip AUC |
+|---|---|---|---|
+| 0 | 0 | 0 | 88.65% (off) |
+| 0 | 0 | 1.0 | 88.67% ← the "decisive" term |
+| 0 | 0.25 | 0 | 88.70% |
+| 0.25 | 0 | 0 | 89.66% ← the near term alone |
+| **0.25** | **0.25** | **0** | **89.71%** ← shipped |
+
+**Marginal prevalence is not incremental value.** Both sides absent already
+drives `raw` to zero over a wide window, so there is nothing left for a veto to
+remove. The case only the near term can see is the near player gone while the
+far player is still tracked and still moving, holding `max(near, far)` up over
+footage where the point is long over. **The near player is the one that matters,
+exactly as predicted — but the table that seemed to refute that was measuring
+the wrong thing.**
+
+**The weight is an interior optimum, not a slope.** At w_near 1.00 mean AUC
+collapses to 83.1%, because a full veto deletes real live play wherever the near
+player is briefly untracked — and under 3 s, absence is evidence of *live*
+(every column at or above the 35.9% base rate). 0.25 / 0.50 / 0.75 / 1.00 scores
+89.7 / 90.0 / 88.9 / 83.1.
+
+### One honest negative: 0.50 scores higher and is not shipped
+
+| | mean | clips improved | clip 35 (out-of-sample) | clip 58 (holdout) |
+|---|---|---|---|---|
+| **0.25 / 0.25** | +1.1 | **12 / 12** | +0.1 | +1.1 |
+| 0.50 / 0.25 | **+1.4** | 7 / 12 | **−1.1** | **+2.0** |
+
+0.50 buys +0.3 of mean AUC by regressing five clips, one of them the corpus's
+designated out-of-sample clip. **Clip 58 prefers 0.50**, and that is the one
+piece of evidence pointing the other way — recorded rather than dropped. A
+setting that improves every clip it is measured on transfers more credibly than
+one that is 0.3 better on average and worse in five places. Revisit if the
+orchestrator turns out to want the sharper edge more than the safer curve.
+
+### Per clip, shipped arm against the current construction
+
+| clip | current | rally | | clip | current | rally |
+|---|---|---|---|---|---|---|
+| 21 | 95.6% | **96.4%** | | 36 | 85.4% | **89.5%** |
+| 22 | 92.3% | **93.9%** | | 38 | 93.6% | **97.1%** |
+| 23 | 85.3% | **85.9%** | | 40 | 81.6% | **82.0%** |
+| 24 | 89.5% | **92.5%** | | 43 | 93.0% | **96.6%** |
+| 25 | 75.5% | **77.2%** | | 50 | 88.8% | **89.7%** |
+| 26 | 85.3% | **88.2%** | | | | |
+| 35 | 87.0% | **87.5%** | | | | |
+
+Clips 25 (77.2%) and 40 (82.0%) remain the weak ones and both are doubles. That
+is the next thing to look at, and it is a tracking question rather than a curve
+question.
 
 ## Rally confidence: the contract
 
