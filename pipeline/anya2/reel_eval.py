@@ -52,7 +52,8 @@ from pipeline.anya2.rally_eval import DEFAULT_EXCLUDE  # noqa: E402
 def run_clip(clip_dir, arm, lo=None, dwell=None):
     video = clip_video(clip_dir)
     cfg = ReelConfig()
-    cfg.end_policy = "curve" if arm == "curve" else "events"
+    cfg.end_policy = "events" if arm == "events" else "curve"
+    cfg.union_per_slot = (arm != "curve_shim")
     if lo is not None:
         cfg.end_lo = lo
     if dwell is not None:

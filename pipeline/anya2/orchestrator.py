@@ -205,6 +205,11 @@ class ReelConfig:
     # "curve":  walk the rally confidence curve forward from the serve and take
     #           the first point where it falls and STAYS fallen.  See
     #           `pair_ends_curve` and RALLY_CONFIDENCE.md.
+    union_per_slot: bool = True      # agent 3's non-rally veto is computed per
+                                     # near slot and combined with a MIN, so a
+                                     # standing doubles partner cannot veto the
+                                     # player actually hitting the ball.  Off
+                                     # restores the single-player shim.
     end_policy: str = "curve"
     end_lo: float = 0.15             # confidence below this counts as fallen
     end_dwell_s: float = 1.5         # ...and must stay there this long before
@@ -815,7 +820,7 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     # clip whose rally artifact cannot be built still produces a reel.
     live = None
     try:
-        r = RC.compute(video, tracks_npz)
+        r = RC.compute(video, tracks_npz, per_slot_union=cfg.union_per_slot)
         live = np.asarray(r["conf"], dtype=float)
         live_fps = float(r["fps"])
     except Exception:

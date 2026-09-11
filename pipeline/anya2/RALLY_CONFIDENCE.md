@@ -326,6 +326,45 @@ The far-activity term exists only because anya2 tracks the far player. No
 previous point-end work here could, and memory records "far-serve rallies read
 as dead" as the biggest error source of the earlier dead/live GRU.
 
+## Doubles: the veto has to describe the player who is playing
+
+Found while investigating why clips 25 and 40 were the two weakest on the
+curve. **The activity term was already per-team max** — `nanmax` over
+`NEAR_SLOTS` — but the non-rally union was not. `run._end_signals` builds one
+shim from whichever near slot has better coverage, and that single player's
+union was then applied multiplicatively to the whole court. In singles that is
+the only player there. In doubles, **a partner standing at the net vetoes the
+activity of the partner hitting the ball.**
+
+Mean union during **live** play:
+
+| clip | union \| live |
+|---|---|
+| **25 (doubles)** | **0.413** |
+| **40 (doubles)** | **0.388** |
+| singles range | 0.09 – 0.37 |
+
+The two doubles clips are the two highest in the corpus — the veto fires
+hardest exactly where it is least entitled to. Both near slots are tracked on
+36–38% of frames there against under 5% on most singles clips, so there are
+genuinely two players to choose between.
+
+`rally.team_union(mode="active")` now picks, per frame, the union of the slot
+that supplied the max activity. Activity and veto describe one person.
+
+**The obvious alternative is worse.** `mode="min"` — a side is non-rally only if
+every player on it looks non-rally — weakens the veto uniformly instead of
+re-aiming it, which helps where the wrong player was picked and hurts where the
+right one was:
+
+| arm | clip 25 | clip 40 | mean per-clip AUC |
+|---|---|---|---|
+| shim (one player) | 77.2% | 82.0% | 89.7% |
+| min | 78.4% | **80.6%** | 89.6% |
+| **active** | **79.2%** | **83.9%** | **90.0%** |
+
+Curve AUC is now **90.0% mean per-clip, 89.1% pooled, best-F1 76.1%**.
+
 ## Step 3 result: ends off the curve
 
 `orchestrator.pair_ends_curve`, selected by `ReelConfig.end_policy="curve"`.
@@ -339,12 +378,19 @@ the end policy is the only variable. **12 clips, 154 labelled points.**
 
 | arm | whole points | live kept | reel % of span | dead/pt | end R | end P | **trunc** |
 |---|---|---|---|---|---|---|---|
-| `events` (shipped) | 129 / 154 | 94.9% | 63.1% | 7.3 s | 25.3% | 69.6% | **0** |
-| **`curve`** | **138 / 154** | **95.6%** | 68.5% | 8.6 s | 15.6% | 58.5% | **0** |
+| `events` (shipped) | 129 / 154 | 94.8% | 62.5% | 7.1 s | 27.3% | 70.0% | **0** |
+| `curve`, shim union | 138 / 154 | 95.6% | 68.5% | 8.6 s | 15.6% | 58.5% | **0** |
+| **`curve`, active union** | **137 / 154** | **95.6%** | 69.1% | 8.7 s | 20.1% | 67.4% | **0** |
 
-**+9 whole points and +0.7 live retained, at zero truncations, for 5.4 points of
-extra reel length.** Per clip, six gain a whole point and six are flat: **no clip
-loses one.**
+**+8 whole points and +0.8 live retained, at zero truncations, for 6.6 points of
+extra reel length.** Per clip, seven gain a whole point, four are flat, and one
+(clip 40) loses one.
+
+The doubles fix costs one whole point against the shim union and buys back most
+of the end-accuracy gap it opened — precision 58.5% → 67.4% against the events
+arm's 70.0%, recall 15.6% → 20.1%. **Ends placed on the corrected curve are
+materially more accurate**, which matters for step 4 and for anything later that
+wants the end timestamp rather than the segment.
 
 ### This is a trade, not a clean win
 
@@ -358,8 +404,15 @@ a late end costs dead time, and **a whole point is the unit a viewer notices**.
 It is recorded as a trade because a future change that improves end-event
 accuracy should not be assumed to improve the reel.
 
-**One honest negative:** clip 40 (doubles) loses live retention, 96.2% → 88.4%.
-It is the only clip that goes backwards on any reel metric.
+**One honest negative, and it is clip 40 again.** Whole points 11 → 10 and live
+retention 96.2% → 87.0%. Its ends got much *better* as events — recall 23.1% →
+53.8%, precision 42.9% → 77.8% — and its reel tightened from 45.4% of span to
+36.9%. So the policy is now cutting clip 40 close to where its labelled ends
+are, and losing live tennis in the last second before them. No end is more than
+2 s early (truncations stay 0), so this is post-roll territory rather than a
+policy failure: clip 40 would likely be recovered by a longer post-roll, which
+is a reel setting and not an end-detection one. The other doubles clip, 25,
+improves on every axis — live 93.7% → 95.8%, end precision 75.0% → 83.3%.
 
 ### The curve is doing the work, and the optimum is interior
 
@@ -369,10 +422,13 @@ confound:
 | end_lo | whole / 154 | live kept | reel % of span |
 |---|---|---|---|
 | null — curve never read | 101 | 87.4% | 55.4% |
-| 0.35 | 115 | 91.8% | 57.8% |
-| 0.20 | 133 | 95.1% | 66.5% |
-| **0.15** | **138** | **95.6%** | 68.5% |
-| 0.10 | 136 | 94.7% | 70.2% |
+| 0.25 | 122 | 93.1% | 62.0% |
+| 0.20 | 131 | 94.4% | 64.6% |
+| **0.15** | **137** | **95.6%** | 69.1% |
+| 0.10 | 135 | 94.4% | 69.0% |
+
+(Re-swept on the corrected curve; the null row is from the previous sweep and
+does not depend on the union change.)
 
 The **null** arm sets every end from the clip's own typical duration and never
 reads the curve. At 101 whole points it establishes that the gain is the curve,

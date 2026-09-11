@@ -158,6 +158,14 @@ def curve(video, smooth_s=None, tracks_npz=None, arm="current"):
     if arm == "rally":
         r = RC.compute(video, tracks_npz, smooth_s=smooth_s)
         return np.asarray(r["conf"], dtype=float), float(r["fps"])
+    if arm == "rally_min":
+        r = RC.compute(video, tracks_npz, smooth_s=smooth_s, per_slot_union="min")
+        return np.asarray(r["conf"], dtype=float), float(r["fps"])
+    if arm == "rally_shim":
+        # rally.py with the SINGLE-PLAYER union from run._end_signals, i.e.
+        # everything except the per-slot team union.  Isolates that change.
+        r = RC.compute(video, tracks_npz, smooth_s=smooth_s, per_slot_union=False)
+        return np.asarray(r["conf"], dtype=float), float(r["fps"])
     if arm == "rally_noabs":
         # The ablation: rally.py's plumbing with the absence term switched off,
         # so a difference between this and `rally` is the TERM rather than any
@@ -192,7 +200,7 @@ def main():
     ap.add_argument("--smooth", nargs="*", type=float, default=[None],
                     help="smoothing values to sweep (default: the module's own)")
     ap.add_argument("--arm", nargs="*", default=["current"],
-                    choices=["current", "rally", "rally_noabs"])
+                    choices=["current", "rally", "rally_noabs", "rally_shim", "rally_min"])
     ap.add_argument("--include-58", action="store_true",
                     help="score clip 58 too; it is 46%% of the corpus by frames")
     a = ap.parse_args()

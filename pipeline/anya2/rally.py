@@ -72,6 +72,36 @@ Three things in that table decide the construction:
   near player is briefly untracked.
 """
 
+Doubles: the veto must describe the player who is playing
+---------------------------------------------------------
+`raw` takes the MAX activity over the two slots on a side -- the busiest player
+on that side.  The union it is multiplied by did not: `run._end_signals` builds
+one shim from whichever near slot has better coverage, and every consumer read
+that single player.  In singles they are the same person.  In doubles they
+routinely are not, and one partner standing at the net then supplies a
+"between points" veto that cancels the activity of the partner hitting the ball.
+
+That is measurable and it is the largest union error in the corpus.  Mean union
+during LIVE play:
+
+    clip 25 (doubles)   0.413        the two highest values in the corpus
+    clip 40 (doubles)   0.388
+    singles range       0.09 - 0.37
+
+Both near slots are tracked on 36-38% of frames on those two clips, against
+under 5% on most singles clips, so there really are two players to choose
+between.  `team_union(mode="active")` picks, per frame, the union of the slot
+that supplied the max activity -- so activity and veto describe one person.
+
+The other obvious rule, `mode="min"` (a side is non-rally only if EVERY player
+on it looks non-rally), is implemented and is worse: it weakens the veto
+uniformly instead of re-aiming it, which helps where the wrong player was
+picked and hurts where the right one was.  Per-clip AUC against the shim:
+
+                        clip 25    clip 40    mean per-clip
+    min                  +1.2       -1.4          -0.1
+    active               +2.0       +1.9          +0.3
+
 import argparse
 import os
 import sys
@@ -89,6 +119,8 @@ from pipeline.anya2 import tracks as T
 from pipeline.anya2.contract import ROI_BOTH, Requirement, W_ALWAYS
 
 ARTIFACT_SUFFIX = "_anya2_rally.npz"
+SLOT_WALK_SUFFIX = "_anya2_walk_s%d.npz"
+SLOT_SIG_SUFFIX = "_anya2_endsig_s%d.npz"
 
 # -- the window ----------------------------------------------------------
 # Swept over all 13 clips: mean per-clip AUC 87.2% at 4 s, 88.2% at 5 s, 88.5%
@@ -179,6 +211,118 @@ def artifact_path(video, suffix=ARTIFACT_SUFFIX):
     return os.path.join(d, f"{stem}{suffix}")
 
 
+def _slot_signals(video, slot: int, force: bool = False) -> Dict[str, np.ndarray]:
+    """The walking probability and `near_end`'s four signals for ONE near slot.
+
+    WHY PER SLOT.  `run._end_signals` builds a single shim from the near slot
+    with the better coverage, gap-filled from the other, and every consumer of
+    the non-rally union reads that one player.  In singles that is the only
+    player there and the shim is exactly right.  In DOUBLES it is one of two,
+    and the union it produces is then applied multiplicatively to the whole
+    court -- so a partner standing still at the net vetoes their partner's
+    activity while the point is being played.
+
+    Measured over the corpus, the union during LIVE play on the two doubles
+    clips is 0.413 (clip 25) and 0.388 (clip 40), the two highest values in the
+    corpus against a singles range of 0.09-0.37.  The veto is firing hardest
+    exactly where it is least entitled to.
+
+    Cached per slot beside the video.  Untracked slots are cheap: the pose is
+    already computed, and this only runs the walking classifier and `near_end`
+    over it.
+    """
+    import sys as _sys
+    d = WD.artifact_dir(video)
+    stem = os.path.splitext(os.path.basename(video))[0]
+    walk_p = os.path.join(d, stem + SLOT_WALK_SUFFIX % slot)
+    sig_p = os.path.join(d, stem + SLOT_SIG_SUFFIX % slot)
+    if not (os.path.isfile(walk_p) and os.path.isfile(sig_p)) or force:
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        if root not in _sys.path:
+            _sys.path.insert(0, root)
+        from walking.predict import predict_video
+        from pipeline import near_end as NE
+        z = T.load(video)
+        extra = {k: z[k] for k in ("stride", "src_fps", "n_src_frames") if k in z}
+        shim = os.path.join(d, f"{stem}_anya2_pose_s{slot}.npz")
+        # NO gap-fill from the partner here, unlike `run._end_signals`.  The
+        # whole point is to describe THIS player; borrowing the other's pose to
+        # cover a gap is what produced the conflated signal in the first place.
+        np.savez_compressed(shim, kp=z["kp"][:, slot], bbox=z["bbox"][:, slot],
+                            on_court=z["eligible"][:, slot].astype(np.float32),
+                            fps=np.float64(z["fps"]), **extra)
+        r = predict_video(video, pose_npz=shim)
+        np.savez_compressed(walk_p, prob=r["prob"], fps=np.float64(r["fps"]))
+        sig = NE.signals_for_video(video, pose_npz=shim)
+        np.savez_compressed(sig_p, **{k: np.asarray(sig[k], dtype=np.float32)
+                                      for k in NE.SIGNAL_NAMES})
+    w, sg = np.load(walk_p), np.load(sig_p)
+    n = min(len(w["prob"]), len(sg[PE.UNION_NAMES[0]]))
+    parts = [np.nan_to_num(sg[k][:n], nan=0.0) for k in PE.UNION_NAMES]
+    parts.append(np.asarray(w["prob"][:n], dtype=np.float64))
+    return {"union": np.max(np.stack(parts), axis=0), "fps": float(w["fps"])}
+
+
+def slot_unions(video, n: int, tracks_npz=None, force: bool = False):
+    """Per-near-slot non-rally union, and which slots are tracked. ([2,n],[2,n])."""
+    z = T.load(video, tracks_npz)
+    bb = z["bbox"]
+    U = np.zeros((len(T.NEAR_SLOTS), n))
+    OK = np.zeros((len(T.NEAR_SLOTS), n), dtype=bool)
+    for i, slot in enumerate(T.NEAR_SLOTS):
+        seen = np.isfinite(bb[:, slot, 0])
+        if not seen.any():
+            continue
+        u = _slot_signals(video, slot, force=force)["union"]
+        m = min(n, len(u), len(seen))
+        U[i, :m] = u[:m]
+        OK[i, :m] = seen[:m]
+    return U, OK
+
+
+def team_union(video, n: int, act: np.ndarray, tracks_npz=None,
+               mode: str = "active", force: bool = False) -> np.ndarray:
+    """The non-rally veto for the near TEAM, read off the player who is playing.
+
+    THE VETO MUST DESCRIBE THE SAME PERSON THE ACTIVITY DOES.  `raw` takes the
+    MAX activity over the two near slots -- the busiest player on the side.
+    The union it is multiplied by came from `run._end_signals`, which builds one
+    shim from whichever slot has better coverage.  In singles those are the same
+    player.  In doubles they are routinely not, and then a partner standing at
+    the net supplies a "between points" veto that cancels the activity of the
+    player actually hitting the ball.  Measured, the union during LIVE play is
+    0.413 on clip 25 and 0.388 on clip 40 -- the two highest in the corpus
+    against a singles range of 0.09-0.37.
+
+    `mode="active"` therefore selects, per frame, the union of the slot that
+    supplied the max activity.  Activity and veto then describe one person, and
+    the pair reads as "how busy is the busiest player on this side, and does
+    THAT player look like someone between points".
+
+    `mode="min"` is the other obvious rule -- the side is non-rally only if
+    every player on it looks non-rally -- and it is kept because it is cheap to
+    compare, not because it is better.  It weakens the veto uniformly rather
+    than re-aiming it, which helps where the wrong player was selected and
+    hurts where the right one was: clip 25 +1.2 AUC, clip 40 -1.4.
+
+    An UNTRACKED slot never wins the selection and is excluded from the min --
+    absence is not a vote for "playing".  With neither slot tracked the veto is
+    zero and the absence term carries the frame instead.
+    """
+    U, OK = slot_unions(video, n, tracks_npz, force=force)
+    A = act[list(T.NEAR_SLOTS)][:, :n]
+    if mode == "min":
+        out = np.min(np.where(OK, U, np.inf), axis=0)
+        return np.where(np.isfinite(out), out, 0.0)
+    # active: the slot with the greatest activity, among those tracked
+    A = np.where(OK & np.isfinite(A), A, -np.inf)
+    best = np.argmax(A, axis=0)
+    none = ~np.isfinite(A).any(axis=0)
+    out = U[best, np.arange(n)]
+    return np.where(none, 0.0, out)
+
+
 def run_length_s(mask: np.ndarray, fps: float) -> np.ndarray:
     """Per-frame length in seconds of the True run each frame belongs to.
 
@@ -213,7 +357,8 @@ def absence_term(act: np.ndarray, fps: float) -> Dict[str, np.ndarray]:
 
 
 def compute(video, tracks_npz=None, smooth_s: Optional[float] = None,
-            w_absence: Optional[float] = None) -> Dict[str, np.ndarray]:
+            w_absence: Optional[float] = None,
+            per_slot_union: bool = True) -> Dict[str, np.ndarray]:
     """The rally confidence curve and every channel behind it."""
     parts = PE.end_signal(video, tracks_npz)
     fps = float(parts["fps"])
@@ -221,10 +366,18 @@ def compute(video, tracks_npz=None, smooth_s: Optional[float] = None,
     z = T.load(video, tracks_npz)
     act = PE.player_activity(z, fps)[:, :n]
 
+    union = parts["union"]
+    if per_slot_union:
+        try:
+            union = team_union(video, n, act, tracks_npz,
+                               mode=("min" if per_slot_union == "min" else "active"))
+        except Exception:
+            union = parts["union"]      # fall back to the single-player shim
+
     with np.errstate(invalid="ignore"):
         near = np.nan_to_num(np.nanmax(act[list(T.NEAR_SLOTS)], axis=0), nan=0.0)
         far = np.nan_to_num(np.nanmax(act[list(T.FAR_SLOTS)], axis=0), nan=0.0)
-    raw = np.fmax(near, far) * (1.0 - parts["union"])
+    raw = np.fmax(near, far) * (1.0 - union)
 
     w = max(1, int(round((SMOOTH_S if smooth_s is None else float(smooth_s)) * fps)))
     sm = np.convolve(raw, np.ones(w) / w, mode="same")
@@ -236,7 +389,7 @@ def compute(video, tracks_npz=None, smooth_s: Optional[float] = None,
     conf = np.clip(sm * (1.0 - k * ab["absence"]), 0.0, None)
 
     return {"conf": conf, "raw": raw, "smoothed": sm,
-            "near_act": near, "far_act": far, "union": parts["union"],
+            "near_act": near, "far_act": far, "union": union,
             "scale": np.float64(scale), "fps": np.float64(fps), **ab}
 
 
