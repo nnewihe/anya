@@ -159,12 +159,51 @@ class ReelConfig:
     # 3.5/4.0 is chosen for the brief's stated priority -- viewing experience
     # first, dead time second.  Lower both to tighten the reel; the table above
     # is the exchange rate.
-    # Set to 1.0/1.0 at the user's direction, tightening the reel.  The table
-    # above is what that costs against the corpus; re-measured at 1.0/1.0 below.
-    pre_roll_s: float = 1.0
-    post_roll_s: float = 1.0
+    # Set to 1.0/1.0 at the user's direction, tightening the reel.
+    #
+    # RAISED TO 1.5/2.5 WHEN CROSS-POINT MERGING WAS TURNED OFF, and the two
+    # changes belong together.  While segments were joined across points, the
+    # join was covering the gap either side of a boundary for free; every point
+    # it absorbed was whole by construction.  Cutting the points apart exposed
+    # what the boundaries were actually doing, and it is small -- the tennis
+    # that falls outside a segment is a median 1.52 s at the head (10 points)
+    # and 1.95 s at the tail (18 points), against rolls of 1.0 s.  Roll is what
+    # covers that, and post has more to cover than pre.
+    #
+    # Measured over the 12 clips with merging off:
+    #
+    #     pre / post    whole/154   live kept   reel % of span
+    #      1.0 / 1.0      122         94.1%        66.3%
+    #      1.5 / 2.5      133         96.4%        74.6%     <-- here
+    #      2.0 / 3.0      136         96.8%        78.3%
+    #      2.5 / 4.0      143         97.3%        84.0%
+    #
+    # 1.5/2.5 is chosen to hold the REEL BUDGET constant: 74.6% against the
+    # 74.3% the merged reel occupied, so the change costs no extra footage and
+    # spends it differently -- on the edges of every point rather than on the
+    # changeovers between them.  The exchange rate above is the dial; the
+    # honest cost is that at equal length the merged reel had 139 whole points
+    # to this one's 133, because a join covers two boundaries at once and a
+    # roll covers one.
+    pre_roll_s: float = 1.5
+    post_roll_s: float = 2.5
     merge_gap_s: float = 6.0         # segments closer than this are joined
-                                     # rather than cut apart
+                                     # rather than cut apart -- but only when
+                                     # `merge_across_points` allows it.
+    merge_across_points: bool = False
+    # TWO SEGMENTS THAT EACH HAVE THEIR OWN SERVE ARE TWO POINTS, AND JOINING
+    # THEM IS NOT SMOOTHING.  The join exists because a cut costs attention and
+    # a two-second dead gap costs less; that reasoning holds for a gap INSIDE a
+    # point, and not for the gap between one point and the next, which is the
+    # thing the reel exists to remove.  Measured on Data/21 with it on, twelve
+    # labelled points became seven segments: one ran 66.8 s across two rallies
+    # and another 47.5 s across three, so the reel kept the changeovers it was
+    # built to cut.
+    #
+    # With it off, a recovered segment -- one with no serve detection of its
+    # own -- may still be absorbed by a neighbour.  That is not a point
+    # boundary being crossed; it is unexplained live play being attached to the
+    # point it probably belongs to.
     min_segment_s: float = 4.0       # anything shorter is a flash, not a point
 
     # ── thresholds on the incoming streams ───────────────────────────────
@@ -817,7 +856,14 @@ def smooth(segs: List[Segment], cfg: ReelConfig,
     joined: List[Segment] = [segs[0]]
     for s in segs[1:]:
         prev = joined[-1]
-        if s.start - prev.stop <= cfg.merge_gap_s:
+        # A join is allowed when the gap is small AND it does not fuse two
+        # distinct points.  "Distinct" means both sides of the join are
+        # serve-anchored; a `recovered` segment carries no serve detection, so
+        # absorbing it crosses no point boundary.
+        two_points = (prev.end_source != "recovered"
+                      and s.end_source != "recovered")
+        may_join = cfg.merge_across_points or not two_points
+        if s.start - prev.stop <= cfg.merge_gap_s and may_join:
             prev.stop = max(prev.stop, s.stop)
             prev.end_t = s.end_t
             prev.notes.append(f"joined with the point at {s.serve_t:.0f}s")
@@ -829,7 +875,13 @@ def smooth(segs: List[Segment], cfg: ReelConfig,
     out: List[Segment] = []
     for s in joined:
         if s.duration < cfg.min_segment_s:
-            if s.end_source == "detected":
+            # Padded, not dropped, when the segment is a real point whose end
+            # the curve actually placed.  This test named "detected", the end
+            # source of the DELETED event policy, so after that deletion every
+            # source failed it and short real points were being dropped instead
+            # of padded -- silently, because a dropped point looks like a point
+            # that was never found.
+            if s.end_source in ("curve", "quietest", "estimated"):
                 s.stop = s.start + cfg.min_segment_s
             else:
                 continue
