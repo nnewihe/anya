@@ -110,23 +110,57 @@ so the orchestrator can re-window without a re-run.
 
 Both were argued from first principles in the first draft. Measured now:
 
-**Defect 3 — unmeasurable frames are scored as confidently dead.** Pooled,
-**7.7%** of scored frames have neither a near nor a far player tracked, and
-**5.5% of those are labelled live**. Per clip it is far worse than the pooled
-figure suggests:
+**Defect 3 — unmeasurable frames are scored as confidently dead.** This was
+argued in the first draft as a serious error and **the measurement does not
+support that.** The honest version follows, because the first version of this
+section was wrong.
 
-| clip | unmeasurable | of which live |
-|---|---|---|
-| 43 | **28.7%** | 2.4% |
-| 21 | 22.7% | 0.2% |
-| 50 | 21.0% | **23.8%** |
-| 40 | 14.7% | 0.0% |
-| 23 | 13.4% | 6.7% |
-| 26 | 4.5% | **26.9%** |
+Pooled over the corpus minus clip 58, **9.0%** of scored frames have neither a
+near nor a far player tracked. Of those, **95% have no player box in any slot at
+all** — so this is absence of a detection, not an artifact of the activity math.
+The gates are not the cause: across every short-run unmeasurable frame in the
+corpus, `MIN_H_PX` killed **0** detections, the tracking zone **79**, and height
+plausibility **1**.
 
-Clip 50 and clip 26 are the shape of the problem: a fifth of clip 50 is
-unmeasurable and a quarter of *that* is live tennis being scored as dead. The
-`valid` channel is not a tidiness fix.
+Split by how long the unmeasurable stretch lasts, it is two unrelated
+populations:
+
+| run length | runs | % of unmeasurable frames | of which labelled LIVE |
+|---|---|---|---|
+| 0–1 s | 79 | 7.2% | 30.4% |
+| 1–3 s | 32 | 14.3% | 22.7% |
+| 3–10 s | 11 | 15.9% | 5.3% |
+| **>10 s** | **7** | **62.6%** | **0.0%** |
+
+**Two thirds of it is seven long runs containing no live tennis whatsoever.**
+Changeovers and breaks, players genuinely off court. Scoring those as dead is
+*correct*, and a `valid` channel that removed them from the denominator would
+discard frames the curve already gets right.
+
+The short runs are the ones with live frames in them, and they are not detection
+failures either. **81% of short-run unmeasurable frames have BOTH ROIs empty at
+the same sample** — the near 540p whole-frame pass and the far native-res band
+pass, two independent passes, finding nobody simultaneously. The footage says
+why: the court is empty. Clip 50 at 117.5 s and 159.5 s is a calibrated court
+with nobody on it and play happening on the adjacent court; clip 22 at 43.2 s
+and clip 24 at 277.0 s each show a single player walking near the net with the
+near half empty and a ball sitting on the ground. That is between-point footage
+carrying a live label.
+
+Measured rather than eyeballed: of the live-labelled unmeasurable frames,
+**64% sit within 3 s of an edge of their own labelled rally** (median 2.5 s),
+which is label over-extension at rally boundaries.
+
+**Total harm: 334 frames, 0.57% of scored frames**, of which 121 (**0.21%**) are
+deeper than 3 s inside a labelled rally and not explained by boundary slop.
+
+**So the `valid` channel is demoted.** It is not load-bearing for AUC and it is
+not step-2 work. What survives the correction is the inverse, and it is more
+useful than the original claim: **absence is not an abstention, it is evidence
+of dead** — 0.0% live across every long unmeasurable run in the corpus. A
+conservative end policy should read "nobody is on the court" as strong evidence
+the point is over, which is a signal for the ORCHESTRATOR rather than a
+correction to the curve.
 
 **Defect 4 — the union is near-side and the near player is often the absent
 one.** Frames where ONLY the far player is tracked: clip 24 **48.7%**, clip 23
@@ -144,7 +178,7 @@ Artifact `<stem>_anya2_rally.npz`, at pose rate:
 |---|---|
 | `raw` | per-frame rally evidence, **unsmoothed** |
 | `conf` | windowed confidence in [0, 1] — the headline signal |
-| `valid` | coverage: is this frame measurable at all |
+| `valid` | coverage: is this frame measurable at all (diagnostic; see defect 3) |
 | `scale` | the per-clip normaliser actually applied |
 | components | `near_act`, `far_act`, `union`, and the union's parts, for diagnosis |
 
@@ -176,13 +210,15 @@ policy will threshold. Either find a scale-free formulation or record `scale`
 explicitly and make every downstream threshold state which side of it it lives
 on.
 
-**3. "Not live" and "cannot tell" are different, and today they are the same
-number.** With both players untracked, activity is low, and low activity reads
-as *dead*. That is the failure already recorded in memory as "absent is not
-neutral": an unmeasurable window scored as a vote against is not an abstention.
-Near-slot coverage varies **42%–88% by clip** (README, "Known gaps"), so this is
-not hypothetical. The `valid` channel exists so the orchestrator can **refuse to
-place an end on unmeasured footage** rather than inferring one from silence.
+**3. "Not live" and "cannot tell" are different — but measurement says this
+barely matters. DEMOTED.** The draft argued that an unmeasurable window scored
+as dead is a vote against rather than an abstention. It was measured (see
+"Defects 3 and 4, quantified") and it is worth **0.57% of scored frames**, two
+thirds of which are long empty-court stretches containing **no live tennis at
+all**. Absence turns out to be good evidence of dead, not a missing measurement.
+The `valid` channel is still emitted — it costs nothing and the orchestrator
+should know what it is standing on — but it is **not a step-2 priority and is
+not expected to move AUC.**
 
 **4. The score is near-biased.** Far activity is in the product, but the
 non-rally union is entirely near-side — the walking classifier plus `near_end`'s
