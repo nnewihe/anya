@@ -575,11 +575,73 @@ untouched.
   end rule no longer depends on it (the fall is relative to the point's own
   peak), but `conf` itself is still divided by the clip's 90th percentile, so
   anything else that thresholds it inherits the hazard.
-- **`estimate_point_s` on clips where the rule never fires.** 45 of 154 points
-  fall back to an estimated duration, and clip 43 — where the relative fall
-  never triggers at all — loses a whole point to the 9.0 s global default.
-  That fallback is now the weakest part of the chain.
+- ~~`estimate_point_s` on clips where the rule never fires.~~ **Fixed — see
+  below.**
 - **The ball.** Still deferred, unchanged.
+
+## The fallback, replaced
+
+When the relative fall never happens inside a point's window, something has to
+end it anyway. That fallback was the weakest link, and measured it was wrong in
+**both directions at once**:
+
+| clip | curve ends | duration it assumed | that clip's GT p85 | |
+|---|---|---|---|---|
+| 43 | 0 | 9.0 s | 15.5 s | too short |
+| 38 | 1 | 9.0 s | 10.8 s | too short |
+| 24 | 4 | **36.4 s** | 20.1 s | too long |
+| 25 | 5 | **36.1 s** | 12.3 s | too long |
+
+Under three curve ends it fell to a global **9.0 s** against a corpus median of
+7.3 s and p85 of **13.8 s**, so it truncated. At three or more it took the 85th
+percentile of the clip's own *curve* durations — but those are biased long,
+because a point whose fall is found is disproportionately a point that clearly
+ended. The percentile of a long-biased sample overshot by 16 s on clip 24.
+
+**The replacement asks the curve again with the bar removed.** `end_backoff =
+"quietest"` takes the quietest sustained stretch in the window — the lowest
+`end_dwell_s`-length moving average. Same evidence, same window, same dwell;
+only the acceptance test is gone, so it always has an answer. No prior about
+how long a tennis point lasts enters the decision at all.
+
+**Ties break late.** A rally can have two similarly quiet moments — a lull
+mid-point and the real end — and a plain `argmin` picks whichever is lower by a
+rounding error, which is a coin flip between truncating the point and ending it.
+`end_quiet_tol` (0.25) takes the **last** stretch within that fraction of the
+quietest, scaled by the window's own spread so a flat window resolves to the end
+of the window rather than to noise.
+
+| backoff | whole / 154 | live kept | reel % | blind estimates | trunc |
+|---|---|---|---|---|---|
+| `duration` (old) | 137 | 95.9% | 72.6% | **45** | 0 |
+| `quietest`, tol 0 | 134 | 95.3% | 68.0% | 9 | 0 |
+| **`quietest`, tol 0.25** | **139** | **96.5%** | 74.3% | **8** | **0** |
+| `quietest`, tol 0.4 | 140 | 96.6% | 75.5% | 8 | 0 |
+
+Blind estimates fall from **45 of 154 to 8**. tol 0.4 and 0.6 buy one more whole
+point and saturate — at that point the rule is converging on "run to the end of
+the window", which is the behaviour the duration prior existed to avoid, so 0.25
+is taken as the last value that is still choosing a moment rather than giving up.
+
+**Clip 43 is fully recovered** — the regression introduced by the relative fall.
+Whole points 5 → 6 (all of them), live retention 93.9% → 99.9%.
+
+**The duration prior is now inert.** Setting `default_point_s` to 9.0, 13.8 or
+20.0 s gives *identical* results on every clip — the quietest backoff absorbs
+every case that used to reach it. `estimate_point_s`, `default_point_s`,
+`est_duration_pct` and `est_duration_pad_s` survive only for the `duration`
+comparison arm and for a window too short to hold one dwell. Nothing on the
+shipped path consults them.
+
+### Where the redesign now stands
+
+| | start | now |
+|---|---|---|
+| curve, mean per-clip AUC | 87.7% | **90.0%** |
+| whole points | 129 / 154 | **139 / 154** |
+| live retained | 94.8% | **96.5%** |
+| blind duration estimates | 29 / 154 | **8 / 154** |
+| truncations | 0 | **0** |
 
 ## Should the ball feed rally confidence?
 

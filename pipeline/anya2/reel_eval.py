@@ -49,7 +49,8 @@ from pipeline.anya2.orchestrator import (ReelConfig, build_reel,  # noqa: E402
 from pipeline.anya2.rally_eval import DEFAULT_EXCLUDE  # noqa: E402
 
 
-def run_clip(clip_dir, arm, lo=None, dwell=None, rel=None, mode=None):
+def run_clip(clip_dir, arm, lo=None, dwell=None, rel=None, mode=None,
+             backoff=None, tol=None):
     video = clip_video(clip_dir)
     cfg = ReelConfig()
     cfg.union_per_slot = (arm != "curve_shim")
@@ -61,6 +62,10 @@ def run_clip(clip_dir, arm, lo=None, dwell=None, rel=None, mode=None):
         cfg.end_rel = rel
     if mode is not None:
         cfg.end_mode = mode
+    if backoff is not None:
+        cfg.end_backoff = backoff
+    if tol is not None:
+        cfg.end_quiet_tol = tol
     res = build_reel(video, cfg, verbose=False)
 
     # Ends scored as events.  Only ends the orchestrator actually FOUND are
@@ -88,6 +93,9 @@ def main():
     ap.add_argument("--lo", nargs="*", type=float, default=[None])
     ap.add_argument("--dwell", nargs="*", type=float, default=[None])
     ap.add_argument("--rel", nargs="*", type=float, default=[None])
+    ap.add_argument("--tol", nargs="*", type=float, default=[None])
+    ap.add_argument("--backoff", nargs="*", default=[None],
+                    choices=[None, "quietest", "duration"])
     ap.add_argument("--mode", nargs="*", default=[None],
                     choices=[None, "absolute", "relative", "both"])
     ap.add_argument("--include-58", action="store_true")
@@ -100,20 +108,14 @@ def main():
         dirs = [d for d in dirs
                 if os.path.basename(d.rstrip("/")) not in DEFAULT_EXCLUDE]
 
+    import itertools
     for arm in a.arm:
-        los = a.lo if arm == "curve" else [None]
-        dws = a.dwell if arm == "curve" else [None]
-        rls = a.rel if arm != "events" else [None]
-        mds = a.mode if arm != "events" else [None]
-        for md in mds:
-         for rl in rls:
-          for lo in los:
-            for dw in dws:
-                tag = arm if arm == "events" else (
-                    f"{arm} {md or 'dflt'} "
-                    f"rel={rl if rl is not None else '-'} "
-                    f"lo={lo if lo is not None else '-'} "
-                    f"dwell={dw if dw is not None else 'dflt'}")
+        grid = itertools.product(a.backoff, a.mode, a.rel, a.lo, a.dwell, a.tol)
+        for bk, md, rl, lo, dw, tl in grid:
+                def _f(x, d="-"):
+                    return d if x is None else (f"{x:g}" if isinstance(x, float) else x)
+                tag = (f"{arm} {_f(md, 'dflt')} rel={_f(rl)} lo={_f(lo)} "
+                       f"dwell={_f(dw, 'dflt')} backoff={_f(bk, 'dflt')} tol={_f(tl, 'dflt')}")
                 E, R = [], []
                 if a.brief:
                     print(f"{tag:>34} |", end=" ")
@@ -125,7 +127,7 @@ def main():
                 for d in dirs:
                     c = os.path.basename(d.rstrip("/"))
                     try:
-                        ev, reel = run_clip(d, arm, lo, dw, rl, md)
+                        ev, reel = run_clip(d, arm, lo, dw, rl, md, bk, tl)
                     except Exception as e:            # noqa: BLE001
                         print(f"  {c:>4}  SKIPPED -- {type(e).__name__}: {e}")
                         continue

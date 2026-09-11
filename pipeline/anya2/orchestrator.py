@@ -237,6 +237,40 @@ class ReelConfig:
     # with end-event precision, because its ends land later.  Under the brief
     # -- conservative ends, a late end costs only dead time -- that is the side
     # to err on.
+    end_backoff: str = "quietest"
+    # WHAT TO DO WHEN THE FALL NEVER HAPPENS.  45 of 154 points never satisfy
+    # the relative rule inside their window, and what is done with them was the
+    # weakest link in the chain -- measured, the old duration prior was wrong in
+    # BOTH directions at once:
+    #
+    #     clip   curve ends   duration it assumed   that clip's GT p85
+    #      43         0              9.0 s               15.5 s      too short
+    #      38         1              9.0 s               10.8 s      too short
+    #      24         4             36.4 s               20.1 s      too long
+    #      25         5             36.1 s               12.3 s      too long
+    #
+    # Under three curve ends it fell back to a global 9.0 s against a corpus
+    # median of 7.3 s and p85 of 13.8 s, so it truncated.  At three or more it
+    # took the 85th percentile of the clip's own CURVE durations -- but those
+    # are biased long, because a point whose fall is found is disproportionately
+    # a point that clearly ended, so the percentile of a long-biased sample
+    # overshot by 16 s on clip 24.
+    #
+    # "quietest": ignore durations entirely and ask the curve again with the
+    #             bar removed -- take the quietest sustained stretch in the
+    #             window.  Always defined, per point, and uses the same evidence
+    #             as the primary rule instead of a prior about tennis.
+    # "duration": the old behaviour, kept for comparison.
+    end_quiet_tol: float = 0.25      # "quietest" backoff: among stretches within
+                                     # this fraction of the quietest one, take
+                                     # the LAST rather than the first.  A rally
+                                     # can have two similarly quiet moments --
+                                     # a lull mid-point and the real end -- and
+                                     # an argmin picks whichever is marginally
+                                     # lower, which is a coin flip between
+                                     # truncating the point and ending it.
+                                     # Ties break late, because late costs dead
+                                     # time and early costs tennis.
     end_rel: float = 0.10            # fraction of the point's own running peak
     end_lo: float = 0.15             # absolute/both modes only
     end_dwell_s: float = 2.5         # ...and must stay there this long before
@@ -686,19 +720,43 @@ def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
                             stop=end_t + cfg.post_roll_s,
                             serve_t=ps.t, end_t=end_t, side=ps.side,
                             end_source=src, p=ps.p))
-    # Second pass for the points that found no fall: use THIS clip's own curve
-    # ends rather than the global default, same reasoning as `estimate_point_s`.
+    # Second pass, for the points where the fall never happened.
     est_s = estimate_point_s([s for s in segs if s.end_source == "curve"], cfg)
     for i, sg in enumerate(segs):
         if sg.end_source != "estimated":
             continue
         nxt = starts[i + 1].t if i + 1 < len(starts) else None
-        est = sg.serve_t + est_s
+        t_lo = sg.serve_t + cfg.min_point_s
+        t_hi = sg.serve_t + cfg.max_point_s
         if nxt is not None:
-            est = min(est, nxt - cfg.next_start_guard_s)
+            t_hi = min(t_hi, nxt - cfg.next_start_guard_s)
         if duration is not None:
-            est = min(est, duration - 0.1)
-        sg.end_t = max(sg.serve_t + cfg.min_point_s, est)
+            t_hi = min(t_hi, duration - 0.1)
+        end_t, src = None, "estimated"
+        if cfg.end_backoff == "quietest":
+            a = int(round(t_lo * fps))
+            b = min(n, int(round(t_hi * fps)) + 1)
+            if b - a >= dwell:
+                # The quietest sustained stretch: the lowest `dwell`-length
+                # moving average in the window.  This is the primary rule with
+                # the bar removed -- instead of "has it fallen far enough", it
+                # asks "where was it lowest", which always has an answer.
+                # Same evidence, same window, same dwell; only the acceptance
+                # test is gone.
+                c = np.concatenate(([0.0], np.cumsum(conf[a:b], dtype=float)))
+                mov = (c[dwell:] - c[:-dwell]) / dwell
+                lo_v, hi_v = float(mov.min()), float(mov.max())
+                # Absolute tolerance scaled by the window's own spread, so a
+                # flat window (nothing to choose between) resolves to the end
+                # of the window rather than to whichever sample is lowest by a
+                # rounding error.
+                band = lo_v + cfg.end_quiet_tol * max(hi_v - lo_v, 0.0)
+                k = int(np.nonzero(mov <= band)[0][-1])
+                end_t, src = (a + k) / fps, "quietest"
+        if end_t is None:
+            end_t = min(sg.serve_t + est_s, t_hi)
+        sg.end_t = max(t_lo, min(end_t, t_hi))
+        sg.end_source = src
         sg.stop = sg.end_t + cfg.post_roll_s
     return segs
 
