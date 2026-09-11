@@ -70,7 +70,6 @@ Three things in that table decide the construction:
   THE PENALTY MUST STAY PARTIAL.  At a full near veto (weight 1.0) mean AUC
   collapses from 90.0% to 83.1%, because it deletes real live play wherever the
   near player is briefly untracked.
-"""
 
 Doubles: the veto must describe the player who is playing
 ---------------------------------------------------------
@@ -101,6 +100,7 @@ picked and hurts where the right one was.  Per-clip AUC against the shim:
                         clip 25    clip 40    mean per-clip
     min                  +1.2       -1.4          -0.1
     active               +2.0       +1.9          +0.3
+"""
 
 import argparse
 import os

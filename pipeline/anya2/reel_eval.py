@@ -49,7 +49,7 @@ from pipeline.anya2.orchestrator import (ReelConfig, build_reel,  # noqa: E402
 from pipeline.anya2.rally_eval import DEFAULT_EXCLUDE  # noqa: E402
 
 
-def run_clip(clip_dir, arm, lo=None, dwell=None):
+def run_clip(clip_dir, arm, lo=None, dwell=None, rel=None, mode=None):
     video = clip_video(clip_dir)
     cfg = ReelConfig()
     cfg.end_policy = "events" if arm == "events" else "curve"
@@ -58,6 +58,10 @@ def run_clip(clip_dir, arm, lo=None, dwell=None):
         cfg.end_lo = lo
     if dwell is not None:
         cfg.end_dwell_s = dwell
+    if rel is not None:
+        cfg.end_rel = rel
+    if mode is not None:
+        cfg.end_mode = mode
     res = build_reel(video, cfg, verbose=False)
 
     # Ends scored as events.  Only ends the orchestrator actually FOUND are
@@ -84,6 +88,9 @@ def main():
     ap.add_argument("--arm", nargs="*", default=["events", "curve"])
     ap.add_argument("--lo", nargs="*", type=float, default=[None])
     ap.add_argument("--dwell", nargs="*", type=float, default=[None])
+    ap.add_argument("--rel", nargs="*", type=float, default=[None])
+    ap.add_argument("--mode", nargs="*", default=[None],
+                    choices=[None, "absolute", "relative"])
     ap.add_argument("--include-58", action="store_true")
     ap.add_argument("--brief", action="store_true", help="totals only")
     a = ap.parse_args()
@@ -97,10 +104,16 @@ def main():
     for arm in a.arm:
         los = a.lo if arm == "curve" else [None]
         dws = a.dwell if arm == "curve" else [None]
-        for lo in los:
+        rls = a.rel if arm != "events" else [None]
+        mds = a.mode if arm != "events" else [None]
+        for md in mds:
+         for rl in rls:
+          for lo in los:
             for dw in dws:
-                tag = arm if arm != "curve" else (
-                    f"curve lo={lo if lo is not None else 'dflt'} "
+                tag = arm if arm == "events" else (
+                    f"{arm} {md or 'dflt'} "
+                    f"rel={rl if rl is not None else '-'} "
+                    f"lo={lo if lo is not None else '-'} "
                     f"dwell={dw if dw is not None else 'dflt'}")
                 E, R = [], []
                 if a.brief:
@@ -113,7 +126,7 @@ def main():
                 for d in dirs:
                     c = os.path.basename(d.rstrip("/"))
                     try:
-                        ev, reel = run_clip(d, arm, lo, dw)
+                        ev, reel = run_clip(d, arm, lo, dw, rl, md)
                     except Exception as e:            # noqa: BLE001
                         print(f"  {c:>4}  SKIPPED -- {type(e).__name__}: {e}")
                         continue

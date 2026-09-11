@@ -211,7 +211,13 @@ class ReelConfig:
                                      # player actually hitting the ball.  Off
                                      # restores the single-player shim.
     end_policy: str = "curve"
-    end_lo: float = 0.15             # confidence below this counts as fallen
+    end_mode: str = "relative"       # "absolute": fall below `end_lo`.
+                                     # "relative": fall to `end_rel` of THIS
+                                     # point's own running peak.  See
+                                     # `pair_ends_curve`.
+    end_rel: float = 0.35            # relative mode: fraction of the point's
+                                     # own peak that counts as fallen
+    end_lo: float = 0.15             # absolute mode: confidence below this
     end_dwell_s: float = 1.5         # ...and must stay there this long before
                                      # the fall is believed.  The dwell is what
                                      # separates a lull from an end: a rally
@@ -677,7 +683,25 @@ def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
         end_t, src = None, ""
         a, b = int(round(t_lo * fps)), min(n, int(round(t_hi * fps)) + 1)
         if b - a >= dwell:
-            below = conf[a:b] < lo
+            if cfg.end_mode == "relative":
+                # Fall to a fraction of THIS POINT'S OWN running peak, rather
+                # than to a fixed level.  `conf` is normalised per clip (see
+                # rally.SCALE_PCT), so a fixed level means a different thing on
+                # every clip and is only as portable as that normaliser is.  A
+                # ratio against the point's own peak is scale-free: it survives
+                # the normaliser, a different camera, and a clip whose live
+                # fraction is unusual.
+                #
+                # RUNNING peak, accumulated from the serve rather than taken
+                # over the whole window, so the threshold can only rise as the
+                # rally develops.  A plain max over the window would let a
+                # burst AFTER a quiet stretch retroactively raise the bar and
+                # turn an already-ended point back into a live one.
+                s0 = max(0, int(round(ps.t * fps)))
+                pk = np.maximum.accumulate(conf[s0:b])[a - s0:]
+                below = conf[a:b] < (cfg.end_rel * np.maximum(pk, 1e-6))
+            else:
+                below = conf[a:b] < lo
             # A sustained-low run of `dwell` samples: the first index whose
             # whole window is below the line.  Cumulative-sum rather than a
             # Python loop so this stays cheap on a 69-minute clip.
