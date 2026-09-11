@@ -1,8 +1,9 @@
 # Rally confidence — refocusing agent 3, and moving the reasoning into agent 4
 
-> Status: **design, not built.** Nothing in this document is measured on the
-> construction it proposes. Every number quoted is from the code and results
-> that exist today, and is cited so it can be re-checked.
+> Status: **step 1 done, the rest is design.** "Baseline, measured" below is
+> measured, by `rally_eval.py`, on the current construction. Everything from
+> "Rally confidence: the contract" onward is design and is not measured on the
+> construction it proposes.
 
 ## The change in one paragraph
 
@@ -57,6 +58,83 @@ So the work is:
 
 Scope discipline: **the near and far serve detectors are not touched.** They are
 validated and they stay as they are.
+
+## Baseline, measured
+
+`rally_eval.py`, all 13 trusted clips, scoring restricted to each clip's
+labelled span. **This is the number to beat.**
+
+| smoothing | mean per-clip AUC | pooled AUC | pooled best-F1 |
+|---|---|---|---|
+| 4 s (the module's own) | 87.2% | 82.9% | 69.7% |
+| **5 s** | **88.2%** | **83.6%** | **70.8%** |
+| 8 s | **88.5%** | **84.7%** | **71.6%** |
+
+The 4 s row reproduces the documented 86.7% (measured at 86.6% on the 11 clips
+whose artifacts existed before clips 21 and 23 had their `walk`/`endsig` passes
+regenerated). The harness is measuring what the original measurement measured.
+
+**Per clip, at 4 s** — the spread matters more than the mean:
+
+| clip | AUC | | clip | AUC |
+|---|---|---|---|---|
+| 21 | 95.6% | | 36 | 85.4% |
+| 22 | 92.3% | | 38 | 93.6% |
+| 23 | 85.3% | | 40 | 81.6% |
+| 24 | 89.5% | | 43 | 93.0% |
+| 25 | **75.5%** | | 50 | 88.8% |
+| 26 | 85.3% | | 58 | **80.9%** |
+| 35 | 87.0% | | | |
+
+Clip 58 is **46% of all scored frames** (49,364 of 108,248), so the pooled row is
+largely clip 58's row. Clips 25, 40 and 58 are the weak ones and are where the
+headroom is.
+
+### The window question is answered: longer is better
+
+Defect 1 predicted this and the sweep confirms it. **8 s beats 4 s on all three
+metrics, including best-F1** — so there is no separation/threshold trade to
+manage at the frame level, which is the level the orchestrator will consume.
+
+This does not contradict `point_end.py`'s comment that 8 s scores a worse F1
+than 4 s. That comment is about **event** F1 for the falling edge, a different
+metric answering a different question. Frame separation genuinely prefers the
+longer window; edge *timing* preferred the shorter one. Moving the edge-finding
+into the orchestrator is precisely what dissolves the conflict.
+
+5 s captures most of the gain (+1.0 mean AUC over 4 s against 8 s's +1.3) and
+stays closer to the edge. **The default is 5 s and `raw` is stored regardless**,
+so the orchestrator can re-window without a re-run.
+
+### Defects 3 and 4, quantified
+
+Both were argued from first principles in the first draft. Measured now:
+
+**Defect 3 — unmeasurable frames are scored as confidently dead.** Pooled,
+**7.7%** of scored frames have neither a near nor a far player tracked, and
+**5.5% of those are labelled live**. Per clip it is far worse than the pooled
+figure suggests:
+
+| clip | unmeasurable | of which live |
+|---|---|---|
+| 43 | **28.7%** | 2.4% |
+| 21 | 22.7% | 0.2% |
+| 50 | 21.0% | **23.8%** |
+| 40 | 14.7% | 0.0% |
+| 23 | 13.4% | 6.7% |
+| 26 | 4.5% | **26.9%** |
+
+Clip 50 and clip 26 are the shape of the problem: a fifth of clip 50 is
+unmeasurable and a quarter of *that* is live tennis being scored as dead. The
+`valid` channel is not a tidiness fix.
+
+**Defect 4 — the union is near-side and the near player is often the absent
+one.** Frames where ONLY the far player is tracked: clip 24 **48.7%**, clip 23
+**47.1%**, clip 35 **44.0%**. On roughly half of those three clips the
+non-rally union — walking classifier plus `near_end`'s four signals, all fed
+from the near track through a shim — is being computed from a player who is not
+there. A far-side union term is not a refinement; on these clips it is most of
+the footage.
 
 ## Rally confidence: the contract
 
