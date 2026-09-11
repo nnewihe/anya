@@ -11,6 +11,13 @@ untouched so every number below is A/B-able against them.
 | `point_end.py` | did the point end? | **built** (pose only) |
 | `orchestrator.py` | **agent 4** — turn the three streams into a watchable reel | **built** |
 
+> **Planned change — see [RALLY_CONFIDENCE.md](RALLY_CONFIDENCE.md).** `point_end.py`
+> is to be refocused from a point-end *detector* into a continuous **rally
+> confidence** score over the whole video, and the start/end reasoning moved
+> into the orchestrator, which takes near starts, far starts and that curve as
+> its three inputs. The serve detectors are unaffected. Everything in the
+> "Point end — results" section below describes the detector as it stands today.
+
 ## Substrate
 
 | module | what it owns |
