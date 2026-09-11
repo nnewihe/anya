@@ -83,11 +83,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline.anya2 import court as C
 from pipeline import workdir as WD
 from pipeline.anya2.signals import runs as S_runs
-from pipeline.anya2 import point_end as PE
 from pipeline.anya2 import rally as RC
 from pipeline.anya2 import tracks as T
-from pipeline.anya2.contract import (FAR_SERVE, NEAR_SERVE, POINT_END,
-                                     Event, load_events)
+from pipeline.anya2.contract import (FAR_SERVE, NEAR_SERVE, Event,
+                                     load_events)
 
 SEGMENTS_SUFFIX = "_anya2_reel.json"
 
@@ -179,7 +178,6 @@ class ReelConfig:
     # reel after the agent was switched off.
     use_near: bool = True
     use_far: bool = True
-    use_end: bool = True
 
     # ── in-rally suppression ─────────────────────────────────────────────
     # A serve struck while a point is already live is spurious, and agent 3
@@ -200,17 +198,16 @@ class ReelConfig:
     live_lookback_s: float = 3.0
 
     # ── how the end of a point is found ──────────────────────────────────
-    # "events": pair each start with a POINT_END event from agent 3's old
-    #           falling-edge detector.  The shipped behaviour.
-    # "curve":  walk the rally confidence curve forward from the serve and take
-    #           the first point where it falls and STAYS fallen.  See
-    #           `pair_ends_curve` and RALLY_CONFIDENCE.md.
+    # There is one policy: walk the rally confidence curve forward from the
+    # serve and take the first place it falls and STAYS fallen.  The old
+    # alternative -- pair each start with a POINT_END event -- was deleted
+    # along with the detector that produced those events; see
+    # `pair_ends_curve` and RALLY_CONFIDENCE.md.
     union_per_slot: bool = True      # agent 3's non-rally veto is computed per
                                      # near slot and combined with a MIN, so a
                                      # standing doubles partner cannot veto the
                                      # player actually hitting the ball.  Off
                                      # restores the single-player shim.
-    end_policy: str = "curve"
     end_mode: str = "relative"
     # "relative": the point has fallen to `end_rel` of its OWN running peak.
     # "absolute": it has fallen below `end_lo`.
@@ -246,7 +243,7 @@ class ReelConfig:
                                      # the fall is believed.  The dwell is what
                                      # separates a lull from an end: a rally
                                      # contains long quiet beats while the
-                                     # opponent plays the ball, and point_end.py
+                                     # opponent plays the ball, and agent 3
                                      # measured instantaneous activity at AUC
                                      # 38-75% for live/dead -- at or below
                                      # chance on the hardest clips.
@@ -600,76 +597,11 @@ def estimate_point_s(segs: Sequence[Segment], cfg: ReelConfig) -> float:
     return float(np.percentile(got, cfg.est_duration_pct)) + cfg.est_duration_pad_s
 
 
-def pair_ends(starts: Sequence[PointStart], ends: Sequence[Event],
-              cfg: ReelConfig, duration: Optional[float] = None) -> List[Segment]:
-    """One segment per start.  Every start becomes a segment, always.
-
-    The end is chosen in this order:
-
-      DETECTED   the first end event that falls in the plausible window for
-                 this point -- later than `min_point_s` (before that it is the
-                 serve motion itself), earlier than `max_point_s` (after that
-                 it is a missed end and some later, unrelated quiet), and before
-                 the next serve.
-
-      ESTIMATED  no end was detected in the window, so the point is assumed to
-                 have run for `estimate_point_s` -- a high percentile of THIS
-                 clip's own detected point durations -- bounded by the next
-                 serve.  Running to the next serve instead would keep every
-                 inter-point gap on the ~50% of points whose end is missed.
-
-    Note what this does NOT do: it never drops a start for want of an end.
-    Point-end recall is 49.6% against 90.7%/82.2% for the serves, so requiring a
-    pair would discard half the points.
-    """
-    et = sorted(float(e.t) for e in ends if e.p >= cfg.end_threshold)
-    et_arr = np.array(et) if et else np.zeros(0)
-
-    # Two passes: the first only to learn this clip's typical point length from
-    # the ends that WERE detected, the second to use it for the ones that were
-    # not.  One pass cannot do it -- the estimate is derived from the same
-    # pairing it feeds.
-    segs = _pair_once(starts, et_arr, cfg, duration, cfg.default_point_s)
-    return _pair_once(starts, et_arr, cfg, duration, estimate_point_s(segs, cfg))
-
-
-def _pair_once(starts, et_arr, cfg, duration, est_s):
-    segs: List[Segment] = []
-    for i, ps in enumerate(starts):
-        nxt = starts[i + 1].t if i + 1 < len(starts) else None
-        lo = ps.t + cfg.min_point_s
-        hi = ps.t + cfg.max_point_s
-        if nxt is not None:
-            hi = min(hi, nxt - cfg.next_start_guard_s)
-        end_t, src = None, ""
-        if et_arr.size and hi > lo:
-            cand = et_arr[(et_arr >= lo) & (et_arr <= hi)]
-            if cand.size:
-                end_t, src = float(cand[0]), "detected"
-        if end_t is None:
-            # An UNDETECTED end must not mean "run to the next serve": with
-            # point-end recall at 49.6% that would keep every inter-point gap on
-            # half the points, which is the opposite of the brief.  Assume a
-            # point of the clip's own typical length instead, bounded by the
-            # next serve.
-            est = ps.t + est_s
-            if nxt is not None:
-                est = min(est, nxt - cfg.next_start_guard_s)
-            end_t, src = max(lo, est), "estimated"
-            if duration is not None:
-                end_t = min(end_t, duration - 0.1)
-        segs.append(Segment(start=ps.t - cfg.pre_roll_s,
-                            stop=end_t + cfg.post_roll_s,
-                            serve_t=ps.t, end_t=end_t, side=ps.side,
-                            end_source=src, p=ps.p))
-    return segs
-
-
 def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
                     duration: Optional[float] = None) -> List[Segment]:
     """End each point by walking the rally confidence curve forward.
 
-    WHY THIS REPLACES EVENT MATCHING.  `pair_ends` matches against agent 3's
+    WHY THIS REPLACED EVENT MATCHING.  The deleted `pair_ends` matched agent 3's
     falling-edge events, a stream with 49.6% recall -- so on half the points it
     falls through to an estimated duration and the real end is never consulted.
     The curve those events were collapsed FROM separates live from dead at AUC
@@ -678,7 +610,7 @@ def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
 
     THE END IS WHERE CONFIDENCE FALLS AND STAYS FALLEN.  Not where it first
     dips: a rally contains long quiet beats while the opponent plays the ball,
-    and `point_end.py` measured that instantaneous activity separates live from
+    and agent 3 measured that instantaneous activity separates live from
     dead at AUC 38-75% -- at or below chance on the hardest clips.  The dwell
     requirement is what distinguishes a lull from an end, and it is where the
     conservatism lives.  "Prove the point is over" is a dwell, not a margin.
@@ -863,7 +795,6 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
 
     near = _load("_anya2_near_serve.json", NEAR_SERVE) if cfg.use_near else []
     far = _load("_anya2_far_serve.json", FAR_SERVE) if cfg.use_far else []
-    ends = _load("_anya2_point_end.json", POINT_END) if cfg.use_end else []
 
     duration = None
     try:
@@ -872,21 +803,13 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     except Exception:
         pass
 
-    # Agent 3's curve.  `rally.compute` is the promoted construction and the
-    # one that is measured; point_end.live_score is kept as the fallback so a
-    # clip whose rally artifact cannot be built still produces a reel.
-    live = None
-    try:
-        r = RC.compute(video, tracks_npz, per_slot_union=cfg.union_per_slot)
-        live = np.asarray(r["conf"], dtype=float)
-        live_fps = float(r["fps"])
-    except Exception:
-        try:
-            parts = PE.end_signal(video, tracks_npz)
-            live = PE.live_score(parts, video, tracks_npz)
-            live_fps = float(parts["fps"])
-        except Exception:
-            live_fps = None
+    # Agent 3's curve.  REQUIRED, not optional: since the point-end event
+    # stream was deleted this is the only thing that can end a point, and there
+    # is no second construction to fall back to.  Failing loudly here is better
+    # than silently emitting every point at its default duration.
+    r = RC.compute(video, tracks_npz, per_slot_union=cfg.union_per_slot)
+    live = np.asarray(r["conf"], dtype=float)
+    live_fps = float(r["fps"])
 
     starts = merge_starts(near, far, cfg)
     n_merged = len(starts)
@@ -901,10 +824,7 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     starts = apply_neighbour_rule(starts, cfg)
     starts = enforce_service_runs(starts, cfg)
     starts = annotate_serve_court(starts, video, tracks_npz)
-    if cfg.end_policy == "curve" and live is not None:
-        segs = pair_ends_curve(starts, live, live_fps, cfg, duration)
-    else:
-        segs = pair_ends(starts, ends, cfg, duration)
+    segs = pair_ends_curve(starts, live, live_fps, cfg, duration)
     flag_missing_points(starts, segs, cfg)
     n_raw = len(segs)
     segs = smooth(segs, cfg, duration)
@@ -932,7 +852,7 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
                     "adjusted_p": round(p_.adjusted_p, 3),
                     "toss": p_.toss_combined, "notes": p_.notes}
                    for p_ in starts],
-        "n_near": len(near), "n_far": len(far), "n_ends": len(ends),
+        "n_near": len(near), "n_far": len(far),
         "n_starts_merged": n_merged, "n_rapid_repeats_dropped": n_rapid,
         "n_dropped_in_rally": n_inrally,
         "n_side_relabelled": conflicts,

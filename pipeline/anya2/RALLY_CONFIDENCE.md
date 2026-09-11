@@ -1,13 +1,11 @@
 # Rally confidence — refocusing agent 3, and moving the reasoning into agent 4
 
-> Status: **steps 1-3 done.** `rally.py` is built and measured (`rally_eval.py`
-> scores the curve); the orchestrator now ends points off that curve
-> (`reel_eval.py` scores the reel). Step 4, deleting the old path, is not done
-> and should not be until the open question at the end of step 3 is settled.
+> Status: **done.** All four steps. `rally.py` is built and measured
+> (`rally_eval.py` scores the curve), the orchestrator ends points off that
+> curve (`reel_eval.py` scores the reel), and `point_end.py` is deleted.
 > **Clip 58 is excluded from every corpus number below**, at the user's
-> direction — it was 46% of all scored frames, so pooled rows were largely its
-> row. It is still run as a holdout where that is informative, and labelled.
-
+> direction — it was 46% of all scored frames. It is still run as a holdout
+> where that is informative, and labelled.
 ## The change in one paragraph
 
 Agent 3 stops being a point-end **detector** and becomes a **rally confidence
@@ -523,6 +521,65 @@ truncate live tennis and one that may include dead time, take the dead time.
 The current pose-only detector achieves **zero truncations on every clip** at
 49.6% recall. **Zero truncations is the property to preserve**; recall is the
 thing being bought.
+
+## Step 4: the old path is deleted
+
+`point_end.py` is gone. What went with it:
+
+- `detect_ends()` and `detect_video()` — the falling-edge detector
+- the `_anya2_point_end.json` event stream, and the orchestrator's reading of it
+- `ReelConfig.use_end` and `ReelConfig.end_policy`, plus `pair_ends` /
+  `_pair_once`, the event-matching pairing
+- `Anya2Config.end` (`PointEndConfig`), replaced by `RallyConfig`
+
+What did **not** go: the pose machinery behind the curve —
+`player_activity`, `quiet_mask`, `end_signal`, `UNION_NAMES` and their
+constants — moved into `rally.py` unchanged. Those were never the weak part.
+The detector was.
+
+`contract.POINT_END` also stays: `eval.py --mode point_end` uses it to name the
+ground-truth ends, which is still how the orchestrator's ends are scored.
+
+**Two verifications, both required before deleting anything:**
+
+1. The reel is bit-identical across the deletion — 137/154 whole, 95.9% live,
+   0 truncations, before and after.
+2. `rally_eval --arm current` reconstructs the pre-redesign curve exactly
+   (4 s smoothing, single-player shim union, absence off) and still scores
+   **87.7% mean per-clip AUC**, the number this work started from. The
+   historical baseline remains runnable with the module that produced it
+   deleted.
+
+The orchestrator now treats the curve as **required rather than optional**.
+There is no second construction to fall back to, so a clip whose rally artifact
+cannot be built raises instead of silently emitting every point at its default
+duration.
+
+`desktop/rally_app.spec` had a PyInstaller hidden import for the deleted
+module; it now names `pipeline.anya2.rally`. Nothing else outside `pipeline/anya2`
+referenced it — `pipeline/rally_reel/*` has its own unrelated `end_policy` and is
+untouched.
+
+### Where this leaves the whole redesign
+
+| | start | now |
+|---|---|---|
+| curve, mean per-clip AUC | 87.7% | **90.0%** |
+| whole points | 129 / 154 | **137 / 154** |
+| live retained | 94.8% | **95.9%** |
+| truncations | 0 | **0** |
+
+### What is still open
+
+- **Defect 2, the per-clip normaliser**, is mitigated rather than fixed. The
+  end rule no longer depends on it (the fall is relative to the point's own
+  peak), but `conf` itself is still divided by the clip's 90th percentile, so
+  anything else that thresholds it inherits the hazard.
+- **`estimate_point_s` on clips where the rule never fires.** 45 of 154 points
+  fall back to an estimated duration, and clip 43 — where the relative fall
+  never triggers at all — loses a whole point to the 9.0 s global default.
+  That fallback is now the weakest part of the chain.
+- **The ball.** Still deferred, unchanged.
 
 ## Should the ball feed rally confidence?
 

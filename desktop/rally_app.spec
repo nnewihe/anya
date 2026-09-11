@@ -209,7 +209,7 @@ a = Analysis(
         'pipeline.anya2.orchestrator',
         'pipeline.anya2.near_serve',
         'pipeline.anya2.far_serve',
-        'pipeline.anya2.point_end',
+        'pipeline.anya2.rally',
         'pipeline.anya2.perceive',
         'pipeline.anya2.tracks',
         'pipeline.anya2.balls',

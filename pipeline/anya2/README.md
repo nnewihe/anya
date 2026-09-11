@@ -8,15 +8,16 @@ untouched so every number below is A/B-able against them.
 |---|---|---|
 | `near_serve.py` | did a point start with a near-side serve? | **built** |
 | `far_serve.py` | did a point start with a far-side serve? | **built** |
-| `point_end.py` | did the point end? | **built** (pose only) |
+| `rally.py` | how confident are we a point is in play? | **built** (pose only, a curve) |
 | `orchestrator.py` | **agent 4** — turn the three streams into a watchable reel | **built** |
 
-> **Planned change — see [RALLY_CONFIDENCE.md](RALLY_CONFIDENCE.md).** `point_end.py`
-> is to be refocused from a point-end *detector* into a continuous **rally
-> confidence** score over the whole video, and the start/end reasoning moved
-> into the orchestrator, which takes near starts, far starts and that curve as
-> its three inputs. The serve detectors are unaffected. Everything in the
-> "Point end — results" section below describes the detector as it stands today.
+> **Done — see [RALLY_CONFIDENCE.md](RALLY_CONFIDENCE.md).** `point_end.py` has
+> been replaced by `rally.py`: agent 3 emits a continuous **rally confidence**
+> curve over the whole video rather than point-end events, and the orchestrator
+> ends every point off that curve. The serve detectors are unaffected. The
+> "Point end — results" section below is **historical** — it describes the
+> deleted falling-edge detector, and is kept because the four measurements that
+> killed the obvious designs still hold and still constrain anything built here.
 
 ## Substrate
 
@@ -432,7 +433,7 @@ settle it. **Treat 52% pooled precision as the floor for a serve detector with
 no knowledge of whether a point is in progress** — and note that the near
 detector bottomed out at 55.8% for exactly the same reason.
 
-## Point end — results
+## Point end — results (historical: this detector was deleted)
 
 **Pose only. The ball is not read anywhere in the module**, at the user's
 request: the shipped policy makes the ball trace primary, and that is not

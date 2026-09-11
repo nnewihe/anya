@@ -113,7 +113,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline import workdir as WD
 
-from pipeline.anya2 import point_end as PE
 from pipeline.anya2 import signals as S
 from pipeline.anya2 import tracks as T
 from pipeline.anya2.contract import ROI_BOTH, Requirement, W_ALWAYS
@@ -211,6 +210,95 @@ def artifact_path(video, suffix=ARTIFACT_SUFFIX):
     return os.path.join(d, f"{stem}{suffix}")
 
 
+# =========================================================================
+# The pose signals behind the curve -- moved here from point_end.py when that
+# module's falling-edge DETECTOR was deleted.  The detector is gone; these
+# never were the weak part and are unchanged.
+# =========================================================================
+MAX_GAP_S = 0.5
+
+# Scale-free and homography-free: box travel and limb speed are both divided by
+# box height, giving body heights per second.  Court speed is deliberately NOT
+# used -- a far player's ground point carries metres of projection error (see
+# tracks.FAR_BACK_M), so any court-metre speed for them is noise, and a signal
+# that means different things on the two sides of the net cannot be combined.
+QUIET_BH_S = 0.45
+QUIET_WIN_S = 1.5
+
+# `near_end`'s four pose signals.  The union of these with the walking
+# probability is the non-rally veto; every corroborator is individually WORSE
+# than walking and the union still beats walking by a factor of four at the p75,
+# because they fire EARLIER on the points where walking is late.  That is all a
+# max() asks of them.
+UNION_NAMES = ("settle", "turn_away", "stance_drop", "idle_hands")
+
+WALK_SUFFIX = "_anya2_walk.npz"
+
+
+def player_activity(z, fps) -> np.ndarray:
+    """Per-slot activity in body heights/second. [4, N], NaN where untracked."""
+    kp, bb = z["kp"], z["bbox"]
+    n = len(kp)
+    gap = int(MAX_GAP_S * fps)
+    out = []
+    for s in range(T.N_SLOTS):
+        k = S.interp_gaps(kp[:, s], gap)
+        b = S.interp_gaps(bb[:, s], gap)
+        h = b[:, 3] - b[:, 1]
+        h = np.where(h > 8.0, h, np.nan)
+        cx, cy = 0.5 * (b[:, 0] + b[:, 2]), b[:, 3]
+        mv = np.full(n, np.nan)
+        mv[1:] = np.hypot(np.diff(cx), np.diff(cy)) / h[1:] * fps
+        hip = S.mid(S.kp_xy(k, S.L_HIP, 0.2), S.kp_xy(k, S.R_HIP, 0.2))
+        limb = np.full(n, np.nan)
+        for j in (S.L_WRI, S.R_WRI, S.L_ANK, S.R_ANK):
+            rel = (S.kp_xy(k, j, 0.2) - hip) / h[:, None]
+            d = np.full(n, np.nan)
+            d[1:] = np.linalg.norm(np.diff(rel, axis=0), axis=1) * fps
+            limb = np.fmax(limb, d)
+        out.append(np.fmax(mv, limb))
+    return np.array(out)
+
+
+def quiet_mask(act: np.ndarray, fps: float) -> np.ndarray:
+    """True where EVERY tracked player has been quiet for QUIET_WIN_S.
+
+    An untracked player contributes nothing rather than counting as quiet:
+    absence of a player is not evidence that the point ended -- the same rule
+    near_end applies to the energy bar, and for the same reason.
+    """
+    with np.errstate(invalid="ignore"):
+        loud = np.nanmax(np.where(np.isfinite(act), act, np.nan), axis=0)
+    tracked = np.isfinite(act).any(axis=0)
+    q = tracked & (np.nan_to_num(loud, nan=np.inf) < QUIET_BH_S)
+    w = max(1, int(round(QUIET_WIN_S * fps)))
+    out = np.zeros(len(q), dtype=bool)
+    for lo, hi in S.runs(q):
+        if hi - lo >= w:
+            out[lo:hi] = True
+    return out
+
+
+def end_signal(video, tracks_npz=None) -> Dict[str, np.ndarray]:
+    """The non-rally union and its parts, off the cached pose passes."""
+    stem = os.path.splitext(os.path.basename(video))[0]
+    d = WD.artifact_dir(video)
+    w = np.load(os.path.join(d, f"{stem}_anya2_walk.npz"))
+    sg = np.load(os.path.join(d, f"{stem}_anya2_endsig.npz"))
+    fps = float(w["fps"])
+    n = min(len(w["prob"]), len(sg[UNION_NAMES[0]]))
+    parts = {k: np.nan_to_num(sg[k][:n], nan=0.0) for k in UNION_NAMES}
+    parts["walk"] = np.asarray(w["prob"][:n], dtype=np.float64)
+    union = np.max(np.stack([parts[k] for k in list(UNION_NAMES) + ["walk"]]), axis=0)
+
+    z = T.load(video, tracks_npz)
+    act = player_activity(z, fps)[:, :n]
+    parts["quiet"] = quiet_mask(act, fps).astype(np.float64)
+    parts["union"] = union
+    parts["fps"] = np.float64(fps)
+    return parts
+
+
 def _slot_signals(video, slot: int, force: bool = False) -> Dict[str, np.ndarray]:
     """The walking probability and `near_end`'s four signals for ONE near slot.
 
@@ -258,8 +346,8 @@ def _slot_signals(video, slot: int, force: bool = False) -> Dict[str, np.ndarray
         np.savez_compressed(sig_p, **{k: np.asarray(sig[k], dtype=np.float32)
                                       for k in NE.SIGNAL_NAMES})
     w, sg = np.load(walk_p), np.load(sig_p)
-    n = min(len(w["prob"]), len(sg[PE.UNION_NAMES[0]]))
-    parts = [np.nan_to_num(sg[k][:n], nan=0.0) for k in PE.UNION_NAMES]
+    n = min(len(w["prob"]), len(sg[UNION_NAMES[0]]))
+    parts = [np.nan_to_num(sg[k][:n], nan=0.0) for k in UNION_NAMES]
     parts.append(np.asarray(w["prob"][:n], dtype=np.float64))
     return {"union": np.max(np.stack(parts), axis=0), "fps": float(w["fps"])}
 
@@ -360,11 +448,11 @@ def compute(video, tracks_npz=None, smooth_s: Optional[float] = None,
             w_absence: Optional[float] = None,
             per_slot_union: bool = True) -> Dict[str, np.ndarray]:
     """The rally confidence curve and every channel behind it."""
-    parts = PE.end_signal(video, tracks_npz)
+    parts = end_signal(video, tracks_npz)
     fps = float(parts["fps"])
     n = len(parts["union"])
     z = T.load(video, tracks_npz)
-    act = PE.player_activity(z, fps)[:, :n]
+    act = player_activity(z, fps)[:, :n]
 
     union = parts["union"]
     if per_slot_union:

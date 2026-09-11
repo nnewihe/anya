@@ -52,7 +52,6 @@ from pipeline.anya2.rally_eval import DEFAULT_EXCLUDE  # noqa: E402
 def run_clip(clip_dir, arm, lo=None, dwell=None, rel=None, mode=None):
     video = clip_video(clip_dir)
     cfg = ReelConfig()
-    cfg.end_policy = "events" if arm == "events" else "curve"
     cfg.union_per_slot = (arm != "curve_shim")
     if lo is not None:
         cfg.end_lo = lo
@@ -85,7 +84,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[3])
     ap.add_argument("--data_root", default=DATA_ROOT)
     ap.add_argument("--clips", nargs="*", default=None)
-    ap.add_argument("--arm", nargs="*", default=["events", "curve"])
+    ap.add_argument("--arm", nargs="*", default=["curve"])
     ap.add_argument("--lo", nargs="*", type=float, default=[None])
     ap.add_argument("--dwell", nargs="*", type=float, default=[None])
     ap.add_argument("--rel", nargs="*", type=float, default=[None])

@@ -72,13 +72,17 @@ class FarServeConfig:
 
 
 @dataclass
-class PointEndConfig:
-    """Agent 3. Pose-only; the falling edge of a live score."""
-    live_hi: Optional[float] = None        # default 0.50, enter "live"
-    live_lo: Optional[float] = None        # default 0.35, leave it
-    smooth_s: Optional[float] = None       # default 4.0
-    min_live_s: Optional[float] = None     # default 2.0
-    enabled: bool = True
+class RallyConfig:
+    """Agent 3. Pose-only rally confidence -- a curve, not events.
+
+    It has no `enabled`, unlike the two serve agents, and that is deliberate:
+    since the point-end event stream was removed the orchestrator ends every
+    point off this curve, so switching it off would not disable a feature, it
+    would leave nothing able to end a point.  The knobs that decide WHERE an
+    end lands live on `ReelConfig` (`end_mode`, `end_rel`, `end_dwell_s`),
+    because that is a reel decision rather than a perception one.
+    """
+    smooth_s: Optional[float] = None       # default 5.0; see rally.SMOOTH_S
 
 
 @dataclass
@@ -91,7 +95,7 @@ class Anya2Config:
     perceive: PerceiveConfig = field(default_factory=PerceiveConfig)
     near: NearServeConfig = field(default_factory=NearServeConfig)
     far: FarServeConfig = field(default_factory=FarServeConfig)
-    end: PointEndConfig = field(default_factory=PointEndConfig)
+    rally: RallyConfig = field(default_factory=RallyConfig)
     reel: ReelConfig = field(default_factory=ReelConfig)
 
     # Cutting

@@ -72,7 +72,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 
 from parse_ground_truth import DATA_ROOT, discover, load_rallies  # noqa: E402
 
-from pipeline.anya2 import point_end as PE  # noqa: E402
 from pipeline.anya2 import rally as RC  # noqa: E402
 from pipeline.anya2.eval import clip_video, labelled_span  # noqa: E402
 
@@ -152,9 +151,12 @@ def curve(video, smooth_s=None, tracks_npz=None, arm="current"):
     only variable -- the discipline the camera-tracking A/B used.
     """
     if arm == "current":
-        parts = PE.end_signal(video, tracks_npz)
-        x = PE.live_score(parts, video, tracks_npz, smooth_s=smooth_s)
-        return np.asarray(x, dtype=float), float(parts["fps"])
+        # The pre-redesign construction, reconstructed exactly: 4 s smoothing,
+        # the single-player shim union, no absence term.  point_end.live_score
+        # is gone, but it WAS this, so the historical baseline stays runnable.
+        r = RC.compute(video, tracks_npz, smooth_s=(smooth_s or 4.0),
+                       per_slot_union=False, w_absence=0.0)
+        return np.asarray(r["conf"], dtype=float), float(r["fps"])
     if arm == "rally":
         r = RC.compute(video, tracks_npz, smooth_s=smooth_s)
         return np.asarray(r["conf"], dtype=float), float(r["fps"])

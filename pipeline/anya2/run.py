@@ -48,7 +48,7 @@ from pipeline.anya2 import camera as CAM
 from pipeline.anya2 import far_serve as FS
 from pipeline.anya2 import near_serve as NS
 from pipeline.anya2 import perceive as PC
-from pipeline.anya2 import point_end as PE
+from pipeline.anya2 import rally as RC
 from pipeline.anya2 import tracks as TR
 from pipeline.anya2.config import Anya2Config
 from pipeline.anya2.contract import dump_events
@@ -241,7 +241,7 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
     _emit(on_progress, 4, "Player motion signals")
     _end_signals(video_path, force=cfg.perceive.force)
 
-    _emit(on_progress, 5, "Detecting serves and point ends")
+    _emit(on_progress, 5, "Detecting serves and rally confidence")
     if cfg.near.enabled:
         ev = NS.detect_video(video_path, verbose=False,
                              threshold=cfg.near.threshold or NS.THRESHOLD,
@@ -255,19 +255,15 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
                              lead_s=cfg.far.lead_s, refract_s=cfg.far.refract_s,
                              w_still=cfg.far.w_still)
         dump_events(ev, os.path.join(d, f"{st}{FS.EVENTS_SUFFIX}"))
-    if cfg.end.enabled:
-        ev = PE.detect_video(video_path, verbose=False,
-                             hi=cfg.end.live_hi or PE.LIVE_HI,
-                             lo=cfg.end.live_lo, smooth_s=cfg.end.smooth_s,
-                             min_live_s=cfg.end.min_live_s)
-        dump_events(ev, os.path.join(d, f"{st}{PE.EVENTS_SUFFIX}"))
+    # Agent 3 emits no events.  It produces a CURVE, cached for the
+    # orchestrator and for anything later that wants to see it.
+    RC.save(video_path, smooth_s=cfg.rally.smooth_s)
 
     _emit(on_progress, 6, "Assembling the reel")
     # A disabled agent is disabled for the ORCHESTRATOR too, not merely skipped
     # here -- its events are cached on disk and would otherwise still be read.
     cfg.reel.use_near = cfg.near.enabled
     cfg.reel.use_far = cfg.far.enabled
-    cfg.reel.use_end = cfg.end.enabled
     res = orchestrate(video_path, cfg=cfg.reel, verbose=False)
     with open(os.path.join(d, f"{st}{SEGMENTS_SUFFIX}"), "w") as fh:
         json.dump(res, fh, indent=1)
