@@ -84,6 +84,7 @@ from pipeline.anya2 import court as C
 from pipeline import workdir as WD
 from pipeline.anya2.signals import runs as S_runs
 from pipeline.anya2 import point_end as PE
+from pipeline.anya2 import rally as RC
 from pipeline.anya2 import tracks as T
 from pipeline.anya2.contract import (FAR_SERVE, NEAR_SERVE, POINT_END,
                                      Event, load_events)
@@ -197,6 +198,43 @@ class ReelConfig:
     live_gate_far: float = 0.8
     live_gate_near: float = 0.0      # off: measured AUC 55%, not worth it
     live_lookback_s: float = 3.0
+
+    # ── how the end of a point is found ──────────────────────────────────
+    # "events": pair each start with a POINT_END event from agent 3's old
+    #           falling-edge detector.  The shipped behaviour.
+    # "curve":  walk the rally confidence curve forward from the serve and take
+    #           the first point where it falls and STAYS fallen.  See
+    #           `pair_ends_curve` and RALLY_CONFIDENCE.md.
+    end_policy: str = "curve"
+    end_lo: float = 0.15             # confidence below this counts as fallen
+    end_dwell_s: float = 1.5         # ...and must stay there this long before
+                                     # the fall is believed.  The dwell is what
+                                     # separates a lull from an end: a rally
+                                     # contains long quiet beats while the
+                                     # opponent plays the ball, and point_end.py
+                                     # measured instantaneous activity at AUC
+                                     # 38-75% for live/dead -- at or below
+                                     # chance on the hardest clips.
+    #
+    # `end_lo` swept over the 12 clips, at dwell 1.5 s.  Whole points is the
+    # unit that matters -- a point is either all there or it is not:
+    #
+    #     end_lo      whole/154    live kept    reel % of span
+    #      (null)       101         87.4%          55.4%     <-- curve ignored
+    #       0.35        115         91.8%          57.8%
+    #       0.20        133         95.1%          66.5%
+    #       0.15        138         95.6%          68.5%     <-- here
+    #       0.10        136         94.7%          70.2%
+    #
+    # The null arm sets every end from the clip's own typical duration and never
+    # reads the curve; at 101 whole points it says most of the gain here is the
+    # curve rather than the fallback.  And the peak is interior: 0.10 produces a
+    # LONGER reel and FEWER whole points than 0.15, so this is not simply "keep
+    # more footage and catch more points".
+    #
+    # Dwell is flat from 1.5 s to 3.0 s (138 whole at each); 4.0 s costs 5.
+    # 1.5 is taken because it gives the same retention in a shorter reel
+    # (68.5% against 70.7% at 2.0 s).
 
     # ── recovering points with no serve detection ────────────────────────
     recover_live_thr: float = 0.75   # live score above which play is clearly on
@@ -520,7 +558,7 @@ def estimate_point_s(segs: Sequence[Segment], cfg: ReelConfig) -> float:
     the reel, underrunning cuts live tennis out of it.
     """
     got = [s.end_t - s.serve_t for s in segs
-           if s.end_source == "detected" and s.end_t > s.serve_t]
+           if s.end_source in ("detected", "curve") and s.end_t > s.serve_t]
     if len(got) < 3:
         return cfg.default_point_s
     return float(np.percentile(got, cfg.est_duration_pct)) + cfg.est_duration_pad_s
@@ -588,6 +626,86 @@ def _pair_once(starts, et_arr, cfg, duration, est_s):
                             stop=end_t + cfg.post_roll_s,
                             serve_t=ps.t, end_t=end_t, side=ps.side,
                             end_source=src, p=ps.p))
+    return segs
+
+
+def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
+                    duration: Optional[float] = None) -> List[Segment]:
+    """End each point by walking the rally confidence curve forward.
+
+    WHY THIS REPLACES EVENT MATCHING.  `pair_ends` matches against agent 3's
+    falling-edge events, a stream with 49.6% recall -- so on half the points it
+    falls through to an estimated duration and the real end is never consulted.
+    The curve those events were collapsed FROM separates live from dead at AUC
+    89.7%.  Reading it directly is not a refinement of the matcher; it is
+    declining to throw the signal away in the first place.
+
+    THE END IS WHERE CONFIDENCE FALLS AND STAYS FALLEN.  Not where it first
+    dips: a rally contains long quiet beats while the opponent plays the ball,
+    and `point_end.py` measured that instantaneous activity separates live from
+    dead at AUC 38-75% -- at or below chance on the hardest clips.  The dwell
+    requirement is what distinguishes a lull from an end, and it is where the
+    conservatism lives.  "Prove the point is over" is a dwell, not a margin.
+
+    WHAT MAKES THIS CONSERVATIVE, precisely: the end is the START of the first
+    sustained-low run, so a point is never cut at a dip that recovers.  The
+    search is bounded below by `min_point_s` (before that the low is the serve
+    motion itself) and above by the next serve, which is the hardest evidence
+    available that this point is over.  When nothing qualifies, the fallback is
+    unchanged -- the clip's own typical duration, which overruns rather than
+    truncates.
+
+    Absence needs no special case here.  `rally.py` already folds "nobody has
+    been on court for seconds" into the curve as a veto, so an empty court
+    reads as a fall like any other.
+    """
+    n = len(conf)
+    lo = cfg.end_lo
+    dwell = max(1, int(round(cfg.end_dwell_s * fps)))
+    segs: List[Segment] = []
+    for i, ps in enumerate(starts):
+        nxt = starts[i + 1].t if i + 1 < len(starts) else None
+        t_lo = ps.t + cfg.min_point_s
+        t_hi = ps.t + cfg.max_point_s
+        if nxt is not None:
+            t_hi = min(t_hi, nxt - cfg.next_start_guard_s)
+        end_t, src = None, ""
+        a, b = int(round(t_lo * fps)), min(n, int(round(t_hi * fps)) + 1)
+        if b - a >= dwell:
+            below = conf[a:b] < lo
+            # A sustained-low run of `dwell` samples: the first index whose
+            # whole window is below the line.  Cumulative-sum rather than a
+            # Python loop so this stays cheap on a 69-minute clip.
+            c = np.concatenate(([0], np.cumsum(below.astype(np.int32))))
+            win = c[dwell:] - c[:-dwell]
+            hit = np.nonzero(win >= dwell)[0]
+            if hit.size:
+                end_t, src = (a + int(hit[0])) / fps, "curve"
+        if end_t is None:
+            est = ps.t + cfg.default_point_s
+            if nxt is not None:
+                est = min(est, nxt - cfg.next_start_guard_s)
+            end_t, src = max(t_lo, est), "estimated"
+            if duration is not None:
+                end_t = min(end_t, duration - 0.1)
+        segs.append(Segment(start=ps.t - cfg.pre_roll_s,
+                            stop=end_t + cfg.post_roll_s,
+                            serve_t=ps.t, end_t=end_t, side=ps.side,
+                            end_source=src, p=ps.p))
+    # Second pass for the points that found no fall: use THIS clip's own curve
+    # ends rather than the global default, same reasoning as `estimate_point_s`.
+    est_s = estimate_point_s([s for s in segs if s.end_source == "curve"], cfg)
+    for i, sg in enumerate(segs):
+        if sg.end_source != "estimated":
+            continue
+        nxt = starts[i + 1].t if i + 1 < len(starts) else None
+        est = sg.serve_t + est_s
+        if nxt is not None:
+            est = min(est, nxt - cfg.next_start_guard_s)
+        if duration is not None:
+            est = min(est, duration - 0.1)
+        sg.end_t = max(sg.serve_t + cfg.min_point_s, est)
+        sg.stop = sg.end_t + cfg.post_roll_s
     return segs
 
 
@@ -692,13 +810,21 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     except Exception:
         pass
 
+    # Agent 3's curve.  `rally.compute` is the promoted construction and the
+    # one that is measured; point_end.live_score is kept as the fallback so a
+    # clip whose rally artifact cannot be built still produces a reel.
     live = None
     try:
-        parts = PE.end_signal(video, tracks_npz)
-        live = PE.live_score(parts, video, tracks_npz)
-        live_fps = float(parts["fps"])
+        r = RC.compute(video, tracks_npz)
+        live = np.asarray(r["conf"], dtype=float)
+        live_fps = float(r["fps"])
     except Exception:
-        live_fps = None
+        try:
+            parts = PE.end_signal(video, tracks_npz)
+            live = PE.live_score(parts, video, tracks_npz)
+            live_fps = float(parts["fps"])
+        except Exception:
+            live_fps = None
 
     starts = merge_starts(near, far, cfg)
     n_merged = len(starts)
@@ -713,7 +839,10 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     starts = apply_neighbour_rule(starts, cfg)
     starts = enforce_service_runs(starts, cfg)
     starts = annotate_serve_court(starts, video, tracks_npz)
-    segs = pair_ends(starts, ends, cfg, duration)
+    if cfg.end_policy == "curve" and live is not None:
+        segs = pair_ends_curve(starts, live, live_fps, cfg, duration)
+    else:
+        segs = pair_ends(starts, ends, cfg, duration)
     flag_missing_points(starts, segs, cfg)
     n_raw = len(segs)
     segs = smooth(segs, cfg, duration)

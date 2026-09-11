@@ -1,7 +1,9 @@
 # Rally confidence — refocusing agent 3, and moving the reasoning into agent 4
 
-> Status: **steps 1 and 2 done.** `rally.py` is built and measured;
-> `rally_eval.py` scores it. The orchestrator rewrite (step 3) is still design.
+> Status: **steps 1-3 done.** `rally.py` is built and measured (`rally_eval.py`
+> scores the curve); the orchestrator now ends points off that curve
+> (`reel_eval.py` scores the reel). Step 4, deleting the old path, is not done
+> and should not be until the open question at the end of step 3 is settled.
 > **Clip 58 is excluded from every corpus number below**, at the user's
 > direction — it was 46% of all scored frames, so pooled rows were largely its
 > row. It is still run as a holdout where that is informative, and labelled.
@@ -323,6 +325,71 @@ This is the same arbitration shape the near serve detector's swing term uses.
 The far-activity term exists only because anya2 tracks the far player. No
 previous point-end work here could, and memory records "far-serve rallies read
 as dead" as the biggest error source of the earlier dead/live GRU.
+
+## Step 3 result: ends off the curve
+
+`orchestrator.pair_ends_curve`, selected by `ReelConfig.end_policy="curve"`.
+The end of a point is where rally confidence **falls and stays fallen** —
+the first sample whose following `end_dwell_s` are all below `end_lo`, searched
+between `min_point_s` after the serve and the next serve. The old
+event-matching path is untouched and still reachable with `end_policy="events"`.
+
+Both arms read the same cached serve detections and the same pose passes, so
+the end policy is the only variable. **12 clips, 154 labelled points.**
+
+| arm | whole points | live kept | reel % of span | dead/pt | end R | end P | **trunc** |
+|---|---|---|---|---|---|---|---|
+| `events` (shipped) | 129 / 154 | 94.9% | 63.1% | 7.3 s | 25.3% | 69.6% | **0** |
+| **`curve`** | **138 / 154** | **95.6%** | 68.5% | 8.6 s | 15.6% | 58.5% | **0** |
+
+**+9 whole points and +0.7 live retained, at zero truncations, for 5.4 points of
+extra reel length.** Per clip, six gain a whole point and six are flat: **no clip
+loses one.**
+
+### This is a trade, not a clean win
+
+End *event* accuracy gets worse — recall 25.3% → 15.6%, precision 69.6% →
+58.5%, and the number of points falling back to an estimated duration rises
+from 29 to 40. The ends the curve policy places are **later**, so fewer land
+inside the ±2 s window.
+
+Under the stated brief that is the right direction: truncations stay at zero,
+a late end costs dead time, and **a whole point is the unit a viewer notices**.
+It is recorded as a trade because a future change that improves end-event
+accuracy should not be assumed to improve the reel.
+
+**One honest negative:** clip 40 (doubles) loses live retention, 96.2% → 88.4%.
+It is the only clip that goes backwards on any reel metric.
+
+### The curve is doing the work, and the optimum is interior
+
+Two controls, because "keep more footage, catch more points" is the obvious
+confound:
+
+| end_lo | whole / 154 | live kept | reel % of span |
+|---|---|---|---|
+| null — curve never read | 101 | 87.4% | 55.4% |
+| 0.35 | 115 | 91.8% | 57.8% |
+| 0.20 | 133 | 95.1% | 66.5% |
+| **0.15** | **138** | **95.6%** | 68.5% |
+| 0.10 | 136 | 94.7% | 70.2% |
+
+The **null** arm sets every end from the clip's own typical duration and never
+reads the curve. At 101 whole points it establishes that the gain is the curve,
+not the fallback. And **0.10 produces a longer reel and fewer whole points than
+0.15**, so the peak is not a length effect. Dwell is flat 1.5–3.0 s; 1.5 s is
+taken because it reaches the same retention in a shorter reel.
+
+### Open question before step 4
+
+`end_lo` is a fixed threshold on a **per-clip normalised** curve (defect 2 —
+`SCALE_PCT` divides by the clip's own 90th percentile). That is exactly the
+portability hazard the contract section warns about, and it has not been
+tested across clips with very different live fractions. **A per-point relative
+fall** — end when confidence drops to a fraction of that point's own peak —
+would sidestep the normaliser entirely and is the first thing to try. Step 4
+deletes the old path; it should wait until this is settled, because the old
+path is the only fallback if the fixed threshold turns out not to travel.
 
 ## Orchestrator: where the reasoning moves
 
