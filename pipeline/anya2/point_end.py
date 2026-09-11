@@ -68,6 +68,22 @@ from pipeline.anya2.contract import (POINT_END, ROI_BOTH, W_AFTER_SERVE, Event,
                                      Requirement, dump_events)
 
 EVENTS_SUFFIX = "_anya2_point_end.json"
+# See near_serve.CANDIDATES_SUFFIX -- raw emission goes to its own file.
+CANDIDATES_SUFFIX = "_anya2_end_cands.json"
+# Raw emission levels.  The shipped hysteresis is a DECISION about what counts
+# as live; the arbitration layer wants the evidence that decision was made
+# from, so candidates are cut at a lower entry level, a lower exit level and a
+# shorter minimum run.  Every shipped end is still in here -- a run that clears
+# LIVE_HI clears CAND_HI too -- plus the weaker falls the shipped levels drop.
+# Lowering the entry level alone does NOT give a superset: a lower level MERGES
+# two live runs into one and so emits FEWER edges, not more (clip 22: 17 ends at
+# both 0.50 and 0.32).  The superset is the UNION over several level pairs --
+# each pair segments the live trace differently, and a real end is an edge under
+# at least one of them.
+CAND_LEVELS = ((0.50, 0.35), (0.40, 0.28), (0.32, 0.18), (0.60, 0.45))
+CAND_MIN_S = 1.0
+CAND_REFRACT_S = 2.5      # only collapse re-detections of one fall; the
+                          # shipped 6 s would thin real back-to-back ends
 WALK_SUFFIX = "_anya2_walk.npz"
 MAX_GAP_S = 0.5
 
@@ -266,7 +282,8 @@ def _hysteresis(x, hi, lo):
 
 def detect_ends(parts: Dict[str, np.ndarray], live: np.ndarray,
                 hi: float = LIVE_HI, lo: float = LIVE_LO,
-                min_s: float = LIVE_MIN_S) -> List[Dict]:
+                min_s: float = LIVE_MIN_S,
+                refract_s: Optional[float] = None) -> List[Dict]:
     """A point end is the FALLING EDGE of the live score.
 
     Not the onset of a dead state -- the falling edge.  Onsets of "looks dead"
@@ -288,27 +305,63 @@ def detect_ends(parts: Dict[str, np.ndarray], live: np.ndarray,
         after = live[b:min(len(live), b + look)]
         out.append({
             "t": b / fps,
+            # How live it actually got -- a lull inside a rally peaks lower than
+            # a real point does, and the arbitration layer reads this.
+            "live_peak": round(float(np.nanmax(live[a:b])) if b > a else 0.0, 4),
             # Confidence is how far the live score falls and stays fallen: a
             # real end drops to the floor, a lull between shots does not.
             "p": round(float(np.clip(1.0 - (after.mean() if after.size else 1.0), 0, 1)), 4),
             "rally_s": round((b - a) / fps, 2),
         })
-    return S.refractory(out, REFRACT_S)
+    return S.refractory(out, REFRACT_S if refract_s is None else float(refract_s))
 
 
 def detect_video(video, tracks_npz=None, hi: float = LIVE_HI,
                  verbose: bool = True, lo: Optional[float] = None,
                  smooth_s: Optional[float] = None,
-                 min_live_s: Optional[float] = None) -> List[Event]:
+                 min_live_s: Optional[float] = None,
+                 emit_all: bool = False) -> List[Event]:
     parts = end_signal(video, tracks_npz)
     live = live_score(parts, video, tracks_npz, smooth_s=smooth_s)
+    if emit_all:
+        # Raw emission.  A falling edge is the only construction that works here
+        # (see detect_ends), so the candidate set is the same construction read
+        # at permissive levels rather than a different one -- and each candidate
+        # carries the live level it needed, so the arbitration layer can tell a
+        # fall from real play apart from a fall from a lull.
+        pool = []
+        for hi_l, lo_l in CAND_LEVELS:
+            for e in detect_ends(parts, live, hi_l, lo_l, CAND_MIN_S,
+                                 refract_s=CAND_REFRACT_S):
+                e["levels"] = [hi_l, lo_l]
+                pool.append(e)
+        pool.sort(key=lambda e: (-e["p"], e["t"]))
+        ev = []
+        for e in pool:                      # dedupe across levels, strongest wins
+            if all(abs(e["t"] - k["t"]) >= CAND_REFRACT_S for k in ev):
+                ev.append(e)
+        ev.sort(key=lambda e: e["t"])
+        shipped = {round(e["t"], 2) for e in
+                   detect_ends(parts, live, LIVE_HI, LIVE_LO, LIVE_MIN_S)}
+        for e in ev:
+            e["flags"] = ([] if any(abs(e["t"] - t) < 0.75 for t in shipped)
+                          else ["below_live_gate"])
+        if verbose:
+            print(f"[point-end] {len(ev)} candidates "
+                  f"({len(shipped)} of them shipped-gate ends)")
+        return [Event(t=float(e["t"]), p=float(e["p"]), kind=POINT_END,
+                      track=None,
+                      detail={"rally_s": e["rally_s"], "live_peak": e["live_peak"],
+                              "levels": e["levels"], "flags": e["flags"]})
+                for e in ev]
     ev = detect_ends(parts, live, hi,
                      LIVE_LO if lo is None else float(lo),
                      LIVE_MIN_S if min_live_s is None else float(min_live_s))
     if verbose:
         print(f"[point-end] {len(ev)} ends (falling edges of the live score)")
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=POINT_END, track=None,
-                  detail={"rally_s": e["rally_s"]}) for e in ev]
+                  detail={"rally_s": e["rally_s"], "live_peak": e["live_peak"]})
+            for e in ev]
 
 
 def main() -> None:
@@ -317,12 +370,17 @@ def main() -> None:
     ap.add_argument("--tracks", default=None)
     ap.add_argument("--hi", type=float, default=LIVE_HI)
     ap.add_argument("--json", default=None)
+    ap.add_argument("--candidates", action="store_true",
+                    help="Raw emission: every falling edge at permissive levels "
+                         f"(<stem>{CANDIDATES_SUFFIX})")
     a = ap.parse_args()
-    ev = detect_video(a.video, a.tracks, a.hi)
+    ev = detect_video(a.video, a.tracks, a.hi, emit_all=a.candidates)
     for e in ev[:25]:
         print(f"  {e.t:8.2f}s  p={e.p:.3f}  rally={e.detail['rally_s']:5.1f}s")
-    out = a.json or events_path(a.video)
-    dump_events(ev, out, hi=a.hi, requirement=REQUIREMENT.__dict__)
+    out = a.json or events_path(a.video, CANDIDATES_SUFFIX if a.candidates
+                                else EVENTS_SUFFIX)
+    dump_events(ev, out, hi=a.hi, raw_emission=bool(a.candidates),
+                requirement=REQUIREMENT.__dict__)
     print(f"[point-end] wrote {out}")
 
 

@@ -93,6 +93,22 @@ SEGMENTS_SUFFIX = "_anya2_reel.json"
 
 @dataclass
 class ReelConfig:
+    # ── which decision layer ─────────────────────────────────────────────
+    use_arbitrator: bool = True
+    # `arbitrate` reads the detectors' RAW candidates and decides starts and
+    # ends together under the tennis prior, replacing the merge/rapid-repeat/
+    # toss/neighbour/service-run/pairing chain below.  Measured over the 13
+    # trusted clips against combined labelled point starts:
+    #
+    #     shipped chain, thresholded streams     R 69.4%   P 72.4%
+    #     arbitrated, raw candidates             R 82.6%   P 67.1%
+    #
+    # +13.2 points of recall for 5.3 of precision, which is the exchange this
+    # product wants: a missed start deletes a point from the reel, an extra one
+    # costs a few seconds of dead time.  Set False to go back to the chain --
+    # every function it uses is still here and still tested.
+    arb: object = None              # an arbitrate.ArbConfig; None = its defaults
+
     # ── merging the two serve streams ────────────────────────────────────
     merge_window_s: float = 2.5      # both detectors firing this close are one
                                      # serve.  Wider than it looks because the
@@ -700,6 +716,41 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     except Exception:
         live_fps = None
 
+    if cfg.use_arbitrator:
+        # The arbitration layer replaces merge -> rapid-repeat -> toss/neighbour
+        # rules -> service-run DP -> court annotation -> end pairing, all of
+        # which are per-pair heuristics over an already-thresholded stream.  It
+        # reads the RAW candidates instead and decides starts and ends together
+        # under the tennis prior.  Everything after it -- smoothing, roll,
+        # recovery from live play -- is unchanged and still runs.
+        from pipeline.anya2 import arbitrate as ARB
+        ares = ARB.decide(video, tracks_npz, cfg=cfg.arb, verbose=verbose)
+        starts = [PointStart(t=pt["start_s"], side=pt["side"], p=pt["p"],
+                             track=pt["track"], detected_side=pt["side"],
+                             court_x=pt["court_x"])
+                  for pt in ares["points"]]
+        # ENDS STAY WITH `pair_ends`, MEASURED.  The arbitrator assigns its own
+        # ends (it has to, to be usable standalone) but its duration prior is a
+        # single typical length, and over the corpus that truncates long
+        # rallies: whole points 130 -> 88 and live retained 89.0% -> 83.9% when
+        # its ends are used here.  `pair_ends` estimates a missing end from the
+        # CLIP'S OWN duration distribution at the 85th percentile, which is the
+        # thing that was tuned for exactly this failure.  So the arbitration
+        # layer decides STARTS -- where it is worth +13.2 points of recall --
+        # and hands them to the end pairing that already works.
+        segs = pair_ends(starts, ends, cfg, duration)
+        n_merged = ares["n_attempts"]
+        n_inrally = 0
+        n_rapid = ares["n_rejected"]
+        n_raw = len(segs)
+        segs = smooth(segs, cfg, duration)
+        n_before_recover = len(segs)
+        segs = recover_missed(segs, live, live_fps, cfg, duration)
+        segs = smooth(segs, cfg, duration)
+        return _result(video, stem, duration, near, far, ends, starts, segs,
+                       n_merged, n_rapid, n_inrally, n_raw, cfg, verbose,
+                       arbitrated=ares)
+
     starts = merge_starts(near, far, cfg)
     n_merged = len(starts)
     if live is not None:
@@ -720,13 +771,20 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     n_before_recover = len(segs)
     segs = recover_missed(segs, live, live_fps, cfg, duration)
     segs = smooth(segs, cfg, duration)
-    n_recovered = sum(1 for s in segs if s.end_source == "recovered")
+    return _result(video, stem, duration, near, far, ends, starts, segs,
+                   n_merged, n_rapid, n_inrally, n_raw, cfg, verbose)
 
+
+def _result(video, stem, duration, near, far, ends, starts, segs,
+            n_merged, n_rapid, n_inrally, n_raw, cfg, verbose,
+            arbitrated=None):
     src = {"detected": 0, "next-serve": 0, "default": 0}
     for s in segs:
         src[s.end_source] = src.get(s.end_source, 0) + 1
     total = sum(s.duration for s in segs)
     flips = sum(1 for s in segs if any("same-court" in n for n in s.notes))
+    if arbitrated is not None:
+        flips = arbitrated["suspected_missing"]
     conflicts = sum(1 for p in starts if p.side_conflict)
     rule1 = sum(1 for p_ in starts if p_.toss_combined is not None)
     rule2 = sum(1 for p_ in starts
@@ -749,9 +807,16 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
         "end_source": src, "reel_s": total,
         "compression": (total / duration) if duration else None,
         "suspected_missing_points": flips,
-        "n_recovered_from_live": n_recovered,
+        "n_recovered_from_live": sum(1 for s in segs
+                                     if s.end_source == "recovered"),
+        "arbitrated": arbitrated is not None,
         "segments": [asdict(s) for s in segs],
     }
+    if arbitrated is not None:
+        res["arbitration"] = {k: arbitrated[k] for k in
+                              ("n_candidates", "n_attempts", "n_points",
+                               "n_second_serves", "n_rejected",
+                               "suspected_missing")}
     if verbose:
         print(f"[reel] {stem}: {len(near)} near + {len(far)} far serves -> "
               f"{n_merged} starts ({n_rapid} rapid repeats dropped, "

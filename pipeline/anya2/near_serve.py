@@ -174,6 +174,25 @@ TROPHY_LO_FULL_BH = -0.052    # ...and near the shoulder = full credit.
                               # family (hand to cap, hand to face, a wave, a
                               # raised finger): those leave the other wrist down.
 TROPHY_SPLIT_MIN_BH = 0.149   # hands must have come apart to score at all
+# ...but "apart" was read as distance IN THE IMAGE, and that is a projection, not
+# a shape.  On Data/80 the near player serving from the DEUCE court is nearly
+# edge-on to the camera — the shoulders project 0.02-0.09 body heights wide
+# against 0.13 on the ad side — so both arms fall on the same image ray and the
+# wrists sit 0.06-0.09 apart at the trophy, under the line above, while every
+# other term clears comfortably (hi_head +0.15, lo_elev +0.18 at 6:25).  The
+# hands DID come apart; the camera cannot see that they did, and the product
+# then reads zero through the whole serve.  The only trophy run left is a blip
+# after the arms come down, whose swing window is empty — which is why these
+# score 0.32-0.68 rather than ~1.0 and fall under THRESHOLD.
+#
+# VERTICAL separation survives the yaw that collapses the horizontal one, so the
+# split is satisfied by EITHER measure.  Over the 13 labelled clips this is
+# recall 86.0% -> 88.8% for 0.6 of precision (74.8% -> 74.2%); on Data/80 it
+# recovers 14 serves, every one of them deuce-side.  The exact line is a pick
+# within noise -- 0.04/0.05/0.06 move corpus recall 88.8/86.9/87.9%, which is
+# one to three serves out of 107 -- so do not re-tune it on the corpus alone.
+TROPHY_SPLIT_DY_MIN_BH = 0.04  # ...or this far apart VERTICALLY, which a
+TROPHY_SPLIT_DY_SPAN_BH = 0.07 # rotated body does not hide.  Full credit at +span.
 TROPHY_MIN = 0.35             # run threshold for calling a sample "trophy"
 
 # THE TROPHY IS A PHASE, NOT AN INSTANT.
@@ -429,6 +448,7 @@ def serve_primitives(kp, bbox, fps: float,
     hi_side = np.where(both, np.where(elev_l >= elev_r, 1.0, -1.0), 0.0)
 
     gap_bh = np.linalg.norm(l_wri - r_wri, axis=1) / h
+    split_dy_bh = np.abs(l_wri[:, 1] - r_wri[:, 1]) / h   # see TROPHY_SPLIT_DY_MIN_BH
 
     # ── limb quiet, for the ready phase ──────────────────────────────────
     # Relative to the hip, so a player walking into position does not read as
@@ -458,10 +478,12 @@ def serve_primitives(kp, bbox, fps: float,
     # term bounded in [0, 1], so the product is still a score and not a
     # quantity that a noisy keypoint can drive arbitrarily high.
     dil = max(1, int(round(TROPHY_DILATE_S * fps)) * 2 + 1)
+    split = np.fmax(_ramp(gap_bh, TROPHY_SPLIT_MIN_BH, TROPHY_SPLIT_MIN_BH + 0.12),
+                    _ramp(split_dy_bh, TROPHY_SPLIT_DY_MIN_BH,
+                          TROPHY_SPLIT_DY_MIN_BH + TROPHY_SPLIT_DY_SPAN_BH))
     trophy = (_movmax(_ramp(hi_head, TROPHY_HEAD_MIN_BH, TROPHY_ABOVE_HEAD_BH), dil)
               * _movmax(_ramp(lo_elev, TROPHY_LO_MIN_BH, TROPHY_LO_FULL_BH), dil)
-              * _movmax(_ramp(gap_bh, TROPHY_SPLIT_MIN_BH,
-                              TROPHY_SPLIT_MIN_BH + 0.12), dil))
+              * _movmax(split, dil))
 
     if court_y is not None:
         cy = np.asarray(court_y, dtype=np.float64)
@@ -484,7 +506,7 @@ def serve_primitives(kp, bbox, fps: float,
         "head_l": head_l, "head_r": head_r,
         "hi_elev": hi_elev, "lo_elev": lo_elev, "hi_head": hi_head,
         "hi_side": hi_side,
-        "gap_bh": gap_bh,
+        "gap_bh": gap_bh, "split_dy_bh": split_dy_bh,
         "still": still,
         "on_court": on_court,
         "fps": np.float64(fps),
@@ -532,7 +554,8 @@ def detect_serves(prim: Dict[str, np.ndarray],
                   require_court: bool = True,
                   track: Optional[int] = None,
                   lead_s: Optional[float] = None,
-                  refract_s: Optional[float] = None) -> List[Dict]:
+                  refract_s: Optional[float] = None,
+                  emit_all: bool = False) -> List[Dict]:
     """Sequence-match ready -> trophy -> swing over the primitives.
 
     Each trophy run is one candidate.  The run's peak sample fixes the trophy
@@ -544,6 +567,14 @@ def detect_serves(prim: Dict[str, np.ndarray],
 
     Returns dicts with `t` (trophy onset — see `serve_t` below), `p`, the three
     component scores, and the phase timestamps, sorted by time.
+
+    RAW EMISSION.  With `emit_all` nothing is filtered: every trophy run is
+    returned, including the ones below `threshold`, the ones outside the serve
+    zone, and the ones a refractory window would have swallowed.  Each carries a
+    `flags` list saying which of those it failed, so the arbitration layer can
+    weigh a candidate this detector would have thrown away.  The detector's own
+    judgement is not lost — it is recorded rather than applied.  Default is off,
+    so every existing caller keeps the thresholded stream it expects.
     """
     fps = float(prim["fps"])
     trophy, ready = prim["trophy"], prim["ready"]
@@ -551,7 +582,7 @@ def detect_serves(prim: Dict[str, np.ndarray],
 
     tro = np.nan_to_num(trophy, nan=0.0)
     cand = tro >= TROPHY_MIN
-    if require_court:
+    if require_court and not emit_all:
         cand = cand & prim["on_court"]
 
     back_lo, back_hi = int(round(READY_BACK_MAX_S * fps)), int(round(READY_BACK_MIN_S * fps))
@@ -589,10 +620,16 @@ def detect_serves(prim: Dict[str, np.ndarray],
         # 1.0, then gated by the swing — see the SWING_FLOOR comment.
         shape = (W_TROPHY * s_trophy + W_READY * s_ready) / (W_TROPHY + W_READY)
         p = shape * (SWING_FLOOR + (1.0 - SWING_FLOOR) * s_swing)
+        flags = []
         if p < threshold:
-            continue
+            if not emit_all:
+                continue
+            flags.append("below_threshold")
+        if require_court and not bool(prim["on_court"][lo:hi].any()):
+            flags.append("off_court")
         t_start, basis = serve_onset(prim, k, lead_s=lead_s)
         out.append({
+            "flags": flags,
             "t": t_start,                     # POINT START: see SERVE_LEAD_S
             "t_basis": basis,
             "p": round(p, 4),
@@ -615,6 +652,9 @@ def detect_serves(prim: Dict[str, np.ndarray],
     for e in out:
         if all(abs(e["t"] - k["t"]) >= gap for k in kept):
             kept.append(e)
+        elif emit_all:
+            e["flags"].append("refracted")
+            kept.append(e)
     kept.sort(key=lambda e: e["t"])
     return kept
 
@@ -635,6 +675,10 @@ from pipeline.anya2.contract import (          # noqa: E402
     NEAR_SERVE, ROI_NEAR, W_BETWEEN, Event, Requirement, dump_events)
 
 EVENTS_SUFFIX = "_anya2_near_serve.json"
+# Raw emission: every candidate, flagged rather than filtered.  A separate
+# file so the thresholded stream every existing consumer reads stays exactly
+# what it was, and the two can be scored against each other.
+CANDIDATES_SUFFIX = "_anya2_near_cands.json"
 
 # What this detector needs from perception.  Pose-only is not an accident: the
 # seed establishes that the serve MOTION is what separates a server from a
@@ -653,7 +697,8 @@ def events_path(video, suffix=EVENTS_SUFFIX):
 def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
                  require_court: bool = True, verbose: bool = True,
                  lead_s: Optional[float] = None,
-                 refract_s: Optional[float] = None):
+                 refract_s: Optional[float] = None,
+                 emit_all: bool = False):
     """Score every near slot and return the serves, as contract `Event`s.
 
     DOUBLES IS WHY THIS IS A LOOP.  Each near slot is scored independently and
@@ -683,7 +728,22 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
                                 eligible=el[:, slot])
         ev = detect_serves(prim, threshold=threshold,
                            require_court=require_court, track=int(slot),
-                           lead_s=lead_s, refract_s=refract_s)
+                           lead_s=lead_s, refract_s=refract_s,
+                           emit_all=emit_all)
+        # WHERE the server stood, measured AT THE TROPHY.  The orchestrator's
+        # deuce/ad alternation prior is only as good as this number, and the
+        # existing `annotate_serve_court` takes it from a 3 s window opening at
+        # the lead-subtracted start -- which is before the server has settled,
+        # and on the near side is partly the walk-in.  At the trophy the two
+        # court halves separate cleanly (on Data/80, 2.6-3.3 m against
+        # 4.3-5.0 m); over that earlier window they do not.
+        for e in ev:
+            k = int(round(e["t_trophy"] * fps))
+            if 0 <= k < len(ct):
+                x = float(ct[k, slot, 0])
+                e["court_x"] = round(x, 3) if np.isfinite(x) else None
+            else:
+                e["court_x"] = None
         if verbose:
             print(f"[near-serve] slot {slot}: tracked {100 * seen.mean():5.1f}%"
                   f"  eligible {100 * el[:, slot][seen].mean():5.1f}%"
@@ -702,13 +762,18 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
     for e in raw:
         if all(abs(e["t"] - k["t"]) >= gap for k in kept):
             kept.append(e)
+        elif emit_all:
+            e["flags"].append("refracted_cross_slot")
+            kept.append(e)
     kept.sort(key=lambda e: e["t"])
 
+    keys = ("trophy", "swing", "ready", "t_trophy", "t_contact", "toss_arm",
+            "t_basis", "court_x")
+    if emit_all:
+        keys += ("flags",)
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=NEAR_SERVE,
                   track=e["track"],
-                  detail={k: e[k] for k in
-                          ("trophy", "swing", "ready", "t_trophy",
-                           "t_contact", "toss_arm", "t_basis")})
+                  detail={k: e.get(k) for k in keys})
             for e in kept]
 
 
@@ -725,18 +790,23 @@ def main() -> None:
                     help="Disable the baseline gate (expect smashes)")
     ap.add_argument("--json", default=None,
                     help=f"Write events here (default: <stem>{EVENTS_SUFFIX})")
+    ap.add_argument("--candidates", action="store_true",
+                    help="Raw emission: every candidate, nothing filtered, each "
+                         f"flagged with what it failed (<stem>{CANDIDATES_SUFFIX})")
     a = ap.parse_args()
 
     ev = detect_video(a.video, a.tracks, threshold=a.threshold,
-                      require_court=not a.no_court)
+                      require_court=not a.no_court, emit_all=a.candidates)
     print(f"[near-serve] {len(ev)} serves at p >= {a.threshold}")
     for e in ev:
         d = e.detail
         print(f"  {e.t:8.2f}s  p={e.p:.3f}  slot={e.track}  "
               f"trophy={d['trophy']:.2f} swing={d['swing']:.2f} "
               f"ready={d['ready']:.2f}  toss={d['toss_arm']:5s}")
-    out = a.json or events_path(a.video)
+    out = a.json or events_path(a.video, CANDIDATES_SUFFIX if a.candidates
+                                else EVENTS_SUFFIX)
     dump_events(ev, out, fps=None, threshold=a.threshold,
+                raw_emission=bool(a.candidates),
                 requirement=REQUIREMENT.__dict__)
     print(f"[near-serve] wrote {out}")
 

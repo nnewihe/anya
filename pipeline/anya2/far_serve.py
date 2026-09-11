@@ -98,6 +98,8 @@ from pipeline.anya2.contract import (FAR_SERVE, ROI_FAR, W_BETWEEN, Event,
                                      Requirement, dump_events)
 
 EVENTS_SUFFIX = "_anya2_far_serve.json"
+# See near_serve.CANDIDATES_SUFFIX -- raw emission goes to its own file.
+CANDIDATES_SUFFIX = "_anya2_far_cands.json"
 MAX_GAP_S = 0.5
 KP_CONF = 0.20            # keypoint confidence floor.  Higher than the near
                           # side's implicit 0: at this scale a low-confidence
@@ -405,14 +407,19 @@ def detect_serves(prim, threshold: float = THRESHOLD,
                   track: Optional[int] = None,
                   lead_s: Optional[float] = None,
                   refract_s: Optional[float] = None,
-                  w_still: Optional[float] = None) -> List[Dict]:
-    """Sequence-match ready -> trophy -> swing, as `near_serve.detect_serves`."""
+                  w_still: Optional[float] = None,
+                  emit_all: bool = False) -> List[Dict]:
+    """Sequence-match ready -> trophy -> swing, as `near_serve.detect_serves`.
+
+    `emit_all` is the raw emission -- see `near_serve.detect_serves`.  Nothing
+    is filtered; each candidate carries a `flags` list of what it failed.
+    """
     fps = float(prim["fps"])
     trophy, ready = prim["trophy"], prim["ready"]
     n = len(trophy)
     tro = np.nan_to_num(trophy, nan=0.0)
     cand = tro >= TROPHY_MIN
-    if require_court:
+    if require_court and not emit_all:
         cand = cand & prim["on_court"]
 
     back_lo = int(round(READY_BACK_MAX_S * fps))
@@ -461,9 +468,15 @@ def detect_serves(prim, threshold: float = THRESHOLD,
         p = shape * (SWING_FLOOR + (1.0 - SWING_FLOOR) * s_swing)
         ws = W_STILL if w_still is None else float(w_still)
         p *= (1.0 - ws) + ws * s_still
+        flags = []
         if p < threshold:
-            continue
+            if not emit_all:
+                continue
+            flags.append("below_threshold")
+        if require_court and not bool(prim["on_court"][lo:hi].any()):
+            flags.append("off_court")
         out.append({
+            "flags": flags,
             "t": lo / fps - (SERVE_LEAD_S if lead_s is None else float(lead_s)),
             "p": round(p, 4),
             "trophy": round(s_trophy, 4), "swing": round(s_swing, 4),
@@ -473,18 +486,26 @@ def detect_serves(prim, threshold: float = THRESHOLD,
             "t_contact": round(t_contact, 3) if t_contact is not None else None,
             "track": track,
         })
-    return S.refractory(out, REFRACT_S if refract_s is None else float(refract_s))
+    gap = REFRACT_S if refract_s is None else float(refract_s)
+    if not emit_all:
+        return S.refractory(out, gap)
+    strong = {id(e) for e in S.refractory(out, gap)}
+    for e in out:
+        if id(e) not in strong:
+            e["flags"].append("refracted")
+    return sorted(out, key=lambda e: e["t"])
 
 
 def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
                  require_court: bool = True, verbose: bool = True,
                  lead_s: Optional[float] = None,
                  refract_s: Optional[float] = None,
-                 w_still: Optional[float] = None):
+                 w_still: Optional[float] = None,
+                 emit_all: bool = False):
     """Score every far slot; the server is whichever produced the candidate."""
     z = T.load(video, tracks_npz)
     fps = float(z["fps"])
-    kp, bbox, el = z["kp"], z["bbox"], z["eligible"]
+    kp, bbox, el, ct = z["kp"], z["bbox"], z["eligible"], z["court"]
 
     raw: List[Dict] = []
     for slot in T.FAR_SLOTS:
@@ -496,19 +517,35 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
         prim = serve_primitives(kp[:, slot], bbox[:, slot], fps,
                                 eligible=el[:, slot])
         ev = detect_serves(prim, threshold, require_court, track=int(slot),
-                           lead_s=lead_s, refract_s=refract_s, w_still=w_still)
+                           lead_s=lead_s, refract_s=refract_s, w_still=w_still,
+                           emit_all=emit_all)
+        # Which half the far server stood in, read AT THE TROPHY -- see the
+        # same block in near_serve.detect_video for why not at the start.
+        for e in ev:
+            k = int(round(e["t_trophy"] * fps))
+            x = float(ct[k, slot, 0]) if 0 <= k < len(ct) else float("nan")
+            e["court_x"] = round(x, 3) if np.isfinite(x) else None
         if verbose:
             print(f"[far-serve] slot {slot}: tracked {100 * seen.mean():5.1f}%"
                   f"  sane boxes {100 * np.mean(prim['valid']):5.1f}%"
                   f"  -> {len(ev)} candidates")
         raw.extend(ev)
 
-    kept = S.refractory(raw, REFRACT_S if refract_s is None else float(refract_s))
+    gap = REFRACT_S if refract_s is None else float(refract_s)
+    if emit_all:
+        strong = {id(e) for e in S.refractory(raw, gap)}
+        for e in raw:
+            if id(e) not in strong:
+                e["flags"].append("refracted_cross_slot")
+        kept = sorted(raw, key=lambda e: e["t"])
+    else:
+        kept = S.refractory(raw, gap)
+    keys = ("trophy", "swing", "ready", "still", "toss", "toss_parts",
+            "t_trophy", "t_contact", "court_x")
+    if emit_all:
+        keys += ("flags",)
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=FAR_SERVE,
-                  track=e["track"],
-                  detail={k: e[k] for k in ("trophy", "swing", "ready",
-                                            "still", "toss", "toss_parts",
-                                            "t_trophy", "t_contact")})
+                  track=e["track"], detail={k: e.get(k) for k in keys})
             for e in kept]
 
 
@@ -519,15 +556,21 @@ def main() -> None:
     ap.add_argument("--threshold", type=float, default=THRESHOLD)
     ap.add_argument("--no-court", action="store_true")
     ap.add_argument("--json", default=None)
+    ap.add_argument("--candidates", action="store_true",
+                    help="Raw emission: every candidate, nothing filtered "
+                         f"(<stem>{CANDIDATES_SUFFIX})")
     a = ap.parse_args()
-    ev = detect_video(a.video, a.tracks, a.threshold, not a.no_court)
+    ev = detect_video(a.video, a.tracks, a.threshold, not a.no_court,
+                      emit_all=a.candidates)
     print(f"[far-serve] {len(ev)} serves at p >= {a.threshold}")
     for e in ev[:40]:
         d = e.detail
         print(f"  {e.t:8.2f}s  p={e.p:.3f}  slot={e.track}  "
               f"trophy={d['trophy']:.2f} swing={d['swing']:.2f} ready={d['ready']:.2f}")
-    out = a.json or events_path(a.video)
-    dump_events(ev, out, threshold=a.threshold, requirement=REQUIREMENT.__dict__)
+    out = a.json or events_path(a.video, CANDIDATES_SUFFIX if a.candidates
+                                else EVENTS_SUFFIX)
+    dump_events(ev, out, threshold=a.threshold, raw_emission=bool(a.candidates),
+                requirement=REQUIREMENT.__dict__)
     print(f"[far-serve] wrote {out}")
 
 

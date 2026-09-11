@@ -946,6 +946,176 @@ important caveat that 5 near serves is a small sample, and that clip 35 is a
 holdouts exposed is specific to FULL-LENGTH MATCHES (clip 58), and clip 35 does
 not test that.
 
+## Raw emission, and an arbitration layer that knows tennis (2026-09-11)
+
+The three detectors each applied a threshold and a refractory window and wrote
+only the survivors. **The candidates they were throwing away contain 13.6 points
+of point-start recall.** Measured over the 13 trusted clips, against all 235
+labelled point starts, at ±2 s:
+
+| | recall of the pool |
+|---|---|
+| near serve, thresholded / raw | 88.8% / **92.5%** |
+| far serve, thresholded / raw | 64.8% / **87.5%** |
+| **all point starts, thresholded / raw** | **76.6% / 90.2%** |
+| point end, thresholded / raw | 49.0% / 62.5% |
+
+Every detector now takes `emit_all=True` (`--candidates` on the CLI) and writes
+every candidate to its own file — `_anya2_near_cands.json`, `_anya2_far_cands.json`,
+`_anya2_end_cands.json` — each flagged with what it failed (`below_threshold`,
+`off_court`, `refracted`) rather than deleted. The shipped event files are
+untouched, so every existing consumer and every number above this line still
+means what it did.
+
+One caveat on the ceiling: `eval.match_events` is greedy one-to-one, so a large
+candidate pool can have a nearby candidate steal a label from the right one.
+Clip 43's near pool scores 66.7% raw against 100% thresholded for exactly that
+reason. The pooled ceiling is therefore a slight **under**-statement.
+
+### What the prior is, and what it is worth
+
+`arbitrate.py` reads the raw pools and decides starts with a Viterbi over serve
+attempts, state `(anchor, server, court, run length)`. Four pieces of tennis:
+
+- **a game is a run** — one player serves a whole game
+- **the court alternates** — every point, without exception
+- **a fault is a serve from the same court** — so a same-court repeat at a
+  fault-shaped gap is expected, not evidence of a missed point
+- **points have a period** — a 90 s hole is a claim that nothing happened
+
+Ablated over all 13 clips, combined point starts:
+
+| | recall | precision |
+|---|---|---|
+| evidence only, at the shipped thresholds | 72.8% | 69.2% |
+| evidence only, raw pool, no prior | 86.8% | 53.4% |
+| **full prior** | **82.6%** | **67.1%** |
+| no service-run structure | 87.2% | 60.3% |
+| no court alternation | 83.8% | 64.2% |
+| no gap/period prior | 83.8% | 65.9% |
+| no fault exemption | 77.9% | 70.7% |
+| absorbing second serves into their point | 72.3% | 70.0% |
+
+Read the first and third rows together: **the layer is worth +9.8 recall for 2.1
+of precision** against what ships today. Rows 2 and 3 say what the prior itself
+does — it is a precision mechanism, buying 13.7 points of it for 4.3 of recall.
+Every structural piece contributes precision; the fault exemption is the only
+one that contributes recall, and it contributes 4.7.
+
+### The court alternation is real — measured on labels, not on detections
+
+The existing `annotate_serve_court` reads the court from a 3 s window opening at
+the lead-subtracted start and finds serves flip a mean of 63% of the time,
+"weak enough that this is a hint and not a finding". Read **at the trophy**
+instead, over 140 consecutive same-server *labelled* pairs:
+
+| | n | flips |
+|---|---|---|
+| a real next point (gap > 28 s) | 60 | **91.7%** |
+| fault-shaped (gap < 28 s) | 80 | 57.5% |
+
+Both halves are the tennis. Consecutive points alternate; a fault and its
+second serve do not. The 91.7% holds at every distance from the centre line
+(88.9 / 95.2 / 91.7% at 0.35–1 / 1–2 / 2+ m), so it is not an artefact of easy
+geometry. **The old 63% was one measurement conflating the two cases at a bad
+moment of the serve.**
+
+Where it still fails is measurement, not tennis: the court reads "unknown" on
+21% of labelled serves corpus-wide, and on Data/80 for 32 of 165 points,
+because that server stands within 0.35 m of the centre mark on the deuce side.
+
+### Two things the corpus settled that were designed the other way
+
+**1. A fault and its second serve are TWO labelled point starts.** The solver
+was built to absorb the second serve into the point its fault opened — which is
+what tennis means and arguably what a reel wants. It is not what the labels say:
+on clip 22 all five missed starts were attempts that had been absorbed, each
+with a strong detection at the labelled time (64.1 s and 72.4 s, both labelled,
+8.3 s apart, same court). Absorption is off by default, and costs 10.2 points
+of recall when on.
+
+**2. Every structural term must be a COST, never a reward.** A reward per
+accepted point makes a longer path score higher for being longer — a bias toward
+over-acceptance wearing the costume of evidence. Detector confidence is the only
+term that may add to a path score. Fixing this was worth 3 points of precision
+at flat recall.
+
+### The parameters do not want tuning
+
+400-sample random search over 12 weights, fit on 9 clips, scored on 4 held out
+(23, 35, 40, 58 — a far-only clip, the out-of-sample clip, the doubles clip and
+the full match):
+
+| | TRAIN R / P / F2 | HELD-OUT R / P / F2 |
+|---|---|---|
+| best 5 fitted configs | 89.6–93.4% / 74.4–81.2% / 87.5–**88.9** | 76.0–79.1% / 47.6–60.6% / 62.8–**73.4** |
+| **hand-set defaults** | 85.8% / 76.5% / 83.8 | **79.8% / 60.6% / 75.1** |
+
+Every fitted config beats the defaults on TRAIN by up to 5 points of F2 and
+**every one of them loses on the held-out clips.** 154 labelled starts do not
+constrain 12 weights, and coordinate ascent additionally drives `w_alternation`
+to zero by raising `w_evidence` first until the structural terms round off.
+
+So no fitted configuration ships. The defaults in `ArbConfig` are set from what
+each term means, and the measurement above is the reason to leave them there.
+The ablation, not the sweep, is what says which parts matter.
+
+### End to end
+
+Ends stay with `pair_ends`. The arbitrator assigns its own — it has to be usable
+standalone — but its duration prior is a single typical length, and used in the
+reel it truncates long rallies: whole points 130 → 88, live retained 89.0% →
+83.9%. `pair_ends` estimates a missing end from the clip's own duration
+distribution, which is the thing that was tuned for exactly this. So the layer
+decides STARTS and hands them over.
+
+Over the 11 clips that have end signals, 208 labelled points:
+
+| | shipped chain | arbitrated |
+|---|---|---|
+| points whole | 130 | **132** |
+| partially cut | 70 | **69** |
+| **missing entirely** | 8 | **7** |
+| live retained | 89.0% | **90.1%** |
+| reel share of source | **51.6%** | 54.1% |
+| recovered from live play alone | 28 | **21** |
+
+The product gain is much smaller than the 13.2 points of start recall, and the
+last row is why: **`recover_missed` was already papering over the detectors'
+missed starts.** Seven points that used to be rescued by the live score — with
+no serve anchor and therefore no proper boundary — now arrive as detections.
+That is a quality change the whole-point count cannot show.
+
+Data/80 (66 min, unlabelled): 155 + 230 serve candidates → 261 attempts → **165
+points**, 96 attempts rejected, 114 segments, 43% of source.
+
+### The truncation count was measuring nothing (2026-09-11)
+
+`eval.score` counts a truncation as a MATCHED end with `err < -TRUNC_S`, and
+`TRUNC_S` is 2.0 -- the same value as `TOL_S`. A matched pair has `|err| <= 2.0`
+by construction, so `err < -2.0` cannot occur. **Every "0 truncations" in this
+file is arithmetically guaranteed and says nothing about the detector**,
+including the row that compares the pose-only ends against the shipped
+ball-trace policy. Neither arm could ever have scored anything else.
+
+Truncation is about DELETED TENNIS, so it has to be measured on the reel's
+coverage of each labelled rally, not on the matching. Over all 235 labelled
+rallies (43.9 min of live play), counting a rally as truncated when the segments
+covering it stop more than 2 s before its labelled end:
+
+| | shipped chain | arbitrated |
+|---|---|---|
+| live retained | 83.0% | **87.7%** |
+| rallies absent from the reel | 24 | **10** |
+| **rallies cut >2 s short at the end** | **19** (155 s) | **15** (101 s) |
+| rallies joined >2 s late | 8 (97 s) | 11 (106 s) |
+
+So truncation is real, it was always real, and the arbitrated layer reduces it
+-- but the direction of the trade is visible in the last row: more starts means
+a few more points joined slightly late. `eval.TRUNC_S` should be raised above
+`TOL_S` or the metric dropped; it is left alone here because changing it would
+silently rewrite every number above it.
+
 ## Usage
 
 ```bash
