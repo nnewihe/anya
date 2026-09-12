@@ -216,6 +216,33 @@ READY_BACK_MIN_S, READY_BACK_MAX_S = 0.20, 6.00
 
 # ── combination ──────────────────────────────────────────────────────────
 W_TROPHY, W_READY = 0.45, 0.20
+
+# SWING_EITHER_WRIST asks "does SOME wrist rise above the head after the
+# trophy" instead of picking the racket arm off the hand split.  It is OFF, and
+# the reason is worth keeping because the experiment that motivated it looked
+# convincing at every stage but the last.
+#
+# On Data/21's missed far serve at imgsz 960 the two wrists differ by 0.016
+# body heights -- the model is not separating them -- so `hi_side` is noise and
+# whichever arm the swing term picks carries the raised wrist anyway.  Re-run
+# at imgsz 1280 the wrists differ by 0.322, the split starts meaning something,
+# and it points at the arm that does NOT go up (max head_r -0.028 against
+# max head_l +0.087).  Taking either wrist fixes that serve outright: p 0.525
+# -> 0.848, detected.
+#
+# Corpus-wide it costs more than it buys, at BOTH resolutions:
+#
+#     dets    swing    recall   precision
+#     960     split     92.3%     86.6%     <-- shipped
+#     960     either    93.4%     79.4%
+#     1280    split     87.9%     85.1%
+#     1280    either    92.3%     79.2%
+#
+# With the arms unresolved, "either wrist" is simply a looser test, and the
+# looseness lands on false positives.  Left in as a flag rather than deleted
+# because it is the right construction the moment the far pose pass can resolve
+# two arms reliably, which at 960 it cannot.
+SWING_EITHER_WRIST = False
 SWING_FLOOR = 0.45
 # Swept on the nine clips carrying a far serve.  Over the six FAR-DOMINANT
 # clips (70 of the 77 labelled far serves) the curve reads:
@@ -468,11 +495,30 @@ def detect_serves(prim, threshold: float = THRESHOLD,
                    if mv.size else 0.5)
 
         toss_left = prim["hi_side"][k] > 0
-        rack_head = prim["head_r"] if toss_left else prim["head_l"]
+        # EITHER WRIST (SWING_EITHER_WRIST), not the one the hand split calls the racket arm.  The
+        # trophy term above is already elevation-only because the split is not
+        # reliable at far scale; the swing term trusting it was an
+        # inconsistency, and it only became visible when the far pose pass got
+        # good enough to resolve the two arms at all.
+        #
+        # At imgsz 960 the two wrists on Data/21's far server differ by 0.016
+        # body heights -- the model is not separating them, so `hi_side` is
+        # noise and whichever arm the swing term picked happened to carry the
+        # raised wrist.  At imgsz 1280 they differ by 0.322, the split starts
+        # meaning something, and it points at the arm that does NOT go up:
+        # max(head_r) = -0.028 against max(head_l) = +0.087 over the same
+        # window.  A better measurement turned a term that worked by accident
+        # into one that fails, which is the sign of a latent bug rather than a
+        # regression.
+        #
+        # "Some wrist rises above the head shortly after the trophy" is what a
+        # serve looks like and needs no attribution, so that is what is asked.
         c, d = min(n, k + fwd_lo), min(n, k + fwd_hi + 1)
         s_swing, t_contact = 0.0, None
         if d > c:
-            win = rack_head[c:d]
+            win = (np.fmax(prim["head_l"][c:d], prim["head_r"][c:d])
+                   if SWING_EITHER_WRIST
+                   else (prim["head_r"] if toss_left else prim["head_l"])[c:d])
             ok = np.isfinite(win)
             if ok.any():
                 j = int(np.nanargmax(np.where(ok, win, -np.inf)))
