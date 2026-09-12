@@ -1,5 +1,14 @@
 # Rally confidence — refocusing agent 3, and moving the reasoning into agent 4
 
+> **Numbers corrected 2026-09-12.** Every reel figure below was first measured
+> against serve-event JSONs that predated this branch's far-serve work, and was
+> therefore stale. Regenerated from the current detectors the reel is
+> **140/154 whole points, 95.7% live retained, 71.6% of span, 0 truncations**.
+> The tables below keep the arms' RELATIVE ordering, which is what each
+> decision turned on, but their absolute values are the stale ones except where
+> a row says otherwise. Regenerate the event JSONs before trusting any reel
+> number: they go stale silently and a stale run looks exactly like a real one.
+
 > Status: **done.** All four steps. `rally.py` is built and measured
 > (`rally_eval.py` scores the curve), the orchestrator ends points off that
 > curve (`reel_eval.py` scores the reel), and `point_end.py` is deleted.
@@ -638,10 +647,13 @@ shipped path consults them.
 | | start | now |
 |---|---|---|
 | curve, mean per-clip AUC | 87.7% | **90.0%** |
-| whole points | 129 / 154 | **139 / 154** |
-| live retained | 94.8% | **96.5%** |
-| blind duration estimates | 29 / 154 | **8 / 154** |
+| whole points | 129 / 154 | **140 / 154** |
+| live retained | 94.8% | **95.7%** |
+| blind duration estimates | 29 / 154 | **10 / 154** |
 | truncations | 0 | **0** |
+
+(Both columns re-measured on fresh serve events; see the correction note at the
+top of this file.)
 
 ## Should the ball feed rally confidence?
 

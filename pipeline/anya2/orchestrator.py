@@ -413,11 +413,12 @@ class ReelConfig:
     # is the opposite of what deleting point starts should do:
     #
     #     min_adjusted_p   gated   whole/154   live kept   reel % of span
-    #         0.00 (off)     0       133         96.4%        74.6%
-    #         0.55           5       137         97.0%        75.1%
-    #         0.70           8       140         97.3%        75.3%     <-- here
-    #         0.90          12       140         96.7%        74.0%
-    #         0.95          20       138         96.1%        73.7%
+    #         0.00 (off)     0       137         95.6%        72.1%
+    #         0.55           3       139         95.7%        71.5%
+    #         0.65           5       140         95.7%        71.6%
+    #         0.70           5       140         95.7%        71.6%     <-- here
+    #         0.80           7       138         95.1%        71.0%
+    #         0.90          18       135         94.1%        68.9%
     #
     # The reason is that a phantom serve inside a real point SPLITS the segment
     # covering that point: the next start bounds the previous end, so a
@@ -426,14 +427,17 @@ class ReelConfig:
     # That is the same "a point is not live twice" fact `suppress_in_rally`
     # uses, arriving here through the confidence the two rules compute.
     #
-    # 0.70 is the bottom of the 0.70-0.90 plateau, so it takes the entire gain
-    # while deleting the fewest starts.  Audited at 0.70 it drops 8: SEVEN
-    # phantoms (2.85-22.51 s from any labelled start) and ONE real point start
-    # (clip 38 at 161.40 s, 1.90 s from a label, demoted by the toss rule).
-    # That single loss is stated rather than smoothed over -- it is a real
-    # point start being deleted, which nothing else in this module is allowed
-    # to do -- and the reel is better with the gate than without it on every
-    # measure: +7 whole points, +0.9 live retained, 8 fewer segments.
+    # 0.70 sits inside the 0.65-0.70 plateau and falls off on both sides, so it
+    # is an interior optimum rather than a direction.
+    #
+    # MEASURED TWICE, AND THE FIRST TIME WAS WRONG.  The first sweep ran against
+    # serve-event JSONs that predated the far-serve work in this branch (the
+    # merged far timeline, the dilated court gate, the baseline x gate), and it
+    # reported the gate as worth +7 whole points over a 0.70-0.90 plateau.
+    # Regenerated from the current detectors it is worth +3 over a narrower
+    # plateau. The conclusion held; the magnitude did not. Regenerate the event
+    # JSONs before trusting any reel number -- they go stale silently, and a
+    # stale run looks exactly like a real one.
     min_adjusted_p: float = 0.70     # 0 = off
 
 
