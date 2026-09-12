@@ -92,6 +92,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pipeline import workdir as WD
 
+from pipeline.anya2 import court as C
 from pipeline.anya2 import signals as S
 from pipeline.anya2 import tracks as T
 from pipeline.anya2.contract import (FAR_SERVE, ROI_FAR, W_BETWEEN, Event,
@@ -243,6 +244,50 @@ W_TROPHY, W_READY = 0.45, 0.20
 # because it is the right construction the moment the far pose pass can resolve
 # two arms reliably, which at 960 it cannot.
 SWING_EITHER_WRIST = False
+
+# ── the far baseline's own x extent ──────────────────────────────────────
+# `court.in_bounds` -- the gate `tracks.eligible` stores -- is the DOUBLES court
+# plus a 3 ft margin, x in [-2.284, 10.514].  That is the user's
+# court-membership rule and it is deliberately generous: it decides whether
+# someone is on the court at all, and a player chasing a wide ball is.
+#
+# A SERVER is a stricter case.  A serve is struck from behind the baseline and
+# between its ends, so a box whose x-centre projects outside the baseline is
+# not a server whatever its pose looks like.  This is a separate gate rather
+# than a tightening of `in_bounds`, because the two answer different questions
+# and only this one is entitled to be strict.
+#
+# WHICH BASELINE, measured rather than argued.  The doubles baseline is the
+# rules-correct bound -- in doubles a server may legally stand out to the
+# doubles sideline -- and on this corpus it is worth exactly nothing: every
+# detection already inside `in_bounds` is inside it too, and recall, precision
+# and the per-clip table are identical to no gate at all.  The SINGLES baseline
+# removes two false positives for no lost serve:
+#
+#     x gate                  range            recall   precision
+#     none / in_bounds        [-2.28, 10.51]    92.3%     86.6%
+#     doubles baseline        [-1.37,  9.60]    92.3%     86.6%     (no change)
+#     SINGLES baseline        [ 0.00,  8.23]    92.3%     88.4%     <-- here
+#
+# All 90 labelled far serves sit inside the singles baseline, INCLUDING all 23
+# on the two doubles clips: the extremes are x = 0.74 and x = 7.59, leaving
+# 0.74 m and 0.64 m of margin.  Doubles servers in this corpus stand between
+# the centre mark and the singles sideline, as most players do.
+#
+# THE RISK IS NAMED RATHER THAN HIDDEN: a doubles server standing wide in the
+# alley is legal and would be gated out here, and 0.64 m is not a large margin.
+# Nothing in the corpus exercises it. Widen these two constants to
+# -C.ALLEY_W / C.COURT_W + C.ALLEY_W the first time a real serve is lost to it;
+# that costs 1.8 points of precision and nothing else.
+FAR_X_LO = 0.0                           # singles sideline
+FAR_X_HI = C.COURT_W                     # 8.23
+
+
+def _on_baseline(court_x):
+    """Box x-centre inside the far baseline's own x extent. NaN -> False."""
+    x = np.asarray(court_x, dtype=np.float64)
+    with np.errstate(invalid="ignore"):
+        return np.isfinite(x) & (x >= FAR_X_LO) & (x <= FAR_X_HI)
 SWING_FLOOR = 0.45
 # Swept on the nine clips carrying a far serve.  Over the six FAR-DOMINANT
 # clips (70 of the 77 labelled far serves) the curve reads:
@@ -581,8 +626,8 @@ def detect_serves(prim, threshold: float = THRESHOLD,
 #     merged     recall 92.3%   precision 86.6%
 
 
-def merge_far_slots(kp, bbox, eligible):
-    """One timeline from the two far slots. Returns (kp, bbox, eligible).
+def merge_far_slots(kp, bbox, eligible, court=None):
+    """One timeline from the two far slots. Returns (kp, bbox, eligible[, court]).
 
     Where only one slot is tracked, take it.  Where both are, prefer the slot
     used for the PREVIOUS frame -- continuity is the whole point, and switching
@@ -596,6 +641,7 @@ def merge_far_slots(kp, bbox, eligible):
     out_kp = np.full(kp.shape[:1] + kp.shape[2:], np.nan, dtype=kp.dtype)
     out_bb = np.full((n, 4), np.nan, dtype=bbox.dtype)
     out_el = np.zeros(n, dtype=bool)
+    out_ct = np.full((n, 2), np.nan) if court is not None else None
     prev = None
     for i in range(n):
         live = [s for s in (0, 1) if ok[s][i]]
@@ -610,7 +656,11 @@ def merge_far_slots(kp, bbox, eligible):
         out_kp[i] = kp[i, pick]
         out_bb[i] = bbox[i, pick]
         out_el[i] = eligible[i, pick]
+        if out_ct is not None:
+            out_ct[i] = court[i, pick]
         prev = pick
+    if out_ct is not None:
+        return out_kp, out_bb, out_el, out_ct
     return out_kp, out_bb, out_el
 
 
@@ -634,10 +684,12 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
         merge_slots = True
     union_mode = (merge_slots == "both")
     if (merge_slots or union_mode) and either > 0:
-        mk, mb, me = merge_far_slots(kp[:, list(T.FAR_SLOTS)],
-                                     bbox[:, list(T.FAR_SLOTS)],
-                                     el[:, list(T.FAR_SLOTS)])
-        prim = serve_primitives(mk, mb, fps, eligible=me)
+        mk, mb, me, mc = merge_far_slots(kp[:, list(T.FAR_SLOTS)],
+                                         bbox[:, list(T.FAR_SLOTS)],
+                                         el[:, list(T.FAR_SLOTS)],
+                                         court=z["court"][:, list(T.FAR_SLOTS)])
+        prim = serve_primitives(mk, mb, fps,
+                                eligible=me & _on_baseline(mc[:, 0]))
         ev = detect_serves(prim, threshold, require_court,
                            track=int(T.FAR_SLOTS[0]), lead_s=lead_s,
                            refract_s=refract_s, w_still=w_still)
@@ -665,7 +717,8 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
                 print(f"[far-serve] slot {slot}: never tracked, skipped")
             continue
         prim = serve_primitives(kp[:, slot], bbox[:, slot], fps,
-                                eligible=el[:, slot])
+                                eligible=(el[:, slot]
+                                          & _on_baseline(z["court"][:, slot, 0])))
         ev = detect_serves(prim, threshold, require_court, track=int(slot),
                            lead_s=lead_s, refract_s=refract_s, w_still=w_still)
         if verbose:
