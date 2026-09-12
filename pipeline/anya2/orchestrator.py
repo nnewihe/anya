@@ -393,6 +393,49 @@ class ReelConfig:
     rule2_min_near: int = 3          # ...of which this many must be near-side
     rule2_penalty: float = 0.30
 
+    # ── what the rules actually do ───────────────────────────────────────
+    # Rules 1 and 2 accumulate into `PointStart.conf_adj`, and until this knob
+    # existed NOTHING READ THE RESULT.  `adjusted_p` was computed, written to
+    # the reel JSON and counted in `n_confidence_demoted`, and no stage
+    # filtered, ordered or thresholded on it -- `Segment.p` is set from the raw
+    # `p`.  Both rules were diagnostics wearing the costume of a decision.
+    #
+    # This is the gate they were written for.  A start whose adjusted
+    # confidence falls below it is dropped, which is the ONE place in this
+    # module allowed to delete a point rather than relabel it -- so it is off
+    # by default and every value below is measured.
+    #
+    # Only far starts can ever be affected: rule 1 skips near serves outright
+    # and rule 2 only penalises far ones, which matches the measured asymmetry
+    # (79% of far false positives are the returner mid-rally; near false
+    # positives look exactly like serves from here).
+    # Swept over the 12 clips.  Whole points RISE as starts are removed, which
+    # is the opposite of what deleting point starts should do:
+    #
+    #     min_adjusted_p   gated   whole/154   live kept   reel % of span
+    #         0.00 (off)     0       133         96.4%        74.6%
+    #         0.55           5       137         97.0%        75.1%
+    #         0.70           8       140         97.3%        75.3%     <-- here
+    #         0.90          12       140         96.7%        74.0%
+    #         0.95          20       138         96.1%        73.7%
+    #
+    # The reason is that a phantom serve inside a real point SPLITS the segment
+    # covering that point: the next start bounds the previous end, so a
+    # spurious start mid-rally truncates the rally it sits in and opens a second
+    # segment over the remainder.  Removing it lets the real point run whole.
+    # That is the same "a point is not live twice" fact `suppress_in_rally`
+    # uses, arriving here through the confidence the two rules compute.
+    #
+    # 0.70 is the bottom of the 0.70-0.90 plateau, so it takes the entire gain
+    # while deleting the fewest starts.  Audited at 0.70 it drops 8: SEVEN
+    # phantoms (2.85-22.51 s from any labelled start) and ONE real point start
+    # (clip 38 at 161.40 s, 1.90 s from a label, demoted by the toss rule).
+    # That single loss is stated rather than smoothed over -- it is a real
+    # point start being deleted, which nothing else in this module is allowed
+    # to do -- and the reel is better with the gate than without it on every
+    # measure: +7 whole points, +0.9 live retained, 8 fewer segments.
+    min_adjusted_p: float = 0.70     # 0 = off
+
 
 @dataclass
 class PointStart:
@@ -932,6 +975,12 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     # detected, and the DP would otherwise have already overwritten them.
     starts = apply_toss_rule(starts, cfg)
     starts = apply_neighbour_rule(starts, cfg)
+    # The gate the two rules feed.  BEFORE the service-run DP, so a dropped
+    # start cannot influence the run structure that the surviving ones get.
+    n_before_gate = len(starts)
+    if cfg.min_adjusted_p > 0:
+        starts = [p_ for p_ in starts if p_.adjusted_p >= cfg.min_adjusted_p]
+    n_conf_gated = n_before_gate - len(starts)
     starts = enforce_service_runs(starts, cfg)
     starts = annotate_serve_court(starts, video, tracks_npz)
     segs = pair_ends_curve(starts, live, live_fps, cfg, duration)
@@ -943,7 +992,14 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     segs = smooth(segs, cfg, duration)
     n_recovered = sum(1 for s in segs if s.end_source == "recovered")
 
-    src = {"detected": 0, "next-serve": 0, "default": 0}
+    # The end sources that actually occur: `curve` (the relative fall fired),
+    # `quietest` (it did not, so the backoff took the quietest stretch),
+    # `estimated` (neither was possible -- the window was shorter than one
+    # dwell), and `recovered` (no serve was detected at all; see
+    # recover_missed).  This dict was seeded with "detected"/"next-serve"/
+    # "default" -- the sources of the DELETED event policy -- so after that
+    # deletion the log line below always reported zero ends detected.
+    src = {k: 0 for k in ("curve", "quietest", "estimated", "recovered")}
     for s in segs:
         src[s.end_source] = src.get(s.end_source, 0) + 1
     total = sum(s.duration for s in segs)
@@ -958,6 +1014,7 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
         "n_rule1_toss_adjusted": rule1,
         "n_rule2_neighbour_penalised": rule2,
         "n_confidence_demoted": demoted,
+        "n_confidence_gated": n_conf_gated,
         "starts": [{"t": round(p_.t, 2), "side": p_.side, "p": round(p_.p, 3),
                     "adjusted_p": round(p_.adjusted_p, 3),
                     "toss": p_.toss_combined, "notes": p_.notes}
@@ -977,8 +1034,9 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
         print(f"[reel] {stem}: {len(near)} near + {len(far)} far serves -> "
               f"{n_merged} starts ({n_rapid} rapid repeats dropped, "
               f"{conflicts} sides relabelled)")
-        print(f"[reel] ends: {src.get('detected',0)} detected, "
-              f"{src.get('estimated',0)} estimated)")
+        print(f"[reel] ends: {src['curve']} from the fall, "
+              f"{src['quietest']} from the quietest stretch, "
+              f"{src['estimated']} estimated, {src['recovered']} recovered")
         print(f"[reel] {n_raw} points -> {len(segs)} segments after smoothing, "
               f"{total:.0f}s of {duration:.0f}s "
               f"({100*total/duration:.0f}%)" if duration else "")
