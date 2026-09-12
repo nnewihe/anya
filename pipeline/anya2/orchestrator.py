@@ -170,23 +170,31 @@ class ReelConfig:
     # and 1.95 s at the tail (18 points), against rolls of 1.0 s.  Roll is what
     # covers that, and post has more to cover than pre.
     #
-    # Measured over the 12 clips with merging off:
+    # POST ROLL CUT 2.5 -> 1.5 once the end itself was placed accurately.  The
+    # user reported a consistent 2-3 s of dead footage at the tail of every
+    # segment on a 76-minute match, and it decomposed into two stacked
+    # contributors: the end landing ~1 s late (smoothing lag, now removed by
+    # `end_raw_rel`) and a flat 2.5 s of padding on top.  Post roll was 2.5 to
+    # absorb placement error; with the placement corrected it no longer has to.
     #
-    #     pre / post    whole/154   live kept   reel % of span
-    #      1.0 / 1.0      122         94.1%        66.3%
-    #      1.5 / 2.5      133         96.4%        74.6%     <-- here
-    #      2.0 / 3.0      136         96.8%        78.3%
-    #      2.5 / 4.0      143         97.3%        84.0%
+    # Measured with the raw refinement ON:
     #
-    # 1.5/2.5 is chosen to hold the REEL BUDGET constant: 74.6% against the
-    # 74.3% the merged reel occupied, so the change costs no extra footage and
-    # spends it differently -- on the edges of every point rather than on the
-    # changeovers between them.  The exchange rate above is the dial; the
-    # honest cost is that at equal length the merged reel had 139 whole points
-    # to this one's 133, because a join covers two boundaries at once and a
-    # roll covers one.
+    #     post   whole/154   live kept   reel %   tail after the true end
+    #      2.5     139         95.5%      69.1%        ~2.4 s
+    #      2.0     133         95.1%      67.2%        ~1.9 s
+    #      1.5     130         94.6%      65.5%        ~1.4 s   <-- here
+    #      1.0     123         93.9%      63.6%        ~0.9 s
+    #
+    # Read `live kept`, not `whole`, when pricing this.  "Whole" is binary --
+    # missing a labelled end by 0.1 s scores the same as missing it by 3 s --
+    # so it falls off a cliff while the actual tennis lost between 2.5 and 1.5
+    # is 0.9 of one percent.  TRUNCATIONS ARE ZERO AT EVERY ROW, which is the
+    # property that must not be spent, and it is not spent here.
+    #
+    # Pre roll is unchanged: the complaint was about the tail, and the head of
+    # a segment is what protects the serve.
     pre_roll_s: float = 1.5
-    post_roll_s: float = 2.5
+    post_roll_s: float = 1.5
     merge_gap_s: float = 6.0         # segments closer than this are joined
                                      # rather than cut apart -- but only when
                                      # `merge_across_points` allows it.
@@ -300,6 +308,49 @@ class ReelConfig:
     #             window.  Always defined, per point, and uses the same evidence
     #             as the primary rule instead of a prior about tennis.
     # "duration": the old behaviour, kept for comparison.
+    # ── refining the end on the unsmoothed signal ────────────────────────
+    # THE POINT ENDS AT THE LAST LIVE FRAME, NOT THE FIRST DEAD ONE, and the
+    # gap between those two is a measured 1-2 s of dead footage at the tail of
+    # every segment.  `conf` is a 5 s box filter, so "first sample below the
+    # bar" cannot arrive until the window has mostly passed the last ball:
+    # measured against the labelled ends, `curve` ends land +0.93 s late and
+    # `quietest` ends +1.99 s.
+    #
+    # So the smoothed curve is used to FIND the end -- which is what it is good
+    # at, and why it is smoothed -- and then the end is walked BACK to the last
+    # sample where the UNSMOOTHED evidence was still live.  `rally.py` stores
+    # `raw` for exactly this.
+    #
+    # This cannot truncate a rally.  It only ever moves an end earlier, and
+    # only onto a frame that was itself live, so the footage it removes is
+    # footage in which nothing was happening.
+    #
+    # The bar is relative to THIS POINT'S own raw peak, for the same reason
+    # `end_rel` is: `raw` is in body heights per second, so an absolute level
+    # would mean a different thing on every camera.
+    end_refine_on_raw: bool = True
+    # 0.02, and the smallness is the point.  `raw` is activity ALREADY vetoed
+    # by the non-rally union, so it collapses the moment the player starts
+    # walking -- which is before the last ball, not after it.  A bar at a
+    # quarter of the point's peak therefore lands 1.5 s EARLY and costs 15
+    # whole points; the useful signal is the very tail of the decay, not a
+    # fraction of the peak.  Measured against the labelled ends:
+    #
+    #     end_raw_rel   curve end   quietest end   whole/154   reel %
+    #        off          +0.93s       +1.99s        140        71.6%
+    #        0.02         -0.10s       +1.33s        139        69.1%   <-- here
+    #        0.05         -0.56s       -0.38s        137        68.1%
+    #        0.25         -1.47s       -0.55s        125        61.6%
+    #
+    # At 0.02 the `curve` ends are centred -- the whole 0.93 s of smoothing lag
+    # is removed and nothing is overshot.
+    end_raw_rel: float = 0.02        # fraction of the point's own raw peak that
+                                     # still counts as live
+    end_raw_smooth_s: float = 0.5    # a short mean before the test, so one
+                                     # spiky sample cannot hold the end late.
+                                     # Short enough not to reintroduce the lag
+                                     # this exists to remove.
+
     end_quiet_tol: float = 0.25      # "quietest" backoff: among stretches within
                                      # this fraction of the quietest one, take
                                      # the LAST rather than the first.  A rally
@@ -717,8 +768,33 @@ def estimate_point_s(segs: Sequence[Segment], cfg: ReelConfig) -> float:
     return float(np.percentile(got, cfg.est_duration_pct)) + cfg.est_duration_pad_s
 
 
+def refine_end_on_raw(raw, fps: float, serve_t: float, end_t: float,
+                      cfg: ReelConfig) -> float:
+    """Walk an end back to the last live sample before it. See ReelConfig.
+
+    Searches only BETWEEN the serve and the end the curve chose, so it can
+    never push an end later and never leaves the point it belongs to.
+    """
+    a = max(0, int(round(serve_t * fps)))
+    b = min(len(raw), int(round(end_t * fps)) + 1)
+    if b - a < 2:
+        return end_t
+    w = np.asarray(raw[a:b], dtype=float)
+    k = max(1, int(round(cfg.end_raw_smooth_s * fps)))
+    if k > 1 and len(w) >= k:
+        w = np.convolve(w, np.ones(k) / k, mode="same")
+    pk = float(w.max())
+    if not np.isfinite(pk) or pk <= 0:
+        return end_t
+    live = np.nonzero(w >= cfg.end_raw_rel * pk)[0]
+    if not live.size:
+        return end_t
+    return (a + int(live[-1])) / fps
+
+
 def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
-                    duration: Optional[float] = None) -> List[Segment]:
+                    duration: Optional[float] = None,
+                    raw=None) -> List[Segment]:
     """End each point by walking the rally confidence curve forward.
 
     WHY THIS REPLACED EVENT MATCHING.  The deleted `pair_ends` matched agent 3's
@@ -802,6 +878,8 @@ def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
             end_t, src = max(t_lo, est), "estimated"
             if duration is not None:
                 end_t = min(end_t, duration - 0.1)
+        if src == "curve" and cfg.end_refine_on_raw and raw is not None:
+            end_t = max(t_lo, refine_end_on_raw(raw, fps, ps.t, end_t, cfg))
         segs.append(Segment(start=ps.t - cfg.pre_roll_s,
                             stop=end_t + cfg.post_roll_s,
                             serve_t=ps.t, end_t=end_t, side=ps.side,
@@ -841,6 +919,8 @@ def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
                 end_t, src = (a + k) / fps, "quietest"
         if end_t is None:
             end_t = min(sg.serve_t + est_s, t_hi)
+        elif cfg.end_refine_on_raw and raw is not None:
+            end_t = max(t_lo, refine_end_on_raw(raw, fps, sg.serve_t, end_t, cfg))
         sg.end_t = max(t_lo, min(end_t, t_hi))
         sg.end_source = src
         sg.stop = sg.end_t + cfg.post_roll_s
@@ -966,6 +1046,7 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     # than silently emitting every point at its default duration.
     r = RC.compute(video, tracks_npz, per_slot_union=cfg.union_per_slot)
     live = np.asarray(r["conf"], dtype=float)
+    raw_evidence = np.asarray(r["raw"], dtype=float)
     live_fps = float(r["fps"])
 
     starts = merge_starts(near, far, cfg)
@@ -987,7 +1068,8 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     n_conf_gated = n_before_gate - len(starts)
     starts = enforce_service_runs(starts, cfg)
     starts = annotate_serve_court(starts, video, tracks_npz)
-    segs = pair_ends_curve(starts, live, live_fps, cfg, duration)
+    segs = pair_ends_curve(starts, live, live_fps, cfg, duration,
+                           raw=raw_evidence)
     flag_missing_points(starts, segs, cfg)
     n_raw = len(segs)
     segs = smooth(segs, cfg, duration)
