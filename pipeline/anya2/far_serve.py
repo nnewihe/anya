@@ -242,6 +242,11 @@ SWING_FLOOR = 0.45
 # which is the wrong direction for a point START -- a missed serve loses a
 # whole point from the reel, an extra one is something the orchestrator can
 # arbitrate.
+COURT_DILATE_S = 0.4       # see `detect_serves`: the serve-zone gate is
+                           # asked of the trophy's NEIGHBOURHOOD, not of each
+                           # sample, because the box shape moves the projected
+                           # ground point exactly at the trophy.
+
 THRESHOLD = 0.75
 REFRACT_S = 3.0
 
@@ -413,7 +418,24 @@ def detect_serves(prim, threshold: float = THRESHOLD,
     tro = np.nan_to_num(trophy, nan=0.0)
     cand = tro >= TROPHY_MIN
     if require_court:
-        cand = cand & prim["on_court"]
+        # DILATED, because the gate flickers exactly where it hurts most.  The
+        # gate is a serve-zone band on the box's projected ground point, and at
+        # the trophy the box changes shape -- arms and racket go up, the box
+        # grows, and the ground point moves.  On Data/21's one far serve the
+        # gate is True through the wind-up and goes False ON THE TROPHY PEAK
+        # FRAME, cutting a five-sample trophy run down to two and capping the
+        # trophy score below the value the peak would have given: 0.671 against
+        # a run that reaches 1.00 two samples later.
+        #
+        # A serve is one action, so the question "was this struck from the
+        # serve zone" belongs to the action and not to each sample of it.
+        # Dilating by COURT_DILATE_S asks it of the neighbourhood instead, which
+        # is the same fix near_serve.py applies to its three shape terms and for
+        # the same reason -- the phases of a serve do not line up sample for
+        # sample.  The gate still rejects a player standing anywhere else; it
+        # just stops rejecting the one frame the whole detection hangs on.
+        w = max(1, int(round(2 * COURT_DILATE_S * fps)) | 1)
+        cand = cand & (S.movmax(prim["on_court"].astype(float), w) > 0.5)
 
     back_lo = int(round(READY_BACK_MAX_S * fps))
     back_hi = int(round(READY_BACK_MIN_S * fps))
@@ -476,17 +498,120 @@ def detect_serves(prim, threshold: float = THRESHOLD,
     return S.refractory(out, REFRACT_S if refract_s is None else float(refract_s))
 
 
+# ── one far player, two slots ────────────────────────────────────────────
+# The tracker gives the far side two slots and ONE player oscillates between
+# them.  Measured over the corpus, the two far slots are simultaneously tracked
+# on 0.9-18% of frames, while taking whichever is available at each frame gains
+# 22-38 POINTS of coverage over the better single slot:
+#
+#     clip   slot2   slot3   either   both at once   gain over best slot
+#      21    43.8%   39.8%   65.8%       17.9%            +22.0
+#      24    42.0%   39.2%   80.4%        0.9%            +38.4
+#      35    41.4%   55.0%   90.1%        6.3%            +35.1
+#      43    35.7%   25.7%   60.5%        0.9%            +24.8
+#
+# That matters because this detector scores each slot INDEPENDENTLY, and two of
+# its four terms are window statistics: `ready` is a mean over a window before
+# the trophy and `still` a median over one.  A window half full of NaN does not
+# fail loudly, it scores LOW -- so a serve by a player whose track keeps jumping
+# slots is scored as a player who was never ready and never still.
+#
+# DOUBLES WAS THE REASON TO EXPECT THIS TO BE GATED, AND IT MEASURED THE OTHER
+# WAY.  Clips 25 and 40 have two real far players, co-tracking 36.0% and 22.7%
+# of frames, so merging them should fuse two people into one timeline and lose
+# serves.  It does not -- both clips keep 100% recall and gain precision
+# (25: 90.9% -> 100%, 40: 86.7% -> 92.9%).  Only one player serves, the
+# continuity preference below follows whoever the tracker is holding, and the
+# partner standing at the baseline does not produce a trophy.  So the merge is
+# unconditional, and every attempt to gate it was worse than not gating it.
+# Two gates were tried and neither separates the corpus: the co-track rate puts
+# singles clip 21 (27% of tracked frames) above doubles clip 40 (30%), and the
+# spatial gap between co-tracked slots puts singles clip 21 at 2.6 body heights
+# and doubles clip 40 at 0.03.
+#
+# Corpus effect, at the shipped threshold:
+#
+#     per slot   recall 89.0%   precision 81.0%
+#     merged     recall 92.3%   precision 86.6%
+
+
+def merge_far_slots(kp, bbox, eligible):
+    """One timeline from the two far slots. Returns (kp, bbox, eligible).
+
+    Where only one slot is tracked, take it.  Where both are, prefer the slot
+    used for the PREVIOUS frame -- continuity is the whole point, and switching
+    on a per-frame tie-break would reintroduce the oscillation this removes.
+    With no previous choice, take the taller box: at far-court scale the better
+    detection is the bigger one.
+    """
+    n = len(bbox)
+    ok = [np.isfinite(bbox[:, s, 0]) for s in range(bbox.shape[1])]
+    h = [bbox[:, s, 3] - bbox[:, s, 1] for s in range(bbox.shape[1])]
+    out_kp = np.full(kp.shape[:1] + kp.shape[2:], np.nan, dtype=kp.dtype)
+    out_bb = np.full((n, 4), np.nan, dtype=bbox.dtype)
+    out_el = np.zeros(n, dtype=bool)
+    prev = None
+    for i in range(n):
+        live = [s for s in (0, 1) if ok[s][i]]
+        if not live:
+            continue
+        if len(live) == 1:
+            pick = live[0]
+        elif prev in live:
+            pick = prev
+        else:
+            pick = 0 if h[0][i] >= h[1][i] else 1
+        out_kp[i] = kp[i, pick]
+        out_bb[i] = bbox[i, pick]
+        out_el[i] = eligible[i, pick]
+        prev = pick
+    return out_kp, out_bb, out_el
+
+
 def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
                  require_court: bool = True, verbose: bool = True,
                  lead_s: Optional[float] = None,
                  refract_s: Optional[float] = None,
-                 w_still: Optional[float] = None):
+                 w_still: Optional[float] = None,
+                 merge_slots: Optional[bool] = None):
     """Score every far slot; the server is whichever produced the candidate."""
     z = T.load(video, tracks_npz)
     fps = float(z["fps"])
     kp, bbox, el = z["kp"], z["bbox"], z["eligible"]
 
-    raw: List[Dict] = []
+    # One player across two slots?  Then score one merged timeline instead of
+    # two fragments.  See FAR_MERGE_MAX_COTRACK.
+    fa = np.isfinite(bbox[:, T.FAR_SLOTS[0], 0])
+    fb = np.isfinite(bbox[:, T.FAR_SLOTS[1], 0])
+    either = float((fa | fb).mean())
+    if merge_slots is None:
+        merge_slots = True
+    union_mode = (merge_slots == "both")
+    if (merge_slots or union_mode) and either > 0:
+        mk, mb, me = merge_far_slots(kp[:, list(T.FAR_SLOTS)],
+                                     bbox[:, list(T.FAR_SLOTS)],
+                                     el[:, list(T.FAR_SLOTS)])
+        prim = serve_primitives(mk, mb, fps, eligible=me)
+        ev = detect_serves(prim, threshold, require_court,
+                           track=int(T.FAR_SLOTS[0]), lead_s=lead_s,
+                           refract_s=refract_s, w_still=w_still)
+        if verbose:
+            print(f"[far-serve] merged far slots: coverage "
+                  f"{100*either:.1f}% -> {len(ev)} candidates")
+        if not union_mode:
+            return [Event(t=float(e["t"]), p=float(e["p"]), kind=FAR_SERVE,
+                          track=e["track"],
+                          detail={k: e[k] for k in ("trophy", "swing", "ready",
+                                                    "still", "toss",
+                                                    "toss_parts", "t_trophy",
+                                                    "t_contact")})
+                    for e in S.refractory(ev, REFRACT_S if refract_s is None
+                                          else float(refract_s))]
+        merged_ev = ev
+    else:
+        merged_ev = []
+
+    raw: List[Dict] = list(merged_ev)
     for slot in T.FAR_SLOTS:
         seen = np.isfinite(bbox[:, slot, 0])
         if not seen.any():
