@@ -170,31 +170,38 @@ class ReelConfig:
     # and 1.95 s at the tail (18 points), against rolls of 1.0 s.  Roll is what
     # covers that, and post has more to cover than pre.
     #
-    # POST ROLL CUT 2.5 -> 1.5 once the end itself was placed accurately.  The
-    # user reported a consistent 2-3 s of dead footage at the tail of every
-    # segment on a 76-minute match, and it decomposed into two stacked
-    # contributors: the end landing ~1 s late (smoothing lag, now removed by
-    # `end_raw_rel`) and a flat 2.5 s of padding on top.  Post roll was 2.5 to
-    # absorb placement error; with the placement corrected it no longer has to.
+    # POST ROLL: 2.5 -> 2.0, and it is the SMALLER half of the tail fix.
+    # The user reported a consistent 2-3 s of dead footage after every point on
+    # a 76-minute match.  The instinct is to cut the padding; the measurement
+    # says the padding was not the problem.  Joint sweep, `tail` being what a
+    # viewer actually sees -- segment stop minus the last labelled rally end
+    # inside it:
     #
-    # Measured with the raw refinement ON:
+    #     end_rel  post   whole/154  live kept  reel %   tail
+    #      (before, no raw refinement at all)     95.7%   71.6%   5.0 s
+    #       0.10   2.5      139        95.5%     68.3%   3.6 s
+    #       0.15   2.5      138        95.1%     65.2%   3.2 s
+    #       0.15   2.0      132        94.7%     63.4%   2.9 s   <-- here
+    #       0.15   1.5      128        94.2%     61.6%   2.6 s
+    #       0.20   1.5      123        93.8%     60.3%   2.5 s
     #
-    #     post   whole/154   live kept   reel %   tail after the true end
-    #      2.5     139         95.5%      69.1%        ~2.4 s
-    #      2.0     133         95.1%      67.2%        ~1.9 s
-    #      1.5     130         94.6%      65.5%        ~1.4 s   <-- here
-    #      1.0     123         93.9%      63.6%        ~0.9 s
+    # Read the first two rows together: the raw refinement alone takes 1.4 s off
+    # the tail for ONE whole point, while post roll 2.5 -> 1.5 takes 0.1 s off
+    # for TEN.  Padding is a bad lever here because the tail is dominated by
+    # ends placed late, not by footage added after them -- fix the placement and
+    # the padding barely matters.  2.0 is a compromise that keeps a beat of
+    # breathing room after the ball.
     #
-    # Read `live kept`, not `whole`, when pricing this.  "Whole" is binary --
-    # missing a labelled end by 0.1 s scores the same as missing it by 3 s --
-    # so it falls off a cliff while the actual tennis lost between 2.5 and 1.5
-    # is 0.9 of one percent.  TRUNCATIONS ARE ZERO AT EVERY ROW, which is the
-    # property that must not be spent, and it is not spent here.
+    # Truncations are ZERO on every row above, which is the property that must
+    # not be spent.  Read `live kept` rather than `whole` when pricing these:
+    # `whole` is binary, so missing a labelled end by 0.1 s scores the same as
+    # missing it by 3 s, and the actual tennis lost across this whole table is
+    # one percent.
     #
-    # Pre roll is unchanged: the complaint was about the tail, and the head of
-    # a segment is what protects the serve.
+    # Pre roll is unchanged -- the complaint was the tail, and the head of a
+    # segment is what protects the serve.
     pre_roll_s: float = 1.5
-    post_roll_s: float = 1.5
+    post_roll_s: float = 2.0
     merge_gap_s: float = 6.0         # segments closer than this are joined
                                      # rather than cut apart -- but only when
                                      # `merge_across_points` allows it.
@@ -346,6 +353,23 @@ class ReelConfig:
     # is removed and nothing is overshot.
     end_raw_rel: float = 0.02        # fraction of the point's own raw peak that
                                      # still counts as live
+    # A SEPARATE, STRICTER BAR FOR `quietest` ENDS.  The two end sources carry
+    # different evidence and deserve different treatment.  A `curve` end has
+    # already proved the point ended there -- confidence fell to a fraction of
+    # the point's own peak and stayed down -- so the refinement only has to
+    # strip the smoothing lag, and the smallest bar that does it is right.  A
+    # `quietest` end has proved nothing: it is the fallback for points where
+    # the fall never fired, and "the quietest stretch in the window" can sit
+    # seconds past the last ball.  There the raw signal has to do the work of
+    # finding the end, not just trimming it, so the bar is higher.
+    #
+    # Measured as the tail a viewer actually sees -- segment stop minus the
+    # last labelled rally end inside it:
+    #
+    #     quiet bar   curve tail   quietest tail   whole/154   live kept
+    #       0.02        2.6 s         7.2 s          130        94.6%
+    #       0.10        (see below -- swept after this landed)
+    end_raw_rel_quiet: float = 0.10
     end_raw_smooth_s: float = 0.5    # a short mean before the test, so one
                                      # spiky sample cannot hold the end late.
                                      # Short enough not to reintroduce the lag
@@ -361,7 +385,13 @@ class ReelConfig:
                                      # truncating the point and ending it.
                                      # Ties break late, because late costs dead
                                      # time and early costs tennis.
-    end_rel: float = 0.10            # fraction of the point's own running peak
+    # 0.10 -> 0.15 when the tail was tightened.  Raising it makes the fall fire
+    # EARLIER and, more importantly, MORE OFTEN: over the 12 clips it converts
+    # ten points from the `quietest` fallback to a real `curve` end (74/56 ->
+    # 84/46).  That matters because the two sources have very different tails --
+    # `curve` ends sit ~2.6 s past the labelled rally end, `quietest` ends ~7 s
+    # -- so the cheapest way to shorten the average tail is to stop falling back.
+    end_rel: float = 0.15            # fraction of the point's own running peak
     end_lo: float = 0.15             # absolute/both modes only
     end_dwell_s: float = 2.5         # ...and must stay there this long before
                                      # the fall is believed.  The dwell is what
@@ -769,7 +799,7 @@ def estimate_point_s(segs: Sequence[Segment], cfg: ReelConfig) -> float:
 
 
 def refine_end_on_raw(raw, fps: float, serve_t: float, end_t: float,
-                      cfg: ReelConfig) -> float:
+                      cfg: ReelConfig, rel: Optional[float] = None) -> float:
     """Walk an end back to the last live sample before it. See ReelConfig.
 
     Searches only BETWEEN the serve and the end the curve chose, so it can
@@ -786,7 +816,8 @@ def refine_end_on_raw(raw, fps: float, serve_t: float, end_t: float,
     pk = float(w.max())
     if not np.isfinite(pk) or pk <= 0:
         return end_t
-    live = np.nonzero(w >= cfg.end_raw_rel * pk)[0]
+    bar = cfg.end_raw_rel if rel is None else float(rel)
+    live = np.nonzero(w >= bar * pk)[0]
     if not live.size:
         return end_t
     return (a + int(live[-1])) / fps
@@ -920,7 +951,8 @@ def pair_ends_curve(starts, conf, fps: float, cfg: ReelConfig,
         if end_t is None:
             end_t = min(sg.serve_t + est_s, t_hi)
         elif cfg.end_refine_on_raw and raw is not None:
-            end_t = max(t_lo, refine_end_on_raw(raw, fps, sg.serve_t, end_t, cfg))
+            end_t = max(t_lo, refine_end_on_raw(raw, fps, sg.serve_t, end_t,
+                                                cfg, rel=cfg.end_raw_rel_quiet))
         sg.end_t = max(t_lo, min(end_t, t_hi))
         sg.end_source = src
         sg.stop = sg.end_t + cfg.post_roll_s
