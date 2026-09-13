@@ -769,7 +769,11 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[3])
-    ap.add_argument("video")
+    # nargs="+": the same GoPro chapters build_reel takes.  Assembly reads
+    # artifacts rather than pixels, so what this needs from pipeline.join is
+    # the joined PATH -- whose stem those artifacts are keyed by -- and the
+    # join itself is already cached from the detection run that wrote them.
+    ap.add_argument("video", nargs="+")
     ap.add_argument("--json", default=None)
     ap.add_argument("--pre-roll", type=float, default=None)
     ap.add_argument("--post-roll", type=float, default=None)
@@ -782,9 +786,11 @@ def main():
         cfg.post_roll_s = a.post_roll
     if a.merge_gap is not None:
         cfg.merge_gap_s = a.merge_gap
-    res = build_reel(a.video, cfg)
-    out = a.json or os.path.join(WD.artifact_dir(a.video),
-                                 os.path.splitext(os.path.basename(a.video))[0]
+    from pipeline import join as J
+    video = J.resolve_input(a.video)
+    res = build_reel(video, cfg)
+    out = a.json or os.path.join(WD.artifact_dir(video),
+                                 os.path.splitext(os.path.basename(video))[0]
                                  + SEGMENTS_SUFFIX)
     with open(out, "w") as fh:
         json.dump(res, fh, indent=1)
