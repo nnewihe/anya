@@ -231,13 +231,25 @@ W_TROPHY, W_READY = 0.45, 0.20
 # max head_l +0.087).  Taking either wrist fixes that serve outright: p 0.525
 # -> 0.848, detected.
 #
-# Corpus-wide it costs more than it buys, at BOTH resolutions:
+# Corpus-wide it costs more than it buys, at BOTH resolutions.  RE-TESTED
+# after the baseline x gate below was added -- that gate did not exist when
+# imgsz 1280 was first tried, and the hope was that it would reject the
+# out-of-court people whose detections cost 1280 its precision.  It does help
+# 1280 a little (85.1% -> 86.0%) and it does not change the verdict; every row
+# below has the gate ON:
 #
-#     dets    swing    recall   precision
-#     960     split     92.3%     86.6%     <-- shipped
-#     960     either    93.4%     79.4%
-#     1280    split     87.9%     85.1%
-#     1280    either    92.3%     79.2%
+#     dets    swing    thr     recall   precision   clip 21's far serve
+#     960     split    0.75     92.3%     88.4%     missed      <-- shipped
+#     1280    split    0.75     87.9%     86.0%     missed
+#     1280    either   0.75     92.3%     80.0%     FOUND
+#     1280    either   0.80     89.0%     82.7%     FOUND
+#     1280    either   0.85     79.1%     83.7%     missed
+#
+# 960 DOMINATES THE WHOLE 1280 FRONTIER: equal-or-better recall and strictly
+# better precision at every operating point.  imgsz 1280 buys clip 21's one
+# far serve and pays more than that for it everywhere else, which is the same
+# answer the first test gave for the same reason -- the extra detections are
+# mostly people who are not playing on this court.
 #
 # With the arms unresolved, "either wrist" is simply a looser test, and the
 # looseness lands on false positives.  Left in as a flag rather than deleted
