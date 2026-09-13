@@ -65,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline import cancel
 from pipeline.videoio import open_video
+from pipeline.utilities import assert_decode_complete
 from pipeline import proxy as P
 from pipeline.anya2 import court as C
 from pipeline import workdir as WD
@@ -228,6 +229,16 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
         f += 1
     flush()
     cap.release()
+
+    # A mid-file decode failure and a clean EOF are the same `ok=False` to the
+    # loop above, so without this a pass that saw the first two minutes of a
+    # forty-minute match returns a perfectly well-formed npz and every stage
+    # downstream reads the silence as "the player was never there".  Every
+    # legacy telemetry pass has this check; this one did not, and a joined
+    # multi-chapter file is exactly the shape of input that provokes it (see
+    # pipeline/videoio.py for the GoPro case that shipped).  `limit` truncates
+    # `total` on purpose, so the expectation is already the right one.
+    assert_decode_complete(label, video, f - 1, total - 1, src_fps)
 
     stride_src = stride * (1 if to_analysis is None else 1)
     # The crop travels WITH the detections.  It is the coordinate frame they
