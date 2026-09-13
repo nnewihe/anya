@@ -39,6 +39,13 @@ release a version it can't find a section for.
 - **It opens faster when you're signed out**, because it no longer loads the
   match-analysis machinery just to show you the sign-in screen.
 
+- **A match split across several GoPro files can go in as one.** A GoPro
+  starts a new file every few gigabytes, so a long match arrives as
+  GX010123.MP4, GX020123.MP4, and so on. Select all of them at once and the
+  app joins them before it starts — you no longer have to stitch them together
+  yourself first. It works out the recording order for you and shows it, so
+  you can see it got it right before a long run starts.
+
 ## 0.1.0-beta.14
 
 Nothing in this build changes how Anya Tennis works. It exists to tell you

@@ -69,16 +69,6 @@ from gate_screen import GateScreen
 # someone who just wants the app.
 DOWNLOAD_URL = "https://nnewihe.github.io/anya/"
 
-# Remembers that the pricing pre-announcement has been read and dismissed.
-# Versioned in the key so a future announcement is a new key rather than
-# something a past dismissal silently suppresses.
-#
-# No dots in it: QSettings uses "." as its group separator on macOS and escapes
-# a literal one into U+00B7, so "going-paid-0.2.0" lands in the plist as
-# "going-paid-0·2·0". It round-trips correctly, but a preference key
-# containing a middle dot is the kind of thing someone later spends an hour on.
-_NOTICE_KEY = "notice/going-paid-v2/dismissed"
-
 
 class _FakeResult:
     """A minimal stand-in for entitlement.Entitlement.
@@ -295,13 +285,6 @@ class RallyDetectorApp(QMainWindow):
         lay.addLayout(self._logo_row())
         lay.addWidget(self._divider())
 
-        # Pre-announcement of the move to a paid app. Above the update banner
-        # because it is the more consequential of the two, and unlike that one
-        # it is shown immediately rather than after a network round trip —
-        # there is nothing to look up.
-        self._notice_banner = self._build_notice_banner()
-        lay.addWidget(self._notice_banner)
-
         # Built hidden and added now so it can appear in place later without
         # reflowing anything: the check finishes seconds after launch, and a
         # banner that pushed the tab bar down while a tester was reaching for
@@ -328,142 +311,6 @@ class RallyDetectorApp(QMainWindow):
         self._stack.setCurrentWidget(self._loading)
 
         lay.addWidget(self._stack, 1)
-
-    # ── Pricing pre-announcement ───────────────────────────────────────────
-
-    def _build_notice_banner(self):
-        """Tell testers, in advance, that the next version costs money.
-
-        The point of shipping this build at all. Thirteen betas were tested by
-        people who got nothing for it, and the worst possible way to introduce
-        a price is for it to appear one morning without warning. This says it
-        early, in the app they already have, and says the part that matters to
-        them first: they are not the ones being asked to pay.
-
-        Deliberately not a QMessageBox on launch. A modal would be dismissed
-        unread by someone reaching for their video, which is exactly the
-        failure the update banner's docstring already describes. The strip
-        carries a one-line hook; the detail is one click away for anyone who
-        wants it.
-
-        Unlike the update banner, dismissing this is remembered across
-        launches. That banner reappears every time because installing an
-        update is actionable every time; an announcement is information, and
-        re-showing it to someone who has read it and pressed the X is nagging.
-        Nagging the people who did your QA for free is a poor way to open a
-        conversation about money.
-        """
-        bar = QWidget()
-        bar.setVisible(not self._notice_dismissed())
-        bar.setStyleSheet(
-            f"QWidget {{ background: {SURFACE_ALT}; border-radius: 6px; }}"
-        )
-        row = QHBoxLayout(bar)
-        row.setContentsMargins(14, 8, 10, 8)
-        row.setSpacing(10)
-
-        label = QLabel(
-            f"<b style='color:{YELLOW}'>Anya Tennis is becoming a paid app</b> "
-            f"in the next version — and if you're reading this, your first year "
-            f"is free."
-        )
-        label.setStyleSheet(f"color: {WHITE}; font-size: 12px; background: transparent;")
-        row.addWidget(label)
-        row.addStretch()
-
-        details = QPushButton("WHAT'S CHANGING?")
-        details.setStyleSheet(ghost_btn_css())
-        details.setCursor(Qt.CursorShape.PointingHandCursor)
-        details.clicked.connect(self._show_notice_details)
-        row.addWidget(details)
-
-        # U+00D7 for the same reason as the update banner's — see there.
-        dismiss = QPushButton("×")
-        dismiss.setStyleSheet(ghost_btn_css())
-        dismiss.setCursor(Qt.CursorShape.PointingHandCursor)
-        dismiss.setFixedWidth(30)
-        dismiss.setToolTip("Hide this for good")
-        dismiss.clicked.connect(self._dismiss_notice)
-        row.addWidget(dismiss)
-
-        return bar
-
-    def _notice_settings(self):
-        """Qt's own per-user settings store — no new dependency, and on macOS
-        it is an ordinary plist under ~/Library/Preferences. The app has never
-        needed to remember anything before; this is the first thing it does.
-
-        The arguments matter. QSettings builds the macOS preference domain by
-        reversing the organization and appending the application, so these two
-        strings produce `com.anyatennis.app` — the bundle identifier
-        rally_app.spec:371 already gives the app. Passing a display name like
-        ("Anya Tennis", "Anya Tennis") instead invents a SECOND domain,
-        `com.anya-tennis.Anya Tennis`, which is not the app's own, does not go
-        away when the app is deleted, and would leave a stray plist on every
-        tester's machine.
-        """
-        from PyQt6.QtCore import QSettings
-
-        return QSettings("anyatennis.com", "app")
-
-    def _notice_dismissed(self):
-        try:
-            return bool(self._notice_settings().value(_NOTICE_KEY, False, type=bool))
-        except Exception:
-            # A settings store that cannot be read must not stop the app from
-            # launching. Showing the banner again is the harmless failure.
-            return False
-
-    def _dismiss_notice(self):
-        self._notice_banner.setVisible(False)
-        try:
-            self._notice_settings().setValue(_NOTICE_KEY, True)
-        except Exception:
-            logging.getLogger("anya_tennis").info("could not persist notice dismissal")
-
-    def _show_notice_details(self):
-        from PyQt6.QtWidgets import QMessageBox
-
-        box = QMessageBox(self)
-        box.setWindowTitle("Anya Tennis is becoming a paid app")
-        box.setTextFormat(Qt.TextFormat.RichText)
-        # Qt renders BOTH of a message box's text roles bold under Fusion, so
-        # without this the four paragraphs below come out as a wall of bold
-        # that is harder to read than plain text. Reset the weight here and let
-        # the <b> in the copy do the emphasising. Scoped to this box rather
-        # than the app-wide QMessageBox rule in _setup_ui, which the crash
-        # dialog also uses and which wants its short text to stay prominent.
-        box.setStyleSheet(
-            f"QLabel {{ font-weight: 400; color: {WHITE}; }}"
-            f"QLabel[text^='Anya Tennis is becoming'] {{ font-weight: 700; }}"
-        )
-        # setText is QMessageBox's HEADING slot and Qt renders it bold whatever
-        # markup it contains; the body belongs in setInformativeText, which is
-        # the regular-weight one. Putting four paragraphs in setText gives a
-        # wall of bold that is harder to read than plain text would have been.
-        box.setText("Anya Tennis is becoming a paid app — and you get a free year.")
-        box.setInformativeText(
-            "<p>You have been testing this through thirteen builds and "
-            "found things that were broken. When the next "
-            "version arrives, make an account with the same email address you "
-            "use for beta feedback and a year is applied automatically. You "
-            "will not be asked for a card.</p>"
-
-            "<p><b>After that, and for everyone else:</b> $40 a year, or $5 a "
-            "month. If it turns out not to be for you, there is a button in the "
-            "app that cancels and refunds you in full, any time within 14 days "
-            "of your first payment. No email, no form.</p>"
-
-            "<p><b>Nothing about how it works changes.</b> Your video is still "
-            "never uploaded — every part of finding the rallies still happens on "
-            "this computer. Signing in checks your subscription and nothing "
-            "else; paying happens on Stripe's own page in your browser.</p>"
-
-            "<p><b>This build is unaffected.</b> Keep using it exactly as you "
-            "are. Nothing here starts until you choose to update.</p>"
-        )
-        box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        box.exec()
 
     # ── Update banner ──────────────────────────────────────────────────────
 

@@ -56,6 +56,23 @@ APP_VERSION = "0.2.0"
 #   is deferred: Apple rejects http and IP-literal redirect URIs, so it needs a
 #   hosted https callback taking a form_post, and the App Store rule that would
 #   force it does not apply to Developer-ID DMG distribution.
+#   beta.14's pre-announcement banner is REMOVED here, not carried forward.
+#   It said Anya Tennis becomes paid "in the next version"; this is that
+#   version, so the strip is now a false statement about itself. Its CHANGELOG
+#   section and the block below stay, because they are the record of what
+#   testers were promised and this release is what honours it. The QSettings
+#   key went with it: a dismissal of an announcement that no longer exists is
+#   not worth reading, and the key was versioned precisely so the next
+#   announcement would be a new one rather than something a past dismissal
+#   silently suppressed.
+#   Also in this release, from a separate line of work: the app takes every
+#   chapter of one GoPro recording at once. A ~4 GB split arrives as
+#   GX010123.MP4, GX020123.MP4, ... and pipeline/join.py remuxes them into one
+#   file with `-c copy` before anything else runs, rather than teaching four
+#   independent single-source assumptions to carry a global-frame map. The
+#   picker is multi-select and shows the resolved recording order, because it
+#   sorts by the GoPro chapter field rather than trusting the order they came
+#   back in. Verified frame-exact and bit-identical against an unsplit clip.
 # beta.14 — nothing but an announcement. No pipeline change, no detector
 # change, no fix.
 #   The next version makes Anya Tennis a paid app, and the worst way to
