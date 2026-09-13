@@ -39,6 +39,33 @@ release a version it can't find a section for.
 - **It opens faster when you're signed out**, because it no longer loads the
   match-analysis machinery just to show you the sign-in screen.
 
+## 0.1.0-beta.14
+
+Nothing in this build changes how Anya Tennis works. It exists to tell you
+something before it happens.
+
+- **The next version will be a paid app**, and **you get a free year.** You've
+  been testing this through thirteen builds and telling me what was broken.
+  When the next version arrives, make an account with the same email address
+  you use for feedback and the year is applied automatically — you won't be
+  asked for a card.
+
+- **After that, and for everyone else:** $40 a year, or $5 a month. If it
+  turns out not to be for you, there's a button in the app that cancels and
+  refunds you in full, any time within 14 days of your first payment. No
+  email, no form, no explaining yourself.
+
+- **Your video is still never uploaded.** That isn't changing and won't.
+  Finding the rallies still happens entirely on your own Mac. Signing in
+  checks your subscription and nothing else; paying happens on Stripe's own
+  page in your browser, so your card details never touch the app.
+
+- **This build is unaffected.** Keep using it exactly as you are for as long
+  as you like. Nothing starts until you choose to update.
+
+There's a strip at the top of the window saying the same thing, with the
+details behind **What's changing?**. Close it and it stays closed.
+
 ## 0.1.0-beta.13
 
 - **A bumped camera no longer wrecks the rest of the video.** The app
