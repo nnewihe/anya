@@ -49,6 +49,8 @@ class GateScreen(QWidget):
         self._poll_worker = None
         self._player = None
         self._audio = None
+        # The unscaled poster; _rescale_poster fits a copy to the frame.
+        self._poster_src = None
         self._create_mode = False
         self._setup_ui()
 
@@ -98,19 +100,39 @@ class GateScreen(QWidget):
 
         # QVideoWidget must not be styled with QSS — the stylesheet paints over
         # the video surface. Same trap as scoreboard_tab's preview.
+        #
+        # Hidden until playback actually STARTS, and the poster shown from the
+        # first paint. The other way round -- an empty box that becomes a
+        # poster once the stream has failed -- is what a signed-out launch
+        # used to look like, and the failure takes a network round trip to
+        # arrive, so the first thing a customer saw was a hole in the screen.
         self._video = QVideoWidget()
         self._video.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._video.setVisible(False)
         inner.addWidget(self._video)
 
         self._poster = QLabel("Anya Tennis")
         self._poster.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._poster.setStyleSheet(f"color: {TEXT_DIM}; font-size: 13px; background: transparent;")
-        self._poster.setVisible(False)
+        # Ignored in both directions so a 1024x1536 pixmap cannot drive the
+        # column's width: the scaled copy is computed from the frame's size in
+        # _rescale_poster, which is the opposite dependency.
+        self._poster.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         inner.addWidget(self._poster)
+
+        # The poster is portrait, the column is not, so it has to be refitted
+        # whenever the window resizes rather than scaled once at build time.
+        self._poster_frame = frame
+        frame.installEventFilter(self)
 
         col.addWidget(frame, 1)
 
-        caption_row = QHBoxLayout()
+        # Wrapped in a widget rather than added as a bare layout so it can be
+        # hidden as a unit: both halves of it describe the VIDEO, and with the
+        # poster showing there is no video to caption or to unmute.
+        self._caption_row = QWidget()
+        caption_row = QHBoxLayout(self._caption_row)
+        caption_row.setContentsMargins(0, 0, 0, 0)
         caption = QLabel("One minute: a full match in, a highlight reel out.")
         caption.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
         caption_row.addWidget(caption)
@@ -121,9 +143,18 @@ class GateScreen(QWidget):
         self._sound_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._sound_btn.clicked.connect(self._toggle_sound)
         caption_row.addWidget(self._sound_btn)
-        col.addLayout(caption_row)
+        self._caption_row.setVisible(False)
+        col.addWidget(self._caption_row)
+
+        self._show_poster()
 
         return col
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if obj is getattr(self, "_poster_frame", None) and event.type() == QEvent.Type.Resize:
+            self._rescale_poster()
+        return super().eventFilter(obj, event)
 
     def _panel(self):
         panel = QWidget()
@@ -491,23 +522,55 @@ class GateScreen(QWidget):
     def _on_media_status(self, status):
         if status == QMediaPlayer.MediaStatus.InvalidMedia:
             self._fall_back_to_poster()
+        elif status in (QMediaPlayer.MediaStatus.BufferedMedia,
+                        QMediaPlayer.MediaStatus.BufferingMedia):
+            self._show_video()
         elif status == QMediaPlayer.MediaStatus.EndOfMedia and self._player:
             self._player.setPosition(0)
             self._player.play()
 
-    def _fall_back_to_poster(self):
-        """The video is decoration; the pricing carries the screen without it."""
+    def _show_poster(self):
+        """The state this screen starts in, and stays in without a video."""
         self._video.setVisible(False)
-        self._sound_btn.setVisible(False)
-        pixmap = self._poster_pixmap()
-        if pixmap is not None:
-            self._poster.setPixmap(pixmap)
-            self._poster.setText("")
-        else:
+        self._caption_row.setVisible(False)
+        if self._poster_src is None:
+            self._poster_src = self._poster_pixmap()
+        if self._poster_src is None:
             self._poster.setText(
                 "Watch your matches in minutes, not hours.\n"
                 "Point Anya at a full match; get back just the rallies.")
+        else:
+            self._poster.setText("")
+            self._rescale_poster()
         self._poster.setVisible(True)
+
+    def _show_video(self):
+        """Playback actually started, so the poster steps aside."""
+        self._poster.setVisible(False)
+        self._video.setVisible(True)
+        self._caption_row.setVisible(True)
+
+    def _rescale_poster(self):
+        """Fit the poster to the frame, preserving its aspect.
+
+        Scaled from the ORIGINAL every time rather than from the last scaled
+        copy: repeatedly rescaling a rescaled pixmap compounds the resampling,
+        and a window dragged wider then narrower again would end up visibly
+        softer than one that was never touched.
+        """
+        if self._poster_src is None or not hasattr(self, "_poster_frame"):
+            return
+        area = self._poster_frame.size()
+        if area.width() < 2 or area.height() < 2:
+            return
+        self._poster.setPixmap(self._poster_src.scaled(
+            area.width() - 2, area.height() - 2,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+
+    def _fall_back_to_poster(self):
+        """The video is decoration; the poster and pricing carry the screen."""
+        self._show_poster()
 
     @staticmethod
     def _poster_pixmap():
@@ -517,8 +580,9 @@ class GateScreen(QWidget):
         for candidate in (here / "assets" / "preview_poster.jpg",
                           Path(__file__).resolve().parent / "assets" / "preview_poster.jpg"):
             if candidate.is_file():
-                return QPixmap(str(candidate)).scaledToWidth(
-                    620, Qt.TransformationMode.SmoothTransformation)
+                pm = QPixmap(str(candidate))
+                if not pm.isNull():
+                    return pm
         return None
 
     def _toggle_sound(self):
