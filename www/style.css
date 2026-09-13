@@ -1,0 +1,322 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --lime: #dfff00;
+  --white: #ffffff;
+  --dark: #070807;
+}
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--dark);
+  font-family: Arial, Helvetica, sans-serif;
+  color: var(--white);
+}
+
+body {
+  overflow-x: hidden;
+}
+
+.hero {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    url("anya-poster.png") center center / cover no-repeat;
+}
+
+.hero-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.60) 0%,
+    rgba(0, 0, 0, 0.18) 58%,
+    rgba(0, 0, 0, 0.18) 100%
+  );
+  pointer-events: none;
+}
+
+.nav,
+.hero-content,
+.footer {
+  position: relative;
+  z-index: 2;
+}
+
+.nav {
+  width: 100%;
+  padding: 28px 42px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.brand {
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+}
+
+.brand span {
+  color: var(--lime);
+  font-size: 13px;
+  letter-spacing: 0.38em;
+  margin-left: 7px;
+}
+
+.contact-button {
+  border: 1px solid rgba(255,255,255,.8);
+  background: rgba(0,0,0,.25);
+  color: white;
+  border-radius: 999px;
+  padding: 11px 20px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: .2s ease;
+}
+
+.contact-button:hover {
+  background: var(--lime);
+  color: #000;
+  border-color: var(--lime);
+}
+
+.hero-content {
+  margin: auto 0;
+  padding: 80px 8vw 100px;
+  max-width: 780px;
+}
+
+.announcement {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--lime);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: .18em;
+  margin-bottom: 24px;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  background: var(--lime);
+  border-radius: 50%;
+  box-shadow: 0 0 14px var(--lime);
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(44px, 6vw, 82px);
+  line-height: .98;
+  letter-spacing: -.045em;
+  font-weight: 900;
+}
+
+h1 span {
+  color: var(--lime);
+}
+
+.launch-date {
+  margin: 30px 0 4px;
+  font-size: clamp(25px, 3vw, 38px);
+  font-weight: 800;
+}
+
+.platforms {
+  margin: 0;
+  font-size: 19px;
+  color: rgba(255,255,255,.88);
+  letter-spacing: .03em;
+}
+
+.footer {
+  padding: 20px 42px 28px;
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  font-size: 12px;
+  color: rgba(255,255,255,.72);
+  letter-spacing: .04em;
+}
+
+/* Modal */
+.modal[hidden] {
+  display: none;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,.78);
+  backdrop-filter: blur(6px);
+}
+
+.modal-card {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: 92vh;
+  overflow: auto;
+  padding: 34px;
+  border: 1px solid rgba(223,255,0,.45);
+  border-radius: 18px;
+  background: #111311;
+  box-shadow: 0 20px 80px rgba(0,0,0,.6);
+}
+
+.close-button {
+  position: absolute;
+  right: 18px;
+  top: 12px;
+  border: 0;
+  background: transparent;
+  color: white;
+  font-size: 32px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal-kicker {
+  margin: 0 0 8px;
+  color: var(--lime);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .2em;
+}
+
+.modal-card h2 {
+  margin: 0 0 8px;
+  font-size: 36px;
+}
+
+.modal-intro {
+  margin: 0 0 25px;
+  color: rgba(255,255,255,.72);
+}
+
+.modal-card label {
+  display: block;
+  margin: 15px 0 7px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.modal-card input,
+.modal-card textarea {
+  width: 100%;
+  border: 1px solid #454845;
+  border-radius: 9px;
+  padding: 12px 13px;
+  background: #080908;
+  color: white;
+  font: inherit;
+  outline: none;
+}
+
+.modal-card input:focus,
+.modal-card textarea:focus {
+  border-color: var(--lime);
+  box-shadow: 0 0 0 2px rgba(223,255,0,.12);
+}
+
+.modal-card textarea {
+  resize: vertical;
+}
+
+.send-button {
+  width: 100%;
+  margin-top: 20px;
+  padding: 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--lime);
+  color: #000;
+  font-size: 15px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.send-button:hover {
+  filter: brightness(1.08);
+}
+
+.email-note {
+  margin: 16px 0 0;
+  color: rgba(255,255,255,.5);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.email-note a {
+  color: var(--lime);
+}
+
+@media (max-width: 700px) {
+  .hero {
+    background-position: 62% center;
+  }
+
+  .hero-overlay {
+    background: rgba(0,0,0,.46);
+  }
+
+  .nav {
+    padding: 20px;
+  }
+
+  .brand {
+    font-size: 18px;
+  }
+
+  .brand span {
+    font-size: 10px;
+  }
+
+  .contact-button {
+    padding: 9px 14px;
+  }
+
+  .hero-content {
+    padding: 40px 28px 80px;
+  }
+
+  h1 {
+    font-size: clamp(42px, 12vw, 62px);
+  }
+
+  .launch-date {
+    font-size: 25px;
+  }
+
+  .platforms {
+    font-size: 16px;
+  }
+
+  .footer {
+    padding: 16px 20px 20px;
+    flex-direction: column;
+    font-size: 10px;
+  }
+
+  .modal-card {
+    padding: 28px 22px;
+  }
+}

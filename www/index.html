@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Anya Tennis — Watch your match in minutes, not hours. Coming September 18, 2026 for macOS and PC.">
+  <title>Anya Tennis — Coming Soon</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="hero" aria-label="Anya Tennis coming soon">
+    <div class="hero-overlay"></div>
+
+    <header class="nav">
+      <div class="brand">ANYA <span>TENNIS</span></div>
+      <button class="contact-button" id="openContact" type="button">Contact Us</button>
+    </header>
+
+    <section class="hero-content">
+      <div class="announcement">
+        <span class="dot"></span>
+        COMING SOON
+      </div>
+
+      <h1>Watch your match in minutes,<br><span>not hours.</span></h1>
+
+      <p class="launch-date">September 18, 2026</p>
+      <p class="platforms">For macOS &amp; PC</p>
+    </section>
+
+    <footer class="footer">
+      <span>© 2026 Anya Tennis</span>
+      <span>Cut the dead time. See the action.</span>
+    </footer>
+  </main>
+
+  <!-- Contact modal -->
+  <div class="modal" id="contactModal" role="dialog" aria-modal="true" aria-labelledby="contactTitle" hidden>
+    <div class="modal-backdrop" id="closeContactBackdrop"></div>
+    <div class="modal-card">
+      <button class="close-button" id="closeContact" type="button" aria-label="Close contact form">&times;</button>
+
+      <p class="modal-kicker">ANYA TENNIS</p>
+      <h2 id="contactTitle">Contact Us</h2>
+      <p class="modal-intro">Have a question or want to hear when Anya launches?</p>
+
+      <form id="contactForm">
+        <label for="name">Name</label>
+        <input id="name" name="name" type="text" autocomplete="name" required>
+
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" required>
+
+        <label for="message">Message</label>
+        <textarea id="message" name="message" rows="5" required></textarea>
+
+        <button class="send-button" type="submit">Send Message</button>
+      </form>
+
+      <p class="email-note">
+        This form opens your email app to send the message to
+        <a href="mailto:smarttenniswithandy@gmail.com">smarttenniswithandy@gmail.com</a>.
+      </p>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
