@@ -8,20 +8,21 @@ would be a Detect button that refuses — which reads as broken rather than as
 locked. And app.py only imports the tab modules once entitlement is confirmed,
 so a signed-out launch never pays for torch and ultralytics at all.
 
-The preview streams rather than shipping in the bundle. The installed app is
-already ~2 GB, and a video inside the DMG cannot be changed without a signed,
-notarized release. It must be a progressive-download MP4 (+faststart) rather
-than HLS: AVFoundation and Media Foundation both handle progressive MP4 out of
-the box, whereas HLS on Windows inside a PyInstaller bundle is exactly the sort
-of thing that works on the developer's machine and fails on a tester's.
-Everything about the video is best-effort — the poster and the pricing carry
-the screen on their own if it never loads.
+The left half is a still poster shipped in the bundle. It was a streamed MP4
+once, on the reasoning that a video inside the DMG cannot be changed without a
+signed, notarized release. What that bought in practice was a screen whose
+main panel depended on the network: the stream 404'd for as long as the video
+did not exist, and every launch spent a request finding that out. A still has
+none of that, needs no QtMultimedia backend on the user's machine, and cannot
+fail differently on Windows.
+
+Nothing here is best-effort any more, which is the point. If the poster file
+is missing the screen falls back to text, but the file ships in the bundle, so
+that path is a guard rather than an expectation.
 """
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QPixmap
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QSizePolicy, QVBoxLayout, QWidget,
@@ -47,8 +48,6 @@ class GateScreen(QWidget):
         self._session = None
         self._worker = None       # see authworker's docstring on holding these
         self._poll_worker = None
-        self._player = None
-        self._audio = None
         # The unscaled poster; _rescale_poster fits a copy to the frame.
         self._poster_src = None
         self._create_mode = False
@@ -85,10 +84,10 @@ class GateScreen(QWidget):
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 18, 0, 18)
         outer.setSpacing(28)
-        outer.addLayout(self._video_column(), 3)
+        outer.addLayout(self._poster_column(), 3)
         outer.addWidget(self._panel(), 2)
 
-    def _video_column(self):
+    def _poster_column(self):
         col = QVBoxLayout()
         col.setSpacing(10)
 
@@ -97,19 +96,6 @@ class GateScreen(QWidget):
         frame.setMinimumHeight(320)
         inner = QVBoxLayout(frame)
         inner.setContentsMargins(1, 1, 1, 1)
-
-        # QVideoWidget must not be styled with QSS — the stylesheet paints over
-        # the video surface. Same trap as scoreboard_tab's preview.
-        #
-        # Hidden until playback actually STARTS, and the poster shown from the
-        # first paint. The other way round -- an empty box that becomes a
-        # poster once the stream has failed -- is what a signed-out launch
-        # used to look like, and the failure takes a network round trip to
-        # arrive, so the first thing a customer saw was a hole in the screen.
-        self._video = QVideoWidget()
-        self._video.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._video.setVisible(False)
-        inner.addWidget(self._video)
 
         self._poster = QLabel("Anya Tennis")
         self._poster.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -126,26 +112,6 @@ class GateScreen(QWidget):
         frame.installEventFilter(self)
 
         col.addWidget(frame, 1)
-
-        # Wrapped in a widget rather than added as a bare layout so it can be
-        # hidden as a unit: both halves of it describe the VIDEO, and with the
-        # poster showing there is no video to caption or to unmute.
-        self._caption_row = QWidget()
-        caption_row = QHBoxLayout(self._caption_row)
-        caption_row.setContentsMargins(0, 0, 0, 0)
-        caption = QLabel("One minute: a full match in, a highlight reel out.")
-        caption.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-        caption_row.addWidget(caption)
-        caption_row.addStretch()
-
-        self._sound_btn = QPushButton("SOUND ON")
-        self._sound_btn.setStyleSheet(ghost_btn_css())
-        self._sound_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._sound_btn.clicked.connect(self._toggle_sound)
-        caption_row.addWidget(self._sound_btn)
-        self._caption_row.setVisible(False)
-        col.addWidget(self._caption_row)
-
         self._show_poster()
 
         return col
@@ -490,65 +456,19 @@ class GateScreen(QWidget):
     def _release_poll_worker(self):
         self._poll_worker = None
 
-    # ── Preview video ──────────────────────────────────────────────────────
-
-    def start_preview(self):
-        """Begin streaming. Called once the screen is actually visible, so a
-        launch that goes straight into the app never opens a connection."""
-        if self._player is not None:
-            return
-        try:
-            self._player = QMediaPlayer(self)
-            self._audio = QAudioOutput(self)
-            self._audio.setMuted(True)   # nobody wants a paywall that shouts
-            self._player.setAudioOutput(self._audio)
-            self._player.setVideoOutput(self._video)
-            self._player.errorOccurred.connect(self._on_video_error)
-            self._player.mediaStatusChanged.connect(self._on_media_status)
-            self._player.setSource(QUrl(cfg.PREVIEW_VIDEO_URL))
-            self._player.play()
-        except Exception as exc:  # noqa: BLE001 — a missing backend must not gate the gate
-            logger().info("preview video unavailable: %s", exc)
-            self._fall_back_to_poster()
-
-    def stop_preview(self):
-        if self._player is not None:
-            self._player.stop()
-
-    def _on_video_error(self, error, message=""):
-        logger().info("preview video error: %s %s", error, message)
-        self._fall_back_to_poster()
-
-    def _on_media_status(self, status):
-        if status == QMediaPlayer.MediaStatus.InvalidMedia:
-            self._fall_back_to_poster()
-        elif status in (QMediaPlayer.MediaStatus.BufferedMedia,
-                        QMediaPlayer.MediaStatus.BufferingMedia):
-            self._show_video()
-        elif status == QMediaPlayer.MediaStatus.EndOfMedia and self._player:
-            self._player.setPosition(0)
-            self._player.play()
+    # ── Poster ─────────────────────────────────────────────────────────────
 
     def _show_poster(self):
-        """The state this screen starts in, and stays in without a video."""
-        self._video.setVisible(False)
-        self._caption_row.setVisible(False)
         if self._poster_src is None:
             self._poster_src = self._poster_pixmap()
         if self._poster_src is None:
+            # Only reachable if the bundled file went missing.
             self._poster.setText(
                 "Watch your matches in minutes, not hours.\n"
                 "Point Anya at a full match; get back just the rallies.")
-        else:
-            self._poster.setText("")
-            self._rescale_poster()
-        self._poster.setVisible(True)
-
-    def _show_video(self):
-        """Playback actually started, so the poster steps aside."""
-        self._poster.setVisible(False)
-        self._video.setVisible(True)
-        self._caption_row.setVisible(True)
+            return
+        self._poster.setText("")
+        self._rescale_poster()
 
     def _rescale_poster(self):
         """Fit the poster to the frame, preserving its aspect.
@@ -568,10 +488,6 @@ class GateScreen(QWidget):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation))
 
-    def _fall_back_to_poster(self):
-        """The video is decoration; the poster and pricing carry the screen."""
-        self._show_poster()
-
     @staticmethod
     def _poster_pixmap():
         import sys
@@ -585,14 +501,6 @@ class GateScreen(QWidget):
                     return pm
         return None
 
-    def _toggle_sound(self):
-        if self._audio is None:
-            return
-        muted = not self._audio.isMuted()
-        self._audio.setMuted(muted)
-        self._sound_btn.setText("SOUND ON" if muted else "SOUND OFF")
-
     def closeEvent(self, event):
         self._stop_polling()
-        self.stop_preview()
         super().closeEvent(event)

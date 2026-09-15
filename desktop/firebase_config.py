@@ -96,9 +96,6 @@ FUNCTIONS_BASE = os.environ.get(
 # Streamed, not bundled: the installed app is already ~2 GB and a video that
 # ships inside the DMG cannot be changed without a signed, notarized release.
 # Must be a progressive-download MP4 with +faststart — see gate_screen.py.
-PREVIEW_VIDEO_URL = os.environ.get(
-    "ANYA_PREVIEW_VIDEO_URL", f"https://{PROJECT_ID}.web.app/preview.mp4"
-)
 LANDING_URL = "https://nnewihe.github.io/anya/"
 TERMS_URL = "https://nnewihe.github.io/anya/terms.html"
 PRIVACY_URL = "https://nnewihe.github.io/anya/privacy.html"

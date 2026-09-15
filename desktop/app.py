@@ -173,13 +173,11 @@ class RallyDetectorApp(QMainWindow):
 
     def _show_gate(self, result, session):
         self._gate.apply_state(result, session)
-        self._gate.start_preview()
         self._stack.setCurrentWidget(self._gate)
         self._account_btn.setVisible(session is not None)
 
     def _on_gate_entitled(self, result, session):
         self._session = session
-        self._gate.stop_preview()
         self._show_app()
 
     def _show_app(self):
