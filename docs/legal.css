@@ -1,0 +1,43 @@
+/* Shared by terms.html and privacy.html.
+   The landing page keeps its styles inline — it is one file that has to render
+   before anything else loads, and it carries layout these two don't need. */
+:root {
+  --black: #000000;
+  --surface: #141412;
+  --yellow: #E8FF3D;
+  --outline: #3A3A36;
+  --dim: #A0A099;
+  --white: #FFFFFF;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--black);
+  color: var(--white);
+  font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 720px; margin: 0 auto; padding: 40px 24px 80px; }
+header { display: flex; align-items: center; gap: 14px; }
+header img { width: 48px; height: 48px; }
+header a { color: var(--white); text-decoration: none; }
+h1 { font-size: 26px; margin: 0; letter-spacing: -0.01em; }
+h2 {
+  font-size: 13px; letter-spacing: 0.1em; color: var(--yellow);
+  margin: 36px 0 10px; font-weight: 700;
+}
+hr { border: none; border-top: 1px solid var(--yellow); margin: 18px 0 30px; }
+a { color: var(--yellow); }
+.updated { color: var(--dim); font-size: 13px; margin: 0; }
+.lead { color: var(--dim); }
+ul { padding-left: 20px; }
+li { margin-bottom: 6px; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 15px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--outline); vertical-align: top; }
+th { color: var(--dim); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.callout {
+  background: var(--surface); border-left: 3px solid var(--yellow);
+  border-radius: 6px; padding: 14px 16px; margin: 16px 0;
+}
+footer { color: var(--dim); font-size: 13px; margin-top: 48px; }
+footer a { color: var(--dim); }
