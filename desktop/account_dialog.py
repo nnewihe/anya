@@ -178,9 +178,14 @@ class AccountDialog(QDialog):
 
     def _open_portal(self):
         self._status.setText("Opening Stripe in your browser…")
+        # functions_client.create_portal_session already unwraps the response
+        # and hands back the URL STRING -- it is the one callable that does,
+        # while cancel_and_refund, revoke_sessions and get_entitlement all
+        # return the whole dict. Unwrapping it a second time here is what threw
+        # "'str' object has no attribute 'get'" the first time anyone pressed
+        # Manage Subscription against a real subscription.
         self._worker = authworker.open_portal(
-            self, self._session,
-            lambda r: self._open(r.get("url")), self._on_action_failed)
+            self, self._session, self._open, self._on_action_failed)
         self._worker.finished.connect(self._release_worker)
 
     def _open(self, url):
