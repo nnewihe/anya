@@ -320,3 +320,54 @@ h1 span {
     padding: 28px 22px;
   }
 }
+
+/* ── Download entry points ────────────────────────────────────────────────
+   Added when anyatennis.com gained a download page. The nav holds two
+   actions now, so they need a container; the primary one is filled because
+   downloading is the thing this site is for, and "Contact Us" is not. */
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-download {
+  background: var(--lime);
+  color: #101200;
+  border-color: var(--lime);
+  font-weight: 700;
+}
+
+.nav-download:hover {
+  filter: brightness(1.08);
+}
+
+.hero-cta {
+  margin-top: 26px;
+}
+
+.hero-cta a {
+  display: inline-block;
+  padding: 15px 30px;
+  border-radius: 999px;
+  background: var(--lime);
+  color: #101200;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+
+.hero-cta a:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 20px rgba(223, 255, 0, 0.4);
+}
+
+@media (max-width: 700px) {
+  /* Two nav buttons do not fit beside the brand on a phone; the hero's own
+     call to action carries the download there, so the nav keeps Contact. */
+  .nav-download {
+    display: none;
+  }
+}
