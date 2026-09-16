@@ -69,6 +69,41 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      # desktop/oauth_client.py is gitignored, so a CI clone does not have it.
+      # Without it firebase_config falls back to empty strings and gate_screen
+      # hides the "Continue with Google" button -- which is how 0.2.0's Windows
+      # installer shipped with one sign-in method silently missing while the
+      # locally-built macOS DMGs had it. build_windows.ps1 now runs
+      # check_oauth_client.py and fails if this step did not happen.
+      #
+      # Secrets rather than a committed file because the repo is PUBLIC: an
+      # installed-app client id and secret are non-confidential per RFC 8252
+      # s8.5, but publishing them lets a bot stand up a phishing app behind our
+      # own Google consent screen. See desktop/oauth_client.example.py.
+      #
+      # Built as an array rather than a here-string: PowerShell requires a
+      # here-string terminator at column 0, which cannot be indented inside a
+      # YAML block scalar.
+      - name: Write the Google OAuth client
+        working-directory: desktop
+        shell: pwsh
+        env:
+          ANYA_GOOGLE_CLIENT_ID: ${{ secrets.ANYA_GOOGLE_CLIENT_ID }}
+          ANYA_GOOGLE_CLIENT_SECRET: ${{ secrets.ANYA_GOOGLE_CLIENT_SECRET }}
+        run: |
+          if (-not $env:ANYA_GOOGLE_CLIENT_ID -or -not $env:ANYA_GOOGLE_CLIENT_SECRET) {
+            Write-Error "ANYA_GOOGLE_CLIENT_ID / ANYA_GOOGLE_CLIENT_SECRET are not set as repository secrets. The build would ship without Google sign-in."
+            exit 1
+          }
+          $lines = @(
+            '# Written by CI from repository secrets; never committed.',
+            '# See oauth_client.example.py for why this file is gitignored.',
+            ('GOOGLE_CLIENT_ID = "{0}"' -f $env:ANYA_GOOGLE_CLIENT_ID),
+            ('GOOGLE_CLIENT_SECRET = "{0}"' -f $env:ANYA_GOOGLE_CLIENT_SECRET)
+          )
+          Set-Content -Path oauth_client.py -Value $lines -Encoding utf8
+          Write-Host "Wrote desktop/oauth_client.py"
+
       - name: Build app and installer
         working-directory: desktop
         run: .\build_windows.ps1

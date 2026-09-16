@@ -112,6 +112,12 @@ Write-Host "==> Fetching the ffmpeg to bundle"
 Write-Host "==> Checking model defaults resolve to bundled files"
 Invoke-Checked -Exe 'python' -Arguments @('check_model_paths.py') -What 'Model path check'
 
+# Same shape of failure as the model paths: without desktop/oauth_client.py the
+# installer builds happily and ships with no "Continue with Google" button.
+# That is precisely how 0.2.0's Windows build shipped, because CI clones the
+# repo and the file is gitignored. See check_oauth_client.py.
+Invoke-Checked -Exe 'python' -Arguments @('check_oauth_client.py') -What 'Google sign-in check'
+
 # -- Clean ------------------------------------------------------------
 if (-not $KeepBuild) {
     Write-Host "==> Cleaning previous build"

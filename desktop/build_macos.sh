@@ -96,6 +96,12 @@ echo "==> Checking model defaults won't auto-download"
 # failure mid-run instead.
 "${RUN[@]}" "$PY" check_model_paths.py
 
+echo "==> Checking Google sign-in is configured"
+# Silent-until-it-isn't, exactly like the model paths above: without
+# oauth_client.py the app builds, signs and notarizes fine and simply has no
+# "Continue with Google" button. See check_oauth_client.py.
+"${RUN[@]}" "$PY" check_oauth_client.py
+
 echo "==> Ensuring the vendored static ffmpeg is present"
 # Idempotent: a no-op once vendor/<arch>/ffmpeg is in place and verifies. Run
 # here rather than left as a manual step because forgetting it produces an app
