@@ -20,7 +20,7 @@ this matters more here than it did for the update check.
 
 import time
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal, pyqtSlot
 
 import auth
 import authstore
@@ -226,6 +226,47 @@ def send_password_reset(parent, email, on_done):
 
 # ── Google ─────────────────────────────────────────────────────────────────
 
+class _GuiThreadUrlOpener(QObject):
+    """Calls `open_url` on the GUI thread, however far away the caller is.
+
+    QDesktopServices.openUrl is not safe to call from a worker thread. On
+    Windows it goes through ShellExecute, which needs COM initialised on the
+    calling thread; Qt does that for the GUI thread and QThread does not do it
+    for ours. The failure mode is silent and miserable — openUrl returns False,
+    no browser ever opens, and the loopback listener sits there until it times
+    out three minutes later and reports a cancellation the user never made.
+    macOS is forgiving here, which is the only reason this has not bitten yet.
+
+    The hop is a queued signal. `request` is emitted from the worker thread,
+    and because this object lives in the GUI thread (see below) Qt delivers
+    `_open` there. The connection is explicitly Queued rather than Auto: with
+    Auto, Qt compares threads at emit time and would call straight through if
+    a caller ever emitted from the GUI thread, which is harmless but makes the
+    guarantee depend on the caller.
+
+    Thread affinity is inherited from the parent at construction, so this must
+    be built on the GUI thread — GoogleWorker.__init__ runs there, in the slot
+    that handled the button press, not in run().
+    """
+
+    request = pyqtSignal(str)
+
+    def __init__(self, parent, open_url):
+        super().__init__(parent)
+        self._open_url = open_url
+        self.request.connect(self._open, Qt.ConnectionType.QueuedConnection)
+
+    @pyqtSlot(str)
+    def _open(self, url):
+        # Never let a browser that refuses to launch take down the GUI thread:
+        # the sign-in simply times out, which is what already happens when the
+        # user closes the tab.
+        try:
+            self._open_url(url)
+        except Exception as exc:  # noqa: BLE001
+            logger().exception("could not open the sign-in URL: %s", exc)
+
+
 class GoogleWorker(_Worker):
     """Browser sign-in. Emits (Entitlement, Session)."""
 
@@ -233,11 +274,14 @@ class GoogleWorker(_Worker):
 
     def __init__(self, parent, open_url):
         super().__init__(parent)
-        self._open_url = open_url
+        # Parented to the worker, so it is torn down by the same deleteLater
+        # that cleans the worker up rather than accumulating one per attempt
+        # on the gate screen.
+        self._opener = _GuiThreadUrlOpener(self, open_url)
 
     def work(self):
         try:
-            google_token = oauth_loopback.google_id_token(self._open_url)
+            google_token = oauth_loopback.google_id_token(self._opener.request.emit)
         except oauth_loopback.OAuthCancelled:
             self.failed.emit("")  # empty: the user meant to stop, don't scold
             return

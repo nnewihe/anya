@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Download Anya Tennis for Mac and Windows. Watch your match in minutes, not hours. $40 a year or $5 a month, with a full refund within 14 days.">
+  <title>Download — Anya Tennis</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Page-specific. The shared sheet gives the palette, the body, the nav and
+       the footer; everything below is the document layout that the hero page
+       has no use for. */
+    .page { position: relative; z-index: 2; max-width: 760px; margin: 0 auto;
+            padding: 0 28px 72px; }
+    .page h1 { font-size: clamp(34px, 5vw, 52px); font-weight: 900;
+               letter-spacing: -0.02em; line-height: 1.05; margin: 18px 0 10px; }
+    .page h1 span { color: var(--lime); }
+    .page h2 { font-size: 13px; letter-spacing: 0.18em; font-weight: 700;
+               color: var(--lime); margin: 46px 0 14px; }
+    .page p { line-height: 1.6; color: rgba(255, 255, 255, 0.82); }
+    .lede { font-size: 17px; }
+    hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.14); margin: 26px 0; }
+
+    /* Downloads. Every button stays visible and clickable whatever the
+       detection decides — it only ever reorders and relabels. */
+    .downloads { display: flex; flex-direction: column; gap: 10px; margin: 22px 0 8px; }
+    .btn { display: block; text-align: center; text-decoration: none;
+           padding: 16px 22px; border-radius: 999px; font-weight: 700;
+           font-size: 15px; letter-spacing: 0.02em;
+           background: var(--lime); color: #101200; border: 2px solid var(--lime);
+           transition: transform .12s ease, box-shadow .12s ease; }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 0 18px rgba(223,255,0,.35); }
+    .btn-alt { background: transparent; color: var(--white);
+               border-color: rgba(255, 255, 255, 0.28); }
+    .btn-alt:hover { border-color: var(--lime); color: var(--lime); box-shadow: none; }
+    .meta { font-size: 13px; color: rgba(255, 255, 255, 0.55); margin: 10px 0 0; }
+
+    .note { border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 10px;
+            padding: 15px 18px; margin: 16px 0; font-size: 14.5px;
+            background: rgba(255, 255, 255, 0.03); }
+    .note strong { color: var(--white); }
+
+    .prices { display: flex; gap: 14px; flex-wrap: wrap; margin: 18px 0 10px; }
+    .price { flex: 1 1 210px; border: 1px solid rgba(255,255,255,0.16);
+             border-radius: 12px; padding: 18px 20px; }
+    .price.pick { border-color: var(--lime); }
+    .price .amount { font-size: 30px; font-weight: 900; }
+    .price .per { color: rgba(255,255,255,0.6); font-size: 13.5px; margin-top: 4px; }
+    .price .tag { display: inline-block; min-height: 18px; font-size: 10.5px;
+                  font-weight: 700; letter-spacing: 0.14em; color: var(--lime); }
+
+    ol.steps { line-height: 1.7; padding-left: 20px; color: rgba(255,255,255,0.82); }
+    ol.steps li { margin-bottom: 8px; }
+    code { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px;
+           font-size: 13px; }
+
+    details { border-top: 1px solid rgba(255,255,255,0.12); padding: 13px 0; }
+    details summary { cursor: pointer; font-weight: 700; font-size: 15px; }
+    details p { font-size: 14.5px; }
+
+    .page-footer { max-width: 760px; margin: 0 auto; padding: 22px 28px 40px;
+                   border-top: 1px solid rgba(255,255,255,0.12);
+                   display: flex; gap: 16px; flex-wrap: wrap;
+                   justify-content: space-between;
+                   font-size: 13px; color: rgba(255,255,255,0.5); }
+    .page-footer a { color: rgba(255,255,255,0.72); }
+
+    @media (max-width: 700px) {
+      .nav { padding: 20px 22px; }
+      .page { padding: 0 22px 56px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="index.html" style="text-decoration:none;color:inherit">ANYA <span>TENNIS</span></a>
+    <a class="contact-button" href="index.html" style="text-decoration:none;display:inline-block">Home</a>
+  </header>
+
+  <main class="page">
+    <h1>Watch your match in <span>minutes</span>, not hours.</h1>
+    <p class="lede">Give it a match video and click the four corners of the court
+    once. You get back a reel of just the rallies — no waiting between points, no
+    walking to pick up balls. Everything happens on your own computer; your video
+    is never uploaded anywhere.</p>
+
+    <div class="downloads">
+      <a class="btn" id="dl-arm"
+         href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis.dmg">
+         DOWNLOAD FOR APPLE SILICON</a>
+      <a class="btn btn-alt" id="dl-intel"
+         href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis-Intel.dmg">
+         DOWNLOAD FOR INTEL MAC</a>
+      <a class="btn btn-alt" id="dl-win"
+         href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis-Setup.zip">
+         DOWNLOAD FOR WINDOWS</a>
+    </div>
+    <p class="meta">
+      <span id="version"></span>
+      macOS 11 (Big Sur) or later, or 64-bit Windows 10/11. About 330&nbsp;MB to
+      download, around 2&nbsp;GB installed.
+    </p>
+
+    <div class="note" id="which">
+      <strong>Which Mac do I have?</strong> Apple&nbsp;menu → About This Mac. If
+      it says <strong>Apple M1/M2/M3/M4</strong>, take Apple Silicon. If it says
+      <strong>Intel Core i5/i7/i9</strong>, take Intel. Macs sold before late
+      2020 are Intel.
+    </div>
+
+    <div class="note" id="intel-speed">
+      <strong>On an Intel Mac, expect it to be slow.</strong> Apple silicon Macs
+      have a graphics engine Anya Tennis uses for the heavy work; Intel Macs
+      don't, so everything runs on the main processor. A 7-minute clip takes
+      about 10 minutes on an M-series Mac and roughly <strong>an hour</strong> on
+      a 2018–2019 Intel Mac — longer on older ones. It still works, and you can
+      leave it running, but don't expect to wait for it.
+    </div>
+
+    <div class="note" id="win-warning">
+      <strong>The Windows download is a .zip, on purpose.</strong> The
+      installer isn't code-signed yet, and Chrome and Edge block unsigned
+      <code>.exe</code> downloads outright — you get a part-file called
+      something like <code>Unconfirmed 474709.crdownload</code> and no
+      installer. Browsers are far more relaxed about an archive, so the zip is
+      the download that actually arrives.
+      <p style="margin:10px 0 0">Unzip it and run
+      <code>AnyaTennis-Setup.exe</code>. Windows will still say
+      <em>"Windows protected your PC"</em> the first time — click
+      <strong>More info</strong> → <strong>Run anyway</strong>. That warning is
+      about the missing certificate, not about the file. It installs for your
+      user only and never asks for an administrator password.</p>
+      <p style="margin:10px 0 0">A signing certificate is in progress and
+      removes both. If your browser does let a bare <code>.exe</code> through,
+      <a href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis-Setup.exe">AnyaTennis-Setup.exe</a>
+      is published directly too.</p>
+    </div>
+
+    <div class="note" id="win-checksum">
+      <strong>Want to check what you downloaded?</strong> After unzipping,
+      <code>AnyaTennis-Setup.exe</code> has SHA-256<br>
+      <code style="word-break:break-all">9582428a7a1383916d773eabcbb74c007d68159156f361e63fbd9b85898051aa</code><br>
+      In PowerShell:
+      <code>Get-FileHash .\AnyaTennis-Setup.exe</code>. It should be
+      347,197,016 bytes.
+    </div>
+
+    <h2>PRICING</h2>
+    <div class="prices">
+      <div class="price pick">
+        <span class="tag">BEST VALUE</span>
+        <div class="amount">$40</div>
+        <div class="per">per year — works out at $3.33 a month</div>
+      </div>
+      <div class="price">
+        <span class="tag">&nbsp;</span>
+        <div class="amount">$5</div>
+        <div class="per">per month, cancel any time</div>
+      </div>
+    </div>
+    <p>Not for you? Cancel within 14 days for a full refund — one button inside
+    the app, no email required. One account, and you can install it on your own
+    computers. Download below and create your account when it opens.</p>
+    <p class="meta">Prices are in US dollars. Sales tax or VAT is added at
+    checkout where it applies, and Stripe shows you the total before you pay.</p>
+
+    <h2>INSTALLING ON A MAC</h2>
+    <ol class="steps">
+      <li>Click the Mac download above and wait for it to finish — it's a big
+          file.</li>
+      <li>Open the downloaded <code>.dmg</code>. A window appears with the Anya
+          Tennis icon and an Applications folder.</li>
+      <li>Drag <strong>Anya Tennis</strong> onto <strong>Applications</strong>.
+          That's the install.</li>
+      <li>Open it from Applications or Launchpad. Nothing else to install — no
+          Homebrew, no ffmpeg, no Terminal.</li>
+    </ol>
+    <div class="note">
+      You should <strong>not</strong> see any warning about an unidentified
+      developer on a Mac. The app is signed and notarized with Apple. If macOS
+      does warn you, don't work around it — that means something is wrong with
+      the build. Send a screenshot instead.
+    </div>
+
+    <h2>INSTALLING ON WINDOWS</h2>
+    <ol class="steps">
+      <li>Click the Windows download above — it's a <code>.zip</code>.</li>
+      <li>Right-click it → <strong>Extract All</strong>, then run
+          <code>AnyaTennis-Setup.exe</code> from the extracted folder.</li>
+      <li>At <em>"Windows protected your PC"</em>, click <strong>More
+          info</strong> → <strong>Run anyway</strong>. See the note above for
+          why that appears.</li>
+      <li>Follow the installer. It installs for your user only, so there's no
+          administrator prompt.</li>
+      <li>Open Anya Tennis from the Start menu.</li>
+    </ol>
+
+    <h2>UPDATING</h2>
+    <p>When a newer version is out, Anya Tennis shows a banner at the top of the
+    window the next time you open it. Click <strong>Download</strong>, quit the
+    app, and install the new one the same way — on a Mac, choose
+    <strong>Replace</strong> when it asks. Your videos, and everything the app
+    has already worked out about them, are untouched.</p>
+
+    <h2>QUESTIONS</h2>
+
+    <details>
+      <summary>Is my video uploaded anywhere?</summary>
+      <p>No. All the processing happens on your computer, and no video, image or
+      frame ever leaves it. There is no server that could receive one: the models
+      and the video tools are inside the app.</p>
+      <p>Three things do go over the internet, and that is the whole list.
+      Signing in and checking your subscription talks to Google (Firebase) and
+      exchanges your email address and a login token. Paying opens Stripe in your
+      browser — your card details go to Stripe, never to us and never through the
+      app. And on launch it asks GitHub what the latest version number is, with
+      no account and no identifier attached.</p>
+      <p>Nothing about your matches is ever sent: not filenames, not how many
+      reels you have made, not how long they were. See the
+      <a href="https://nnewihe.github.io/anya/privacy.html">privacy policy</a>.</p>
+    </details>
+
+    <details>
+      <summary>Do I need to be online to use it?</summary>
+      <p>Only occasionally. The app checks your subscription when it starts, and
+      if it can't reach the internet it keeps working for up to 14 days on what
+      it already knows. A reel that is already running never stops because the
+      connection dropped — the check happens at launch, not while it is
+      working.</p>
+    </details>
+
+    <details>
+      <summary>How do I cancel, and how does the refund work?</summary>
+      <p>Open <strong>Account</strong> in the top-right of the app. Within 14
+      days of your first payment there is a <strong>Cancel &amp; refund</strong>
+      button: press it and your subscription ends immediately and the full amount
+      goes back to your card, usually within a few business days. No email, no
+      form, no explaining yourself.</p>
+      <p>That offer can be used once per account. After the 14 days, the same
+      Account screen has <strong>Manage subscription</strong>, which opens Stripe
+      where you can cancel at the end of the period you have paid for. You keep
+      access until then.</p>
+    </details>
+
+    <details>
+      <summary>Why does Windows say the file isn't safe?</summary>
+      <p>Because the installer isn't code-signed yet. Chrome, Edge and Windows
+      all warn about installers they haven't seen signed by a known publisher —
+      that is a statement about the certificate, not about the file. It is also
+      why the Windows download is a zip: browsers block a bare unsigned
+      <code>.exe</code> before it finishes downloading, but let an archive
+      through. After unzipping, Windows still shows <em>"Windows protected your
+      PC"</em> once — <strong>More info</strong> → <strong>Run anyway</strong>.
+      If you'd rather verify than trust, the SHA-256 is published above. The Mac
+      build is signed and notarized with Apple and shows no warning; a Windows
+      certificate is in progress.</p>
+    </details>
+
+    <details>
+      <summary>I was a beta tester. Do I have to pay?</summary>
+      <p>No — you get a free year. Create an account with the same email address
+      you used during the beta and it is applied automatically; you will not be
+      asked for a card.</p>
+    </details>
+
+    <details>
+      <summary>Why is it so big?</summary>
+      <p>About 330&nbsp;MB to download, around 2&nbsp;GB installed. It carries
+      its own copies of the machine-learning models that find the ball and the
+      players, and of the video tools that cut the reel, so you don't have to
+      install anything separately.</p>
+    </details>
+  </main>
+
+  <footer class="page-footer">
+    <span>© 2026 Anya Tennis · Cut the dead time. See the action.</span>
+    <span>
+      <a href="https://nnewihe.github.io/anya/terms.html">Terms</a> ·
+      <a href="https://nnewihe.github.io/anya/privacy.html">Privacy</a>
+    </span>
+  </footer>
+
+  <script>
+  // Put the right download first. This ONLY reorders and relabels — every
+  // button stays visible and clickable, so a wrong guess costs a reader one
+  // extra glance rather than the download they came for.
+  (function () {
+    const arm = document.getElementById("dl-arm");
+    const intel = document.getElementById("dl-intel");
+    const win = document.getElementById("dl-win");
+    const box = arm.parentNode;
+    const which = document.getElementById("which");
+    const intelNote = document.getElementById("intel-speed");
+    const winNote = document.getElementById("win-warning");
+    const winSum = document.getElementById("win-checksum");
+
+    function promote(primary, others) {
+      primary.classList.remove("btn-alt");
+      others.forEach(b => b.classList.add("btn-alt"));
+      box.insertBefore(primary, box.firstChild);
+    }
+
+    const ua = navigator.userAgent || "";
+    const platform = navigator.platform || ua;
+    const isMac = /Mac/i.test(platform) && !/iPhone|iPad|iPod/i.test(ua);
+    const isWin = /Win/i.test(platform) || /Windows/i.test(ua);
+
+    if (isWin) {
+      promote(win, [arm, intel]);
+      win.textContent = "DOWNLOAD FOR WINDOWS";
+      arm.textContent = "Mac (Apple silicon)";
+      intel.textContent = "Mac (Intel)";
+      // Mac-only caveats are noise to a Windows reader.
+      which.style.display = "none";
+      intelNote.style.display = "none";
+      return;
+    }
+
+    if (!isMac) return;   // Linux, phones, anything unknown: leave as authored.
+
+    winNote.style.display = "none";   // not their problem
+    winSum.style.display = "none";
+
+    // User agent can't tell Apple silicon from Intel on a Mac — Safari and
+    // Chrome both report "Intel Mac OS X" on every machine. The WebGL renderer
+    // string can.
+    function isAppleSilicon() {
+      try {
+        const gl = document.createElement("canvas").getContext("webgl");
+        if (!gl) return null;
+        const ext = gl.getExtension("WEBGL_debug_renderer_info");
+        if (!ext) return null;
+        const r = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || "");
+        if (/apple\s*m\d|apple gpu/i.test(r)) return true;
+        if (/intel|radeon|geforce/i.test(r)) return false;
+        return null;
+      } catch (e) { return null; }
+    }
+
+    const silicon = isAppleSilicon();
+    if (silicon === null) {
+      // Couldn't tell. Say nothing rather than guess; both Mac buttons are
+      // already there and the "Which Mac?" note explains how to choose.
+      promote(arm, [intel, win]);
+      return;
+    }
+
+    const primary = silicon ? arm : intel;
+    const secondary = silicon ? intel : arm;
+    promote(primary, [secondary, win]);
+    primary.textContent = "DOWNLOAD FOR MAC";
+    secondary.textContent = silicon ? "Intel version" : "Apple Silicon version";
+    if (silicon) intelNote.style.display = "none";
+    which.innerHTML = "<strong>Detected " + (silicon ? "Apple silicon" : "an Intel Mac")
+      + ".</strong> The button above is the right build for this computer. If that "
+      + "looks wrong, check Apple menu → About This Mac and use the other link.";
+  })();
+
+  // Show the version people are about to download. Reads the releases list
+  // rather than /latest so a draft can never be advertised; fails silently,
+  // because a missing version number is not worth an error message.
+  fetch("https://api.github.com/repos/nnewihe/anya/releases")
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(rs => {
+      const rel = rs.find(r => !r.draft && r.tag_name.startsWith("desktop-v"));
+      if (rel) {
+        document.getElementById("version").innerHTML =
+          "<strong>Version " + rel.tag_name.replace("desktop-v", "") + "</strong> &middot; ";
+      }
+    })
+    .catch(() => {});
+  </script>
+</body>
+</html>
