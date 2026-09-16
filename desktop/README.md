@@ -461,12 +461,24 @@ Windows-specific notes:
   `walking_model.joblib` queued up behind it. Update it *after* the macOS side
   has been bumped and proven, never before.
 
-**Not yet wired into the release flow.** `release.sh` builds and uploads the
-two DMGs only, and <https://nnewihe.github.io/anya/> offers a Mac download; the
-Windows installer is still a CI artifact you fetch and attach by hand. Adding
-it to `release.sh` means uploading `AnyaTennis-Setup.exe` next to
-`AnyaTennis.dmg` on the same `desktop-v*` tag, which is what
-`update_check.py` already watches.
+**Wired into the release flow as of 0.2.0.** `release.sh` uploads
+`AnyaTennis-Setup.exe` alongside the two DMGs on the same `desktop-v*` tag, so
+<https://anyatennis.com/download.html> can link
+`/releases/latest/download/AnyaTennis-Setup.exe` permanently, exactly as it
+does for the DMGs.
+
+The installer is still **fetched by hand**, because PyInstaller cannot
+cross-compile and the build happens on a `windows-latest` runner:
+
+```bash
+gh run list --workflow=build-windows.yml -L 1
+gh run download <run-id> -D dist/windows
+```
+
+`release.sh` then refuses to publish if it is missing, the same way it refuses
+an unstapled DMG — once the download page advertises a PC build, a release
+without one is a broken link on a public page. `--no-windows` is the escape
+hatch for a deliberate Mac-only release, and it says so loudly.
 
 ## Design
 
