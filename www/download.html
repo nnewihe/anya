@@ -92,7 +92,7 @@
          href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis-Intel.dmg">
          DOWNLOAD FOR INTEL MAC</a>
       <a class="btn btn-alt" id="dl-win"
-         href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis-Setup.exe">
+         href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis-Setup.zip">
          DOWNLOAD FOR WINDOWS</a>
     </div>
     <p class="meta">
@@ -118,29 +118,27 @@
     </div>
 
     <div class="note" id="win-warning">
-      <strong>On Windows you'll be warned twice, and both are expected.</strong>
-      The installer isn't code-signed yet. That doesn't mean anything is wrong
-      with the file — it means we haven't bought a certificate yet — but your
-      browser and Windows both say so, in that order.
-      <ol class="steps" style="margin-top:10px">
-        <li><strong>Your browser may block the download.</strong> Chrome and
-            Edge stop unsigned installers and leave a part-file called
-            something like <code>Unconfirmed 474709.crdownload</code>. Open
-            <code>chrome://downloads</code> (or <code>edge://downloads</code>),
-            find the blocked entry, and choose <strong>Keep</strong> — it may be
-            behind the <strong>…</strong> menu. The real
-            <code>AnyaTennis-Setup.exe</code> appears once you do.</li>
-        <li><strong>Windows warns when you run it.</strong> At
-            <em>"Windows protected your PC"</em>, click <strong>More
-            info</strong> → <strong>Run anyway</strong>.</li>
-      </ol>
-      It installs for your user only and never asks for an administrator
-      password. A signing certificate is in progress; it removes both warnings.
+      <strong>The Windows download is a .zip, on purpose.</strong> The
+      installer isn't code-signed yet, and Chrome and Edge block unsigned
+      <code>.exe</code> downloads outright — you get a part-file called
+      something like <code>Unconfirmed 474709.crdownload</code> and no
+      installer. Browsers are far more relaxed about an archive, so the zip is
+      the download that actually arrives.
+      <p style="margin:10px 0 0">Unzip it and run
+      <code>AnyaTennis-Setup.exe</code>. Windows will still say
+      <em>"Windows protected your PC"</em> the first time — click
+      <strong>More info</strong> → <strong>Run anyway</strong>. That warning is
+      about the missing certificate, not about the file. It installs for your
+      user only and never asks for an administrator password.</p>
+      <p style="margin:10px 0 0">A signing certificate is in progress and
+      removes both. If your browser does let a bare <code>.exe</code> through,
+      <a href="https://github.com/nnewihe/anya/releases/latest/download/AnyaTennis-Setup.exe">AnyaTennis-Setup.exe</a>
+      is published directly too.</p>
     </div>
 
     <div class="note" id="win-checksum">
-      <strong>Want to check what you downloaded?</strong> The installer's
-      SHA-256 is<br>
+      <strong>Want to check what you downloaded?</strong> After unzipping,
+      <code>AnyaTennis-Setup.exe</code> has SHA-256<br>
       <code style="word-break:break-all">f3639e60582026b185066a6c4e560f9294041c4a4f04cfbd340d1a19b33fd187</code><br>
       In PowerShell:
       <code>Get-FileHash .\AnyaTennis-Setup.exe</code>. It should be
@@ -186,8 +184,9 @@
 
     <h2>INSTALLING ON WINDOWS</h2>
     <ol class="steps">
-      <li>Click the Windows download above and run
-          <code>AnyaTennis-Setup.exe</code>.</li>
+      <li>Click the Windows download above — it's a <code>.zip</code>.</li>
+      <li>Right-click it → <strong>Extract All</strong>, then run
+          <code>AnyaTennis-Setup.exe</code> from the extracted folder.</li>
       <li>At <em>"Windows protected your PC"</em>, click <strong>More
           info</strong> → <strong>Run anyway</strong>. See the note above for
           why that appears.</li>
@@ -247,11 +246,11 @@
       <summary>Why does Windows say the file isn't safe?</summary>
       <p>Because the installer isn't code-signed yet. Chrome, Edge and Windows
       all warn about installers they haven't seen signed by a known publisher —
-      that is a statement about the certificate, not about the file. Chrome
-      blocks the download outright and leaves a <code>.crdownload</code>
-      part-file; choose <strong>Keep</strong> in
-      <code>chrome://downloads</code>. Then at <em>"Windows protected your
-      PC"</em>, click <strong>More info</strong> → <strong>Run anyway</strong>.
+      that is a statement about the certificate, not about the file. It is also
+      why the Windows download is a zip: browsers block a bare unsigned
+      <code>.exe</code> before it finishes downloading, but let an archive
+      through. After unzipping, Windows still shows <em>"Windows protected your
+      PC"</em> once — <strong>More info</strong> → <strong>Run anyway</strong>.
       If you'd rather verify than trust, the SHA-256 is published above. The Mac
       build is signed and notarized with Apple and shows no warning; a Windows
       certificate is in progress.</p>
