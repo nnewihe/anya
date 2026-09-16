@@ -118,13 +118,33 @@
     </div>
 
     <div class="note" id="win-warning">
-      <strong>On Windows you'll see a warning, and it's expected.</strong> The
-      installer isn't code-signed yet, so Windows shows
-      <em>"Windows protected your PC"</em> the first time you run it. Click
-      <strong>More info</strong>, then <strong>Run anyway</strong>. It installs
-      for your user only and never asks for an administrator password. A signing
-      certificate is on the way; until then this is what an unsigned installer
-      looks like, and we'd rather tell you than have you wonder.
+      <strong>On Windows you'll be warned twice, and both are expected.</strong>
+      The installer isn't code-signed yet. That doesn't mean anything is wrong
+      with the file — it means we haven't bought a certificate yet — but your
+      browser and Windows both say so, in that order.
+      <ol class="steps" style="margin-top:10px">
+        <li><strong>Your browser may block the download.</strong> Chrome and
+            Edge stop unsigned installers and leave a part-file called
+            something like <code>Unconfirmed 474709.crdownload</code>. Open
+            <code>chrome://downloads</code> (or <code>edge://downloads</code>),
+            find the blocked entry, and choose <strong>Keep</strong> — it may be
+            behind the <strong>…</strong> menu. The real
+            <code>AnyaTennis-Setup.exe</code> appears once you do.</li>
+        <li><strong>Windows warns when you run it.</strong> At
+            <em>"Windows protected your PC"</em>, click <strong>More
+            info</strong> → <strong>Run anyway</strong>.</li>
+      </ol>
+      It installs for your user only and never asks for an administrator
+      password. A signing certificate is in progress; it removes both warnings.
+    </div>
+
+    <div class="note" id="win-checksum">
+      <strong>Want to check what you downloaded?</strong> The installer's
+      SHA-256 is<br>
+      <code style="word-break:break-all">f3639e60582026b185066a6c4e560f9294041c4a4f04cfbd340d1a19b33fd187</code><br>
+      In PowerShell:
+      <code>Get-FileHash .\AnyaTennis-Setup.exe</code>. It should be
+      347,195,739 bytes.
     </div>
 
     <h2>PRICING</h2>
@@ -225,11 +245,16 @@
 
     <details>
       <summary>Why does Windows say the file isn't safe?</summary>
-      <p>Because the installer isn't code-signed yet. SmartScreen warns about any
-      installer it hasn't seen signed by a known publisher — it is a statement
-      about the certificate, not about the file. Click <strong>More info</strong>
-      → <strong>Run anyway</strong>. The Mac build is signed and notarized with
-      Apple and shows no such warning; a Windows certificate is in progress.</p>
+      <p>Because the installer isn't code-signed yet. Chrome, Edge and Windows
+      all warn about installers they haven't seen signed by a known publisher —
+      that is a statement about the certificate, not about the file. Chrome
+      blocks the download outright and leaves a <code>.crdownload</code>
+      part-file; choose <strong>Keep</strong> in
+      <code>chrome://downloads</code>. Then at <em>"Windows protected your
+      PC"</em>, click <strong>More info</strong> → <strong>Run anyway</strong>.
+      If you'd rather verify than trust, the SHA-256 is published above. The Mac
+      build is signed and notarized with Apple and shows no warning; a Windows
+      certificate is in progress.</p>
     </details>
 
     <details>
@@ -268,6 +293,7 @@
     const which = document.getElementById("which");
     const intelNote = document.getElementById("intel-speed");
     const winNote = document.getElementById("win-warning");
+    const winSum = document.getElementById("win-checksum");
 
     function promote(primary, others) {
       primary.classList.remove("btn-alt");
@@ -294,6 +320,7 @@
     if (!isMac) return;   // Linux, phones, anything unknown: leave as authored.
 
     winNote.style.display = "none";   // not their problem
+    winSum.style.display = "none";
 
     // User agent can't tell Apple silicon from Intel on a Mac — Safari and
     // Chrome both report "Intel Mac OS X" on every machine. The WebGL renderer
