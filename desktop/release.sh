@@ -67,6 +67,21 @@ asset_for() {
 EXE_SRC="dist/windows/AnyaTennis-Setup-${VERSION}/AnyaTennis-Setup-${VERSION}.exe"
 EXE_ASSET="dist/AnyaTennis-Setup.exe"
 
+# The .zip is the download the site advertises, and the .exe ships beside it
+# for anyone who wants it directly.
+#
+# Chrome and Edge refuse an unsigned .exe at DOWNLOAD time -- Safe Browsing
+# leaves an "Unconfirmed NNNNNN.crdownload" part-file and no installer, which
+# is how the first PC download of 0.2.0 failed. They are markedly more relaxed
+# about an archive, so wrapping it moves the obstacle from "no file at all" to
+# one extra unzip. It is a mitigation, not a fix: only a code-signing
+# certificate removes the warnings, and SmartScreen still appears on first run.
+#
+# The name inside the archive carries no version, so the install instructions
+# on the site stay true across releases for the same reason the asset names do.
+ZIP_ASSET="dist/AnyaTennis-Setup.zip"
+ZIP_INNER="AnyaTennis-Setup.exe"
+
 echo "==> Releasing ${VERSION} as ${TAG}"
 
 if ! command -v gh >/dev/null; then
@@ -201,10 +216,15 @@ Intel Macs have no GPU acceleration for this work, so processing takes
 substantially longer than on Apple silicon — expect roughly an hour for a
 7-minute clip on a 2018–2019 Mac, and longer on older ones.
 
-**Windows** → \`AnyaTennis-Setup.exe\`, 64-bit Windows 10 or 11. The installer
-is not code-signed yet, so Windows shows *"Windows protected your PC"* on first
-run: click **More info** → **Run anyway**. It installs for your user only and
-asks for no administrator password.
+**Windows** → \`AnyaTennis-Setup.zip\`, 64-bit Windows 10 or 11. Unzip it and
+run \`AnyaTennis-Setup.exe\`.
+
+The installer is not code-signed yet, and that costs two warnings. Chrome and
+Edge block a bare \`.exe\` download outright — which is why the zip is the
+recommended download — and Windows then shows *"Windows protected your PC"* on
+first run: click **More info** → **Run anyway**. It installs for your user only
+and asks for no administrator password. \`AnyaTennis-Setup.exe\` is published
+directly as well for anyone whose browser lets it through.
 EOF
 
 # ── Tag ────────────────────────────────────────────────────────────────────
@@ -235,6 +255,29 @@ if [ "$WITH_WINDOWS" = 1 ]; then
     echo "==> Staging $EXE_ASSET ($(du -h "$EXE_SRC" | cut -f1))"
     cp "$EXE_SRC" "$EXE_ASSET"
     UPLOADS[${#UPLOADS[@]}]="$EXE_ASSET"
+
+    echo "==> Zipping $ZIP_ASSET"
+    ZIP_TMP="$(mktemp -d)"
+    cp "$EXE_SRC" "$ZIP_TMP/$ZIP_INNER"
+    rm -f "$ZIP_ASSET"
+    # -j so the archive holds the file and not the temp path it came from.
+    (cd "$ZIP_TMP" && zip -q -9 "$ZIP_INNER.zip" "$ZIP_INNER")
+    mv "$ZIP_TMP/$ZIP_INNER.zip" "$ZIP_ASSET"
+    rm -rf "$ZIP_TMP"
+
+    # An archive that does not round-trip to the exact installer is worse than
+    # no archive: it is what people will actually run, and nothing downstream
+    # would notice.
+    want="$(shasum -a 256 "$EXE_SRC" | cut -d" " -f1)"
+    got="$(unzip -p "$ZIP_ASSET" "$ZIP_INNER" | shasum -a 256 | cut -d" " -f1)"
+    if [ "$want" != "$got" ]; then
+        echo "error: $ZIP_ASSET does not extract to the built installer" >&2
+        echo "       built:     $want" >&2
+        echo "       extracted: $got" >&2
+        exit 1
+    fi
+    echo "==> Zip verified ($(du -h "$ZIP_ASSET" | cut -f1), extracts to ${want:0:12}…)"
+    UPLOADS[${#UPLOADS[@]}]="$ZIP_ASSET"
 fi
 
 echo "==> Creating release and uploading ${#UPLOADS[@]} asset(s)"
