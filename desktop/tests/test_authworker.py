@@ -109,3 +109,84 @@ def test_the_rotated_token_is_persisted(worker):
     worker.fresh_id_token(s)
     stored = authstore.load()
     assert stored is not None and stored.refresh_token == "r-rotated"
+
+
+# ── The GUI-thread hop for the sign-in URL ─────────────────────────────────
+#
+# These do create a QApplication, unlike everything above. It is the only way
+# to observe the property that matters — that the callback runs on a DIFFERENT
+# thread from the one that asked for it — because the hop IS Qt's event loop.
+
+@pytest.fixture
+def qapp():
+    """An offscreen QApplication, or a skip on a machine that can't make one."""
+    import os as _os
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+    app.processEvents()
+
+
+def test_the_url_is_opened_on_the_gui_thread_not_the_worker(qapp):
+    """The Windows hazard: QDesktopServices.openUrl off the GUI thread.
+
+    On Windows openUrl goes through ShellExecute, which needs COM initialised
+    on the calling thread — Qt does that for the GUI thread only. Calling it
+    from the worker returned False with no exception: no browser, no error,
+    and a three-minute wait ending in a cancellation nobody asked for.
+
+    So the assertion is about threads, not about the URL: whoever emits, the
+    callback must land on the thread that owns the opener.
+    """
+    import threading
+
+    from PyQt6.QtCore import QThread
+
+    import authworker
+
+    gui_thread = threading.get_ident()
+    seen = {}
+    done = threading.Event()
+
+    def fake_open_url(url):
+        seen["url"] = url
+        seen["thread"] = threading.get_ident()
+        done.set()
+
+    opener = authworker._GuiThreadUrlOpener(None, fake_open_url)
+
+    class _Emitter(QThread):
+        def run(self):
+            seen["emitted_from"] = threading.get_ident()
+            opener.request.emit("https://accounts.google.com/o/oauth2/v2/auth?x=1")
+
+    emitter = _Emitter()
+    emitter.start()
+    emitter.wait(5000)
+
+    # The queued call is sitting in the GUI thread's event queue until pumped.
+    assert "thread" not in seen, "delivered synchronously — the connection is not queued"
+    for _ in range(100):
+        qapp.processEvents()
+        if done.is_set():
+            break
+
+    assert done.is_set(), "the queued call never reached the GUI thread"
+    assert seen["url"].startswith("https://accounts.google.com/")
+    assert seen["emitted_from"] != gui_thread, "the emitter never left the GUI thread"
+    assert seen["thread"] == gui_thread
+
+
+def test_a_browser_that_refuses_to_launch_does_not_raise(qapp):
+    """openUrl failing must not take the GUI thread down with it — the sign-in
+    just times out, exactly as it does when the user closes the tab."""
+    import authworker
+
+    def exploding_open_url(url):
+        raise RuntimeError("no browser here")
+
+    opener = authworker._GuiThreadUrlOpener(None, exploding_open_url)
+    opener.request.emit("https://example.invalid/")
+    qapp.processEvents()  # would propagate out of here if it were not caught

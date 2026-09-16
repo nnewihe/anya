@@ -172,3 +172,25 @@ def test_redacted_carries_no_credential():
 
 def test_each_session_gets_its_own_salt():
     assert Session(refresh_token="a", uid="u").salt != Session(refresh_token="a", uid="u").salt
+
+
+def test_saves_on_a_platform_without_fchmod(monkeypatch):
+    """The Windows bug: os.fchmod is POSIX-only.
+
+    On Windows `os.fchmod` does not exist at all, so calling it raised
+    AttributeError — which save() does not catch, because it only catches
+    OSError. It escaped through authworker._Worker.run and the user saw
+    "Something went wrong. Please try again." immediately AFTER a successful
+    Google sign-in, with no clue that the failure was a file write.
+
+    macOS never saw it, which is exactly why this test removes the attribute
+    rather than trusting a win32 marker to run anywhere.
+    """
+    monkeypatch.delattr(os, "fchmod", raising=False)
+
+    s = make_session()
+    assert save(s) is True
+
+    got = load()
+    assert got is not None
+    assert got.refresh_token == s.refresh_token

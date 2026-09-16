@@ -159,7 +159,15 @@ def save(session: Session) -> bool:
         # rename within one filesystem, and open it 0600 from the start — a
         # chmod after the write leaves a window where the token is readable.
         tmp_fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".session-")
-        os.fchmod(tmp_fd, 0o600)
+        # os.fchmod is POSIX-only: it does not exist on Windows, and calling it
+        # there raised AttributeError, which save() does not catch — it escaped
+        # into authworker._Worker.run and surfaced as "Something went wrong"
+        # AFTER a perfectly good sign-in. Nothing is lost by skipping it there:
+        # POSIX mode bits are not how Windows protects a file, mkstemp's handle
+        # inherits the DACL of %LOCALAPPDATA%\Anya Tennis (owner-only), and
+        # os.chmod on Windows can only toggle the read-only attribute anyway.
+        if hasattr(os, "fchmod"):
+            os.fchmod(tmp_fd, 0o600)
         with os.fdopen(tmp_fd, "wb") as fh:
             tmp_fd = None  # fdopen owns it now
             fh.write(blob)
