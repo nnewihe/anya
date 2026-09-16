@@ -5,7 +5,74 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.1.0-beta.14"
+APP_VERSION = "0.2.0"
+# 0.2.0 — Anya Tennis becomes a paid product: accounts, subscriptions, and a
+# gate in front of the app.
+#   Dropping the -beta suffix is deliberate, not cosmetic. update_check._parse
+#   sorts a release ABOVE every beta of the same triple, so 0.2.0 reaches a
+#   tester holding 0.1.0-beta.13 as an update; and charging money for something
+#   labelled beta is a support burden nobody needs.
+#   Identity is Firebase Auth, spoken over the Identity Toolkit REST API with
+#   the public Web API key (desktop/auth.py). firebase-admin is a SERVER SDK --
+#   it authenticates with a service-account key, and shipping one in a
+#   PyInstaller bundle would hand every user a root credential for the project.
+#   Billing is Stripe, hosted Checkout only: the app asks a Cloud Function for
+#   a URL and opens it in the browser, so no Stripe key of any kind is in the
+#   client. Entitlement is a custom claim minted by the webhook (functions/),
+#   and firestore.rules makes the server the only writer -- patching out the
+#   local check grants nothing.
+#   Stdlib for all of it (urllib, http.server, hmac). update_check.py already
+#   proves HTTPS works from inside the signed, notarized bundle, so requests
+#   would have bought a certifi CA bundle in datas, four pins in
+#   constraints-windows.txt and four licences, to replace a urlopen wrapper.
+#   The offline story is the part worth understanding. An 11-minute local
+#   render must never die because wifi dropped, so entitlement is evaluated at
+#   LAUNCH and on entry to the app, never inside the render loop -- do not add
+#   a check to highlight_tab._on_detect. A verified user then works offline for
+#   14 days, and the window starts at the ID token's `iat`, stamped by Google
+#   inside a signed JWT rather than written down locally: the app cannot mint a
+#   token, so it cannot move the start of its own window. (The token's own exp
+#   is one hour, which is why grace can't just be "is the token valid".) Three
+#   further bounds: a clock high-water mark makes a backward clock fail closed,
+#   an offline-launch count bounds the window in usage where no clock can lie,
+#   and entExp keeps grace extending a missed CHECK and never a lapsed
+#   SUBSCRIPTION. desktop/tests/ pins all of it -- the first tests in this repo,
+#   because the interesting cases need a clock twenty days from now and are
+#   invisible to running the app for five minutes.
+#   app.py is now a QStackedWidget, and highlight_tab/scoreboard_tab are
+#   imported INSIDE _show_app() rather than at module scope: they pull in
+#   torch, ultralytics and sklearn, and a signed-out launch was about to spend
+#   seconds and hundreds of MB of RSS to draw a paywall. rally_app.spec already
+#   listed every pipeline.* module in hiddenimports, which is what keeps the
+#   packaged build working despite the import being invisible to static
+#   analysis -- do not remove those entries.
+#   Entitlements are stored in ~/Library/Application Support/Anya Tennis, NOT
+#   in the log directory: docs/index.html tells testers to open that folder and
+#   email app.log, and a refresh token in a folder we ask people to mail out is
+#   a token we gave away. applog gained app_data_dir() for this; the macOS log
+#   path is unchanged because it is quoted in the crash dialog and on the site.
+#   Beta testers are grandfathered a free year by hashed-email allowlist, so
+#   nobody who tested 13 builds for nothing meets a price. Sign in with Apple
+#   is deferred: Apple rejects http and IP-literal redirect URIs, so it needs a
+#   hosted https callback taking a form_post, and the App Store rule that would
+#   force it does not apply to Developer-ID DMG distribution.
+#   beta.14's pre-announcement banner is REMOVED here, not carried forward.
+#   It said Anya Tennis becomes paid "in the next version"; this is that
+#   version, so the strip is now a false statement about itself. Its CHANGELOG
+#   section and the block below stay, because they are the record of what
+#   testers were promised and this release is what honours it. The QSettings
+#   key went with it: a dismissal of an announcement that no longer exists is
+#   not worth reading, and the key was versioned precisely so the next
+#   announcement would be a new one rather than something a past dismissal
+#   silently suppressed.
+#   Also in this release, from a separate line of work: the app takes every
+#   chapter of one GoPro recording at once. A ~4 GB split arrives as
+#   GX010123.MP4, GX020123.MP4, ... and pipeline/join.py remuxes them into one
+#   file with `-c copy` before anything else runs, rather than teaching four
+#   independent single-source assumptions to carry a global-frame map. The
+#   picker is multi-select and shows the resolved recording order, because it
+#   sorts by the GoPro chapter field rather than trusting the order they came
+#   back in. Verified frame-exact and bit-identical against an unsplit clip.
 # beta.14 — nothing but an announcement. No pipeline change, no detector
 # change, no fix.
 #   The next version makes Anya Tennis a paid app, and the worst way to

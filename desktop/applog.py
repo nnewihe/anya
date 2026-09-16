@@ -21,24 +21,59 @@ from version import APP_VERSION
 _LOGGER_NAME = "anya_tennis"
 
 
-def log_dir() -> Path:
-    """Per-platform user log directory. Best-effort creation: callers (e.g.
+def _ensure(d: Path) -> Path:
+    """Best-effort mkdir shared by both directory helpers. Callers (e.g.
     error-message text that just wants the path to display) must get a path
     back even if the directory couldn't be created — actually writing to it
-    is setup_logging()'s job, which handles that failure separately."""
-    if sys.platform == "darwin":
-        d = Path.home() / "Library" / "Logs" / "Anya Tennis"
-    elif sys.platform == "win32":
-        import os
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-        d = Path(base) / "Anya Tennis" / "logs"
-    else:
-        d = Path.home() / ".local" / "share" / "anya-tennis" / "logs"
+    is the caller's job, which handles that failure separately."""
     try:
         d.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
     return d
+
+
+def app_data_dir() -> Path:
+    """Per-platform directory for state the app keeps between runs.
+
+    Deliberately NOT log_dir(). The signed-in session file lives here, and it
+    carries a Firebase refresh token — while docs/index.html tells testers to
+    open the log directory and email us app.log when something breaks. A
+    credential inside a directory we actively ask people to mail out is a
+    credential we have handed away.
+
+    On Windows the two happen to nest (logs are a subdirectory of this), which
+    is exactly the layout that shipped before this function existed. On macOS
+    they are deliberately far apart: Application Support vs Library/Logs.
+    """
+    if sys.platform == "darwin":
+        d = Path.home() / "Library" / "Application Support" / "Anya Tennis"
+    elif sys.platform == "win32":
+        import os
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        d = Path(base) / "Anya Tennis"
+    else:
+        import os
+        base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        d = Path(base) / "anya-tennis"
+    return _ensure(d)
+
+
+def log_dir() -> Path:
+    """Per-platform user log directory.
+
+    The macOS path is ``~/Library/Logs/Anya Tennis`` rather than a subdirectory
+    of app_data_dir(): it is the platform convention, it is what Console.app
+    shows, and it is the path printed in the crash dialog and quoted in
+    docs/index.html. Moving it would strand every existing tester's
+    instructions, so the two helpers stay separate rather than one being
+    written in terms of the other.
+    """
+    if sys.platform == "darwin":
+        d = Path.home() / "Library" / "Logs" / "Anya Tennis"
+    else:
+        d = app_data_dir() / "logs"
+    return _ensure(d)
 
 
 def log_path() -> Path:

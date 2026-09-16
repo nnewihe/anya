@@ -8,31 +8,43 @@ switches by changing an import.
     segments, out_path = build_reel(video, output, cfg=Anya2Config(),
                                     on_progress=cb)
 
+`video` may be a single path or several: GoPro chapters of one recording are
+joined into one file first (`pipeline.join`), and every stage after that sees
+an ordinary single source video.  See that module for why the join happens
+here rather than the pipeline learning to read a list.
+
 Stages, and why they are in this order
 --------------------------------------
-  1 CALIBRATION   the court corners, prompted once per video and cached.  This
+  1 JOIN          several GoPro chapter files -> one video.  A no-op, and not
+                  even a file, for the single-video case that is still the
+                  normal one.
+  2 CALIBRATION   the court corners, prompted once per video and cached.  This
                   opens a cv2 window, so it MUST run on the caller's main
                   thread -- `ensure_court` is separated out for exactly that,
                   and the desktop app calls it before starting the worker.
-  2 CAMERA TRACK  where each frame sits relative to the frame those corners were
+  3 CAMERA TRACK  where each frame sits relative to the frame those corners were
                   clicked on.  BEFORE perceive, and not merely for tidiness:
                   the far pose pass crops a fixed rectangle around the far
                   baseline, and that rectangle has to be sized to cover
                   everywhere the camera went, which is only knowable once the
                   track exists.  It also builds the 540p proxy that the near
                   pass then reuses, so it costs one decode, not two.
-  3 PERCEIVE      the two pose passes.  The whole cost of the pipeline; see
+  4 PERCEIVE      the two pose passes.  The whole cost of the pipeline; see
                   perceive.py for why one ROI cannot serve both ends.
-  4 TRACKS        <=2 near + <=2 far player slots on one timeline.
-  5 END SIGNALS   the walking classifier and near_end's four pose signals, both
+  5 TRACKS        <=2 near + <=2 far player slots on one timeline.
+  6 END SIGNALS   the walking classifier and near_end's four pose signals, both
                   read off the near track.  Agent 3 needs them; nothing else
                   does.
-  6 DETECTORS     the three agents, independently.
-  7 ORCHESTRATE   structure, rules, recovery, smoothing -> segments.
-  8 CUT           ffmpeg.
+  7 DETECTORS     the three agents, independently.
+  8 ORCHESTRATE   structure, rules, recovery, smoothing -> segments.
+  9 CUT           ffmpeg.
 
-Progress is reported as (stage_index, n_stages, label, fraction) to match what
-`rally_reel` emits, so the app's existing progress handling works unchanged.
+Progress is reported as (stage_index, n_stages, label, fraction), stages
+numbered from ONE -- which is what the desktop app's bar already assumes when
+it places a stage's fraction at `(i - 1 + frac) / n`.  It mattered little
+while stage one was a cached calibration check; the join is minutes of I/O
+with a real fraction to report, and off by one it would sit at zero for all
+of them.
 """
 
 import json
@@ -54,7 +66,7 @@ from pipeline.anya2.config import Anya2Config
 from pipeline.anya2.contract import dump_events
 from pipeline.anya2.orchestrator import SEGMENTS_SUFFIX, build_reel as orchestrate
 
-N_STAGES = 8
+N_STAGES = 9
 
 
 def _emit(cb, i, label, frac=None):
@@ -70,12 +82,18 @@ def _emit(cb, i, label, frac=None):
             pass
 
 
-def ensure_court(video: str) -> None:
+def ensure_court(video, on_progress=None) -> None:
     """Prompt for the court corners if they are not cached.
 
     Separated from `build_reel` because it opens an OpenCV window: it has to run
     on the main thread, before any worker starts.  Idempotent once cached.
+
+    Accepts the same one-or-many `video` as `build_reel`, and joins first --
+    the corners are clicked on the JOINED file, because that is what every
+    later stage indexes into.  The join is cached, so `build_reel` calling
+    `resolve_input` again a moment later costs a sidecar read.
     """
+    video = _join(video, on_progress)
     from pipeline.anya2 import court as C
     if os.path.isfile(C.court_cache_path(video)):
         return
@@ -83,14 +101,29 @@ def ensure_court(video: str) -> None:
     init_court(video, analysis_size=C.ANALYSIS_SIZE)
 
 
+def _join(video, on_progress=None) -> str:
+    """One source path from whatever the caller passed.
+
+    A single path comes back untouched; several are remuxed into one file in
+    the artifact dir.  Every stage below this line takes the result and knows
+    nothing about chapters.
+    """
+    from pipeline import join as J
+    return J.resolve_input(
+        video, on_progress=(lambda f: _emit(on_progress, 1, "Joining video files", f))
+        if on_progress else None)
+
+
 def _stem(video: str) -> Tuple[str, str]:
     """The video's OWN directory and stem -- NOT the artifact dir.
 
-    Used only for the output video's default location, which must stay beside
-    the input regardless of any work-dir override: the app's tmp_anya holds
-    calibration and interim files, never the finished reel.  Every cache or
-    event file uses `pipeline.workdir.artifact_dir` instead -- see
-    `_end_signals` and `build_reel` below for the split.
+    The DIRECTORY half is used only for the output video's default location,
+    which must stay beside the input regardless of any work-dir override: the
+    app's tmp_anya holds calibration and interim files, never the finished
+    reel.  (With chapter inputs it is the FIRST CHAPTER that supplies it, not
+    the join -- the join itself lives in tmp_anya.)  Every cache or event file
+    uses `pipeline.workdir.artifact_dir` instead, paired with the stem half of
+    this -- see `_end_signals` and `build_reel` below for the split.
     """
     d = os.path.dirname(os.path.abspath(video))
     return d, os.path.splitext(os.path.basename(video))[0]
@@ -186,7 +219,7 @@ def cut(video: str, segments: List[dict], output: str,
         # of seconds to encode, which would be the whole latency of Cancel.
         if cancel.run(cmd, capture_output=True).returncode == 0:
             parts.append(p)
-        _emit(on_progress, 7, f"Cutting segment {i + 1}/{len(segments)}",
+        _emit(on_progress, 9, f"Cutting segment {i + 1}/{len(segments)}",
               (i + 1) / len(segments))
     if not parts:
         raise RuntimeError("every segment failed to encode")
@@ -204,44 +237,55 @@ def cut(video: str, segments: List[dict], output: str,
     return output
 
 
-def build_reel(video_path: str, output_path: Optional[str] = None,
+def build_reel(video_path, output_path: Optional[str] = None,
                cfg: Optional[Anya2Config] = None,
                on_progress: Optional[Callable] = None,
                dry_run: bool = False) -> Tuple[List[dict], Optional[str]]:
-    """Video in, cut reel out.  Signature-compatible with rally_reel.build_reel."""
+    """Video in, cut reel out.  Signature-compatible with rally_reel.build_reel.
+
+    `video_path` is one path, or several GoPro chapters of one recording that
+    are joined into one before anything else runs.
+    """
     cfg = cfg or Anya2Config()
     from pipeline import workdir as WD
-    video_dir, st = _stem(video_path)
-    # The output default is the INPUT's own directory, always -- never the
-    # work-dir override.  Every other path below uses the artifact dir.
-    output_path = output_path or os.path.join(video_dir, f"{st}_anya2_reel.mp4")
+    # The output default comes from the FIRST INPUT, not the join: a joined
+    # file lives in the artifact dir, which under the desktop app is the
+    # tmp_anya the run deletes on its way out -- defaulting the reel into it
+    # would throw away the only thing the run was for.
+    first = video_path if isinstance(video_path, (str, os.PathLike)) else video_path[0]
+    src_dir, src_st = _stem(first)
+    output_path = output_path or os.path.join(src_dir, f"{src_st}_anya2_reel.mp4")
+
+    _emit(on_progress, 1, "Joining video files")
+    video_path = _join(video_path, on_progress)
+    _, st = _stem(video_path)
     d = WD.artifact_dir(video_path)
 
-    _emit(on_progress, 0, "Court calibration")
+    _emit(on_progress, 2, "Court calibration")
     ensure_court(video_path)
 
     # Before perceive: `PC.far`'s crop rectangle is sized from this track, and
     # a crop is a fixed ffmpeg rectangle that cannot follow a moving camera.
-    _emit(on_progress, 1, "Tracking the camera")
+    _emit(on_progress, 3, "Tracking the camera")
     CAM.estimate(video_path, force=cfg.perceive.force,
                  sample_fps=cfg.perceive.camera_sample_fps or CAM.SAMPLE_FPS,
-                 on_progress=lambda fr: _emit(on_progress, 1,
+                 on_progress=lambda fr: _emit(on_progress, 3,
                                               "Tracking the camera", fr))
 
-    _emit(on_progress, 2, "Detecting players (near)")
+    _emit(on_progress, 4, "Detecting players (near)")
     near_npz = PC.near(video_path, device=cfg.perceive.device,
                        pose_fps=cfg.perceive.pose_fps, force=cfg.perceive.force)
-    _emit(on_progress, 2, "Detecting players (far)", 0.5)
+    _emit(on_progress, 4, "Detecting players (far)", 0.5)
     far_npz = PC.far(video_path, device=cfg.perceive.device,
                      pose_fps=cfg.perceive.pose_fps, force=cfg.perceive.force)
 
-    _emit(on_progress, 3, "Building player tracks")
+    _emit(on_progress, 5, "Building player tracks")
     TR.build(video_path, near_npz, far_npz, verbose=False)
 
-    _emit(on_progress, 4, "Player motion signals")
+    _emit(on_progress, 6, "Player motion signals")
     _end_signals(video_path, force=cfg.perceive.force)
 
-    _emit(on_progress, 5, "Detecting serves and point ends")
+    _emit(on_progress, 7, "Detecting serves and point ends")
     if cfg.near.enabled:
         ev = NS.detect_video(video_path, verbose=False,
                              threshold=cfg.near.threshold or NS.THRESHOLD,
@@ -262,7 +306,7 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
                              min_live_s=cfg.end.min_live_s)
         dump_events(ev, os.path.join(d, f"{st}{PE.EVENTS_SUFFIX}"))
 
-    _emit(on_progress, 6, "Assembling the reel")
+    _emit(on_progress, 8, "Assembling the reel")
     # A disabled agent is disabled for the ORCHESTRATOR too, not merely skipped
     # here -- its events are cached on disk and would otherwise still be read.
     cfg.reel.use_near = cfg.near.enabled
@@ -275,6 +319,6 @@ def build_reel(video_path: str, output_path: Optional[str] = None,
     if dry_run or not segments:
         return segments, None
 
-    _emit(on_progress, 7, "Cutting video", 0.0)
+    _emit(on_progress, 9, "Cutting video", 0.0)
     out = cut(video_path, segments, output_path, cfg, on_progress)
     return segments, out

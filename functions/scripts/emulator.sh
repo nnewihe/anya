@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# emulator.sh — start the Firebase emulator suite for local development.
+#
+# Wraps `firebase emulators:start` with the three things that otherwise make it
+# fail in ways that are hard to read:
+#
+#   1. The Firestore emulator is a Java program, and macOS ships no JRE. If
+#      openjdk is installed keg-only via Homebrew (the usual case) it is not on
+#      PATH, and the emulator dies with "Unable to locate a Java Runtime".
+#   2. Firebase `params` with no value make the CLI PROMPT for one. Nothing
+#      warns you: the suite appears to start, and every call 404s with "valid
+#      functions are <nothing>" while the process sits on a question. The
+#      params all have defaults now, but the fake price ids still have to come
+#      from somewhere for planOf() to resolve a plan.
+#   3. `demo-` project ids put the suite in offline mode, so nothing can
+#      accidentally reach a real project.
+#
+# Values written here are deliberately fake. Never point this at live keys —
+# use `firebase emulators:start` directly with a real project for that.
+#
+#   ./scripts/emulator.sh          # start
+#
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+PROJECT="${ANYA_SPIKE_PROJECT:-demo-anya}"
+
+# Java. Test that it RUNS, not that it exists: macOS ships a /usr/bin/java
+# stub that is present on every Mac and fails when invoked ("Unable to locate a
+# Java Runtime"). `command -v java` therefore succeeds on a machine with no JDK
+# at all, and the emulator then dies several steps later with an error that
+# looks like a PATH problem.
+java_works() { java -version >/dev/null 2>&1; }
+
+if ! java_works; then
+    for candidate in /opt/homebrew/opt/openjdk/bin /usr/local/opt/openjdk/bin; do
+        if [ -x "$candidate/java" ]; then
+            export PATH="$candidate:$PATH"
+            break
+        fi
+    done
+fi
+if ! java_works; then
+    echo "error: the Firestore emulator needs a Java runtime." >&2
+    echo "       brew install openjdk" >&2
+    echo "       (Homebrew installs it keg-only, so it is not on PATH; this" >&2
+    echo "        script picks it up from the Cellar without a sudo symlink.)" >&2
+    exit 1
+fi
+echo "==> java: $(java -version 2>&1 | head -1)"
+
+# Params. Firebase reads .env.<projectId>; it is gitignored, so write it fresh
+# rather than expecting it to be checked out.
+# Written ONLY if absent. Once you put real Stripe TEST keys in here (see
+# STRIPE_SETUP.md) this script must not clobber them -- re-fetching a
+# `stripe listen` secret and re-pasting price ids on every restart is exactly
+# the kind of friction that makes people stop using the emulator.
+# Delete the file to get the fake defaults back.
+ENV_FILE=".env.${PROJECT}"
+if [ -f "$ENV_FILE" ]; then
+    echo "==> using existing $ENV_FILE (delete it to reset to fake defaults)"
+    if grep -q "sk_test_emulator_not_a_real_key" "$ENV_FILE"; then
+        echo "    note: still the placeholder Stripe key — fine for the S3 spike,"
+        echo "          but real Checkout needs a real test key (STRIPE_SETUP.md)."
+    fi
+else
+    cat > "$ENV_FILE" <<ENVEOF
+# Local emulator only. Created by scripts/emulator.sh; edit freely, it will not
+# be overwritten. Gitignored. NEVER put live (sk_live_/whsec_ from a live
+# endpoint) values here.
+PRICE_ANNUAL=price_annual_spike
+PRICE_MONTHLY=price_monthly_spike
+SUCCESS_URL=http://127.0.0.1:5000/paid.html
+CANCEL_URL=http://127.0.0.1:5000/cancelled.html
+STRIPE_SECRET_KEY=sk_test_emulator_not_a_real_key
+STRIPE_WEBHOOK_SECRET=whsec_spike_secret
+ENVEOF
+    echo "==> wrote $ENV_FILE (fake defaults, gitignored)"
+fi
+
+npm run build
+
+echo "==> starting emulators for project $PROJECT"
+exec firebase emulators:start --only functions,firestore,auth --project "$PROJECT"

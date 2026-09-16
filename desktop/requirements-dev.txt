@@ -1,0 +1,10 @@
+# Development-only. NOT installed by the Windows CI build
+# (.github/workflows/build-windows.yml installs requirements.txt under
+# constraints-windows.txt) and NOT bundled: 'pytest' is already listed in
+# rally_app.spec's `excludes`, so the suite costs the DMG nothing.
+#
+#   python3 -m pytest desktop/tests/
+#
+# The suite deliberately covers only the pure modules (auth, entitlement,
+# authstore, oauth_loopback) — no QApplication, no display, no network.
+pytest>=8.0

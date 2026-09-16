@@ -270,6 +270,82 @@ offline too, instead of requiring a live call to Apple at exactly the moment
 a tester double-clicks it. Output: `dist/Anya Tennis <version>.dmg`, named
 from `version.py` — that's the file to actually distribute.
 
+## Accounts and subscriptions
+
+Since 0.2.0 the app is gated: `app.py` is a `QStackedWidget` whose first page
+is `gate_screen.GateScreen` and whose second is the two tabs, built only once
+entitlement is confirmed. The server half lives in `functions/` — see
+`functions/README.md`.
+
+| Module | |
+|---|---|
+| `auth.py` | Firebase Identity Toolkit REST client. No Qt. |
+| `entitlement.py` | The state machine and the offline grace math. No Qt. |
+| `authstore.py` | The session file. The only module that touches credentials. |
+| `oauth_loopback.py` | Google sign-in: PKCE + a loopback redirect. |
+| `functions_client.py` | Calling the Cloud Functions callables. |
+| `authworker.py` | All of the above, on QThreads. |
+| `gate_screen.py` | The signed-out / unentitled screen. |
+| `account_dialog.py` | Plan, billing, cancel & refund, sign out. |
+| `firebase_config.py` | Public identifiers only — see its docstring. |
+
+Two rules worth not rediscovering:
+
+- **Never check entitlement inside a render.** It is evaluated at launch and on
+  the transition into the app, and nowhere else. An eleven-minute reel must not
+  die because a hotel wifi dropped. Do not add a call in
+  `highlight_tab._on_detect` or the scoreboard render row.
+- **The session file is not in the log directory.** `docs/index.html` tells
+  testers to open the log folder and email `app.log`. The refresh token lives in
+  `applog.app_data_dir()` instead — `~/Library/Application Support/Anya Tennis`.
+
+### Developing without billing
+
+```bash
+ANYA_FORCE_GATE=1 python3 app.py       # always show the gate
+ANYA_FAKE_ENTITLED=1 python3 app.py    # always skip it
+ANYA_NO_UPDATE_CHECK=1 python3 app.py  # no GitHub request (pre-existing)
+```
+
+### Tests
+
+The first automated tests in this repo, and deliberately narrow: the pure
+modules only, no `QApplication`, no display, no network.
+
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest desktop/tests/
+```
+
+They exist for the grace-period math, which is a pure function of `(iat,
+entExp, now, hwm, offline_launches)` with about a dozen interesting cases —
+getting it wrong either locks out a paying customer mid-trip or gives the app
+away, and neither is visible from running the app for five minutes. `pytest` is
+already in `rally_app.spec`'s `excludes`, so the suite costs the DMG nothing.
+
+### Release checklist for a gated build
+
+Automated tests do not cover Qt, Stripe, or a real clock. Run this against the
+**notarized DMG on a clean Mac**, not from source:
+
+1. Sign up → verify email → sign out → sign back in.
+2. Google sign-in end to end, including closing the browser tab mid-flow (it
+   must return to the gate, not hang).
+3. Stripe **test mode** checkout → the gate transitions on its own within a few
+   seconds → both tabs appear.
+4. Run a real highlight reel to completion. Confirm no auth check fires
+   mid-render.
+5. Turn off wifi → relaunch → still works (grace).
+6. Set the system clock **forward** 20 days → gated. Set it **backward** →
+   gated (the high-water-mark tripwire). Put the clock back afterwards.
+7. Edit `session.json` in a text editor → the app signs out cleanly rather than
+   crashing.
+8. Cancel & refund inside 14 days → the refund appears in Stripe, the
+   subscription is cancelled, and the button does not come back.
+9. A grandfathered email → account creation grants a free year, no price shown.
+10. `grep` the log for token material — `~/Library/Logs/Anya Tennis/app.log`
+    must contain none.
+
 ## Shipping it to testers
 
 Two DMGs ship per release — Apple silicon and Intel. Build both:
@@ -385,12 +461,24 @@ Windows-specific notes:
   `walking_model.joblib` queued up behind it. Update it *after* the macOS side
   has been bumped and proven, never before.
 
-**Not yet wired into the release flow.** `release.sh` builds and uploads the
-two DMGs only, and <https://nnewihe.github.io/anya/> offers a Mac download; the
-Windows installer is still a CI artifact you fetch and attach by hand. Adding
-it to `release.sh` means uploading `AnyaTennis-Setup.exe` next to
-`AnyaTennis.dmg` on the same `desktop-v*` tag, which is what
-`update_check.py` already watches.
+**Wired into the release flow as of 0.2.0.** `release.sh` uploads
+`AnyaTennis-Setup.exe` alongside the two DMGs on the same `desktop-v*` tag, so
+<https://anyatennis.com/download.html> can link
+`/releases/latest/download/AnyaTennis-Setup.exe` permanently, exactly as it
+does for the DMGs.
+
+The installer is still **fetched by hand**, because PyInstaller cannot
+cross-compile and the build happens on a `windows-latest` runner:
+
+```bash
+gh run list --workflow=build-windows.yml -L 1
+gh run download <run-id> -D dist/windows
+```
+
+`release.sh` then refuses to publish if it is missing, the same way it refuses
+an unstapled DMG — once the download page advertises a PC build, a release
+without one is a broken link on a public page. `--no-windows` is the escape
+hatch for a deliberate Mac-only release, and it says so loudly.
 
 ## Design
 

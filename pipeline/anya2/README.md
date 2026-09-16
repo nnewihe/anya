@@ -967,6 +967,33 @@ python -m pipeline.anya2.eval --mode point_end  --arm anya2:_anya2_point_end.jso
 python -m pipeline.anya2.orchestrator /Volumes/Anya/Data/21/snippet.mp4
 ```
 
+### Several GoPro files for one match
+
+A GoPro splits a continuous recording into ~4 GB chapters. `run.build_reel`
+takes them directly — as does `orchestrator`, and the desktop app's file
+picker — and joins them, losslessly and at disk speed, into the one video
+every stage below the join then sees:
+
+```python
+from pipeline.anya2.run import build_reel
+build_reel(["GX010123.MP4", "GX020123.MP4", "GX030123.MP4"])
+```
+
+Order is derived from the GoPro chapter field, not from the order they are
+passed. The join lands in the artifact dir, so under the desktop app it is
+part of the `tmp_anya` the run cleans up; the reel itself still lands beside
+the FIRST chapter.
+
+The per-stage CLIs above stay single-path. To drive one of them across
+chapters, materialize the join first and point it at the result:
+
+```bash
+python -m pipeline.join GX010123.MP4 GX020123.MP4   # prints the joined path
+```
+
+See `pipeline/join.py` for why the pipeline joins rather than learning to read
+a list of inputs.
+
 ## Known gaps
 
 - **Precision on a full match is gated by the composition layer**, not by this

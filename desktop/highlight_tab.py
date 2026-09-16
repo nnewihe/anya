@@ -40,23 +40,61 @@ ENGINE = _os.environ.get("ANYA_ENGINE", "anya2").strip().lower()
 
 if ENGINE == "legacy":
     from pipeline.rally_reel import ReelConfig as EngineConfig, build_reel
-    from pipeline.rally_reel.reel import ANALYSIS_SIZE
+    from pipeline.rally_reel.reel import ANALYSIS_SIZE, N_STAGES
     from pipeline.utilities import init_court as _ensure_court
 
     def ensure_court(video):
         _ensure_court(video, analysis_size=ANALYSIS_SIZE)
 else:
     from pipeline.anya2.config import Anya2Config as EngineConfig
-    from pipeline.anya2.run import build_reel, ensure_court
+    from pipeline.anya2.run import build_reel, ensure_court, N_STAGES
     from pipeline.anya2.court import ANALYSIS_SIZE
 
 from pipeline.utilities import probe_video
+from pipeline import join as _join
 
 from applog import log_path, logger
 from background import SleepBlocker, notify
 from preflight import ensure_ffmpeg
 from theme import (BLACK, YELLOW, WHITE, danger_btn_css, ghost_btn_css,
                    primary_btn_css, label_css, line_edit_css)
+
+
+class _JoinWorker(QThread):
+    """Remuxes several GoPro chapter files into one, off the GUI thread.
+
+    Its own thread and not part of `_Worker` because of an ordering
+    constraint that cannot be relaxed: court calibration opens a cv2 window
+    and so must run on the MAIN thread, but the corners have to be clicked on
+    the JOINED file, because that is the one every later stage indexes into.
+    So the sequence is join (here) -> calibrate (main thread, in
+    `_begin_render`) -> detect (`_Worker`).
+
+    Signal naming follows `_Worker`'s, and for the same reason -- see the note
+    on `render_*` there.
+    """
+    stage        = pyqtSignal(int, int, str, float)
+    join_done    = pyqtSignal(str)
+    join_failed  = pyqtSignal(str)
+    join_stopped = pyqtSignal()
+
+    def __init__(self, videos):
+        super().__init__()
+        self.videos = list(videos)
+
+    def run(self):
+        try:
+            out = _join.resolve_input(
+                self.videos,
+                on_progress=lambda f: self.stage.emit(
+                    1, N_STAGES, f"Joining {len(self.videos)} video files", f))
+            self.join_done.emit(out)
+        except _cancel.Cancelled:
+            logger().info("Highlight Reel join cancelled by the user")
+            self.join_stopped.emit()
+        except Exception as ex:
+            logger().exception("Highlight Reel join failed")
+            self.join_failed.emit(str(ex))
 
 
 class _Worker(QThread):
@@ -142,6 +180,11 @@ class HighlightReelTab(QWidget):
     def __init__(self):
         super().__init__()
         self._worker      = None
+        self._join_worker = None
+        # The chapter files the tester picked, in recording order.  Empty
+        # means "whatever is typed in the line edit", which is still the
+        # normal single-video case.
+        self._videos      = []
         self._output_path = ""
         self._cfg         = EngineConfig()
         self._sleep_blocker = SleepBlocker()
@@ -160,6 +203,17 @@ class HighlightReelTab(QWidget):
 
         lay.addWidget(self._label("INPUT VIDEO"))
         lay.addLayout(self._file_row("video"))
+        # GoPro chapters beyond the first.  The line edit keeps showing a real
+        # path so it stays typeable, and this says -- in RECORDING order, which
+        # is not necessarily the order they were picked in -- what else is
+        # going in.  A silently reordered match is a forty-minute mistake that
+        # looks like a working run, so the order is shown rather than trusted.
+        self._chapters_lbl = QLabel("")
+        self._chapters_lbl.setWordWrap(True)
+        self._chapters_lbl.setStyleSheet(
+            "color: rgba(255,255,255,0.5); font-size: 11px;")
+        self._chapters_lbl.setVisible(False)
+        lay.addWidget(self._chapters_lbl)
 
         lay.addWidget(self._label("OUTPUT VIDEO  (auto-generated if blank)"))
         lay.addLayout(self._file_row("output"))
@@ -229,6 +283,7 @@ class HighlightReelTab(QWidget):
             self._video_edit = edit
             btn.clicked.connect(self._browse_video)
             edit.textChanged.connect(self._refresh_detect_btn)
+            edit.textEdited.connect(self._forget_chapters)
         else:
             edit.setPlaceholderText("match_rally_reel.mp4")
             self._output_edit = edit
@@ -298,12 +353,43 @@ class HighlightReelTab(QWidget):
     # ── Slots ──────────────────────────────────────────────────────────────
 
     def _browse_video(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Video", "",
+        """Pick one video, or every chapter of one GoPro recording.
+
+        Multi-select rather than a second "add another file" control: the
+        chapters of one match are always picked together out of one folder,
+        and the dialog already does that in one gesture.
+        """
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Video (or all chapters of one recording)", "",
             "Video Files (*.mp4 *.mov *.avi *.mkv *.m4v);;All Files (*)"
         )
-        if path:
-            self._video_edit.setText(path)
+        if not paths:
+            return
+        self._videos = _join.order_inputs(paths)
+        # setText, not textEdited -- `_forget_chapters` is wired to the latter
+        # so that TYPING a path drops the chapter list while this does not.
+        self._video_edit.setText(self._videos[0])
+        self._show_chapters()
+
+    def _show_chapters(self):
+        extra = self._videos[1:]
+        self._chapters_lbl.setVisible(bool(extra))
+        if extra:
+            self._chapters_lbl.setText(
+                "+ " + ", ".join(os.path.basename(p) for p in extra)
+                + f"  ({len(self._videos)} files, joined in this order)")
+
+    def _forget_chapters(self, _text=None):
+        """A hand-typed path replaces the whole selection, chapters included."""
+        self._videos = []
+        self._chapters_lbl.setVisible(False)
+
+    def _input_videos(self):
+        """What to run on: the picked chapters, or whatever is in the edit."""
+        if self._videos:
+            return list(self._videos)
+        one = self._video_edit.text().strip()
+        return [one] if one else []
 
     def _browse_output(self):
         video = self._video_edit.text().strip()
@@ -318,7 +404,8 @@ class HighlightReelTab(QWidget):
             self._output_edit.setText(path)
 
     def _refresh_detect_btn(self, text=None):
-        enabled = bool(self._video_edit.text().strip()) and self._worker is None
+        enabled = (bool(self._video_edit.text().strip())
+                   and self._worker is None and self._join_worker is None)
         self._detect_btn.setEnabled(enabled)
         self._detect_btn.setStyleSheet(primary_btn_css(enabled=enabled))
 
@@ -326,38 +413,39 @@ class HighlightReelTab(QWidget):
         if not ensure_ffmpeg(self):
             return
 
-        video = self._video_edit.text().strip()
-        if not video or not os.path.isfile(video):
-            self._set_status("Please select a valid video file.", error=True)
+        videos = self._input_videos()
+        bad = [v for v in videos if not os.path.isfile(v)]
+        if not videos or bad:
+            self._set_status(
+                f"Cannot find {os.path.basename(bad[0])}." if bad
+                else "Please select a valid video file.", error=True)
             return
 
+        # Everything that is named after "the input" is named after the FIRST
+        # chapter, never the join: the join lives in tmp_anya, which this run
+        # deletes on its way out, so defaulting the reel into it would throw
+        # away the only thing the run was for.
+        first = videos[0]
         output = self._output_edit.text().strip()
         if not output:
-            output = str(Path(video).parent / f"{Path(video).stem}_rally_reel.mp4")
+            output = str(Path(first).parent / f"{Path(first).stem}_rally_reel.mp4")
         self._output_path = output
 
-        # Every file this run creates -- court/exclusion calibration, pose
-        # detections, tracks, each detector's events, the reel JSON, and the
-        # scratch segments the cut passes through -- goes into tmp_anya beside
-        # the input, reused across runs on the same video if it is still
-        # there (a prior run only leaves it behind when "keep files" was
-        # checked) and created fresh otherwise.  set_work_dir must be called
-        # on the MAIN thread, and before calibration, because init_court
-        # writes the court cache into it too.
-        self._tmp_anya = str(Path(video).parent / "tmp_anya")
-        try:
-            _workdir.set_work_dir(self._tmp_anya)
-            self._set_status("Court calibration…")
-            ensure_court(video)
-        except Exception as ex:
-            self._set_status(f"Setup failed: {ex}", error=True)
-            _workdir.clear_work_dir()
-            return
+        # Every file this run creates -- the join, court/exclusion
+        # calibration, pose detections, tracks, each detector's events, the
+        # reel JSON, and the scratch segments the cut passes through -- goes
+        # into tmp_anya beside the input, reused across runs on the same video
+        # if it is still there (a prior run only leaves it behind when "keep
+        # files" was checked) and created fresh otherwise.  set_work_dir must
+        # be called on the MAIN thread, and before the join, because the
+        # joined file goes into it too.
+        self._tmp_anya = str(Path(first).parent / "tmp_anya")
+        _workdir.set_work_dir(self._tmp_anya)
 
         self._result_panel.setVisible(False)
         self._progress.setValue(0)
         self._set_status("Initializing…")
-        self._set_estimate(video)
+        self._set_estimate(videos)
         self._detect_btn.setEnabled(False)
         self._detect_btn.setStyleSheet(primary_btn_css(enabled=False))
         self._detect_btn.setText("WORKING…")
@@ -374,7 +462,47 @@ class HighlightReelTab(QWidget):
         # a backgrounded window keeps processing instead of sleeping mid-run.
         self._sleep_blocker.start()
 
-        self._worker = _Worker(video, output, cfg=self._cfg)
+        if len(videos) == 1:
+            # No join, no second thread, no behaviour change whatsoever.
+            self._begin_render(first)
+            return
+        self._set_status(f"Joining {len(videos)} video files…")
+        self._join_worker = _JoinWorker(videos)
+        self._join_worker.stage.connect(self._on_stage)
+        self._join_worker.join_done.connect(self._begin_render)
+        self._join_worker.join_failed.connect(self._on_error)
+        self._join_worker.join_stopped.connect(self._on_cancelled)
+        # As with _Worker: both the deleteLater and the drop of our own
+        # reference hang off QThread's built-in `finished`, never off the
+        # custom result signals, which are emitted from inside run().
+        self._join_worker.finished.connect(self._join_worker.deleteLater)
+        self._join_worker.finished.connect(self._release_join_worker)
+        self._join_worker.start()
+
+    def _release_join_worker(self):
+        self._join_worker = None
+        self._refresh_detect_btn()
+
+    def _begin_render(self, video):
+        """Calibrate on the MAIN thread, then start detection.
+
+        Reached directly for a single video and from `_JoinWorker`'s
+        `join_done` for several; either way `video` is now one file and
+        nothing below here knows about chapters.  Calibration is here rather
+        than inside the worker because `init_court` opens a cv2 window.
+        """
+        try:
+            self._set_status("Court calibration…")
+            ensure_court(video)
+        except _cancel.Cancelled:
+            self._on_cancelled()
+            return
+        except Exception as ex:
+            self._on_error(f"Setup failed: {ex}")
+            return
+        self._set_status("Initializing…")
+
+        self._worker = _Worker(video, self._output_path, cfg=self._cfg)
         self._worker.stage.connect(self._on_stage)
         self._worker.render_done.connect(self._on_finished)
         self._worker.render_failed.connect(self._on_error)
@@ -452,12 +580,18 @@ class HighlightReelTab(QWidget):
         pipeline stops at its next check-in rather than instantly and a Cancel
         that still looked pressable would read as ignored.
         """
-        if self._worker is None:
+        if self._worker is None and self._join_worker is None:
             return
         self._cancel_btn.setEnabled(False)
         self._cancel_btn.setText("CANCELLING…")
         self._set_status("Cancelling — finishing the current step…")
-        self._worker.stop()
+        if self._worker is not None:
+            self._worker.stop()
+        else:
+            # The join has no _stopped flag to suppress its result with: it
+            # either produces the file or it does not, and pipeline.join
+            # deletes its part-file and raises Cancelled on the way out.
+            _cancel.request()
 
     def _on_cancelled(self):
         # See _on_finished: the handle is released on `finished`, not here.
@@ -489,11 +623,15 @@ class HighlightReelTab(QWidget):
         self._status.setStyleSheet(f"color: {color}; font-size: 12px;")
         self._status.setText(text)
 
-    def _set_estimate(self, video_path):
+    def _set_estimate(self, videos):
         # Best-effort — a probe failure here shouldn't block the run itself,
-        # build_reel will surface any real problem with the file.
+        # build_reel will surface any real problem with the file.  Summed
+        # across chapters: the estimate is shown BEFORE the join exists, and
+        # what a tester is waiting on is the whole match, not its first 4 GB.
+        if isinstance(videos, (str, os.PathLike)):
+            videos = [videos]
         try:
-            duration_sec = probe_video(video_path)["duration_sec"]
+            duration_sec = sum(probe_video(v)["duration_sec"] for v in videos)
         except Exception:
             self._estimate.setVisible(False)
             return
