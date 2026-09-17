@@ -5,7 +5,38 @@ header and embedded in the packaged bundle (rally_app.spec reads it directly),
 so a tester's bug report can always be tied to the exact build they ran.
 """
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
+# 0.2.1 — Sign in with Google works on Windows. A one-line platform bug, but it
+# locked every PC user out of the product they had just paid for.
+#   authstore.save() called os.fchmod to open the session file 0600 before
+#   writing a byte. os.fchmod is POSIX-only -- on Windows it does not exist at
+#   all, so the call raised AttributeError, which save() does not catch because
+#   it only catches OSError. It escaped into authworker._Worker.run's blanket
+#   handler and surfaced as "Something went wrong. Please try again." AFTER the
+#   browser dance, the PKCE exchange and signInWithIdp had all succeeded: the
+#   sign-in worked every time and the app then threw the session away while
+#   saving it. Email/password was broken identically through the same
+#   _session_from() call, and PC testers were never staying signed in between
+#   launches either, because the file was never written. macOS has os.fchmod,
+#   which is why none of it was reachable there.
+#   The guard is hasattr. Nothing is lost on Windows: POSIX mode bits are not
+#   how that platform protects a file, mkstemp's handle inherits the DACL of
+#   %LOCALAPPDATA%\Anya Tennis, and os.chmod there only toggles the read-only
+#   attribute. The existing 0600 test is skipped on win32, so the regression
+#   test DELETES the attribute instead -- a win32 marker would never run on the
+#   build machine or in CI, which is exactly how this shipped.
+#   Second fix, latent rather than reported: QDesktopServices.openUrl was called
+#   from the worker thread. On Windows that is ShellExecute, which needs COM
+#   initialised on the calling thread -- Qt does that for the GUI thread and
+#   QThread does not do it for ours. It fails silently, so the symptom would
+#   have been no browser at all and a three-minute wait ending in a
+#   cancellation the user never made. _GuiThreadUrlOpener hops the call back
+#   over an explicitly queued signal; Auto would compare threads at emit time
+#   and make the guarantee depend on the caller.
+#   0.2.0 shipped its Windows installer with no Google button at all (CI clones
+#   without the gitignored oauth_client.py); that was fixed just before this,
+#   and check_oauth_client.py now fails any build missing it. The two together
+#   are why no PC user has yet completed a Google sign-in.
 # 0.2.0 — Anya Tennis becomes a paid product: accounts, subscriptions, and a
 # gate in front of the app.
 #   Dropping the -beta suffix is deliberate, not cosmetic. update_check._parse

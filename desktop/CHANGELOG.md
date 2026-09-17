@@ -8,6 +8,24 @@ person using it. The engineering detail belongs in `version.py`'s comments.
 Newest first. Add a section here *before* running `release.sh`; it refuses to
 release a version it can't find a section for.
 
+## 0.2.1
+
+- **Sign in with Google now works on Windows.** On a PC it failed every time
+  with "Something went wrong. Please try again." — after you had already picked
+  your Google account and come back to the app. The sign-in itself was fine;
+  the app was failing to save it, on a line of code that only ever runs
+  wrongly on Windows. If you're on a PC and couldn't get in, this is the build
+  to install.
+
+- **Signing in with an email and password was broken on Windows too**, for the
+  same reason and with the same message. Also fixed.
+
+- **Windows: you stay signed in between launches.** The file that remembers
+  you was never being written, so every start looked like a fresh sign-out.
+
+- Nothing changes on the Mac — none of the above was reachable there, and
+  there are no other changes in this release.
+
 ## 0.2.0
 
 - **Anya Tennis is now a paid app.** $40 a year, or $5 a month. You create an
