@@ -19,7 +19,9 @@ DEFAULT_PATH = "/srv/anya/config.toml"
 class Processing:
     backend: str = "ncnn"            # pose runtime: ncnn / onnx / torch
     device: str = "cpu"
-    scale_height: int = 1080         # 0 = native; native 4K x264 on a Pi is hours
+    copy_video: bool = True          # reel = stream copy of the original: same
+                                     # resolution and quality, no encode at all
+    scale_height: int = 1080         # only when copy_video is off; 0 = native
     hwaccel: str = "drm"             # ffmpeg -hwaccel for source decodes ("" = off)
     single_decode: bool = True       # both proxies from one source decode
     threads: int = 0                 # torch/ncnn threads; 0 = library default

@@ -20,8 +20,12 @@ def main(argv=None):
     ap.add_argument("--device", help="torch device: cpu / mps / cuda (default: best available)")
     ap.add_argument("--backend", choices=["torch", "ncnn", "onnx"],
                     help="pose runtime (sets ANYA_POSE_BACKEND; default torch)")
+    ap.add_argument("--copy", action="store_true",
+                    help="no re-encode: original resolution and quality, cuts "
+                         "start on the keyframe at or before each point "
+                         "(fastest; ignores --scale-height)")
     ap.add_argument("--scale-height", type=int, default=1080,
-                    help="output height; 0 keeps native (slow on a Pi)")
+                    help="re-encoded output height; 0 keeps native (slow on a Pi)")
     ap.add_argument("--work-dir", help="put every interim file here instead of beside the video")
     ap.add_argument("--dry-run", action="store_true", help="detect only, write no video")
     ap.add_argument("--segments-json", help="also write the kept segments here")
@@ -35,7 +39,7 @@ def main(argv=None):
 
     if a.work_dir:
         WD.set_work_dir(os.path.abspath(a.work_dir))
-    cfg = H.make_config(a.device, a.scale_height or None)
+    cfg = H.make_config(a.device, a.scale_height or None, copy_video=a.copy)
     try:
         segs, out = H.build(a.videos, a.output, cfg, site=a.site,
                             on_progress=H.ProgressPrinter(), dry_run=a.dry_run)

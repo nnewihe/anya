@@ -107,7 +107,8 @@ def process(cfg, job, log=print):
     try:
         segs, reel = H.build(job["chapters"], str(out),
                              H.make_config(cfg.processing.device,
-                                           cfg.processing.scale_height or None),
+                                           cfg.processing.scale_height or None,
+                                           copy_video=cfg.processing.copy_video),
                              site=str(cfg.site_dir) if cfg.site_dir.is_dir() else None,
                              on_progress=_Progress(q, job, cfg, log))
     except (H.NotCalibrated, S.NeedsCalibration) as e:

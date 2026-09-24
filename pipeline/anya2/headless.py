@@ -37,10 +37,12 @@ def default_device():
     return "cpu"
 
 
-def make_config(device=None, scale_height=1080, crf=None, preset=None):
+def make_config(device=None, scale_height=1080, crf=None, preset=None,
+                copy_video=False):
     cfg = Anya2Config()
     cfg.perceive.device = device or default_device()
     cfg.scale_height = scale_height
+    cfg.copy_video = bool(copy_video)
     if crf is not None:
         cfg.crf = crf
     if preset:

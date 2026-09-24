@@ -8,7 +8,10 @@ poll_s = 30
 [processing]
 backend = "ncnn"            # pose runtime: ncnn (fastest on the Pi) / onnx / torch
 device = "cpu"
-scale_height = 1080         # reel height; 0 = native 4K (x264 on a Pi: hours)
+copy_video = true           # reel is cut straight from the original: same resolution
+                            # and quality, no re-encode; each point may start up to
+                            # one keyframe interval (~1 s) early
+scale_height = 1080         # only used with copy_video = false (x264 re-encode)
 hwaccel = "drm"             # Pi 5 hardware HEVC decode; "" to turn off
 single_decode = true        # build both analysis proxies from one decode
 threads = 0                 # 0 = let torch/ncnn pick (all 4 cores)
