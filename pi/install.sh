@@ -28,7 +28,11 @@ chown -R $U:$U $APP
 echo "== venv"
 [ -x $APP/venv/bin/python ] || runuser -u $U -- python3 -m venv $APP/venv
 runuser -u $U -- $APP/venv/bin/pip install -q --upgrade pip
-runuser -u $U -- $APP/venv/bin/pip install -q -r $APP/src/pi/requirements-pi.txt
+# torch from the CPU-only index BEFORE the rest -- see requirements-pi.txt.
+runuser -u $U -- $APP/venv/bin/pip install -q --resume-retries 20 \
+  torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+runuser -u $U -- $APP/venv/bin/pip install -q --resume-retries 20 \
+  -r $APP/src/pi/requirements-pi.txt
 
 echo "== data dirs under $DATA"
 mkdir -p $DATA/{inbox,work,reels,state/jobs,models,site}
