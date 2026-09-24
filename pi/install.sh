@@ -28,9 +28,12 @@ chown -R $U:$U $APP
 echo "== venv"
 [ -x $APP/venv/bin/python ] || runuser -u $U -- python3 -m venv $APP/venv
 runuser -u $U -- $APP/venv/bin/pip install -q --upgrade pip
-# torch from the CPU-only index BEFORE the rest -- see requirements-pi.txt.
+# torch AND torchvision from the CPU-only index BEFORE the rest -- see
+# requirements-pi.txt.  They must be a matched pair: a PyPI torchvision pulled
+# in later by ultralytics is built against a different torch and fails at
+# import ("operator torchvision::nms does not exist").
 runuser -u $U -- $APP/venv/bin/pip install -q --resume-retries 20 \
-  torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+  torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cpu
 runuser -u $U -- $APP/venv/bin/pip install -q --resume-retries 20 \
   -r $APP/src/pi/requirements-pi.txt
 

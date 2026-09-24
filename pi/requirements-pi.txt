@@ -10,8 +10,9 @@ filterpy==1.4.5
 opencv-python-headless>=4.9
 # torch is NOT listed here: PyPI's aarch64 torch wheel pulls in the NVIDIA CUDA
 # libraries (a 540 MB nvidia_cublas among them), useless on a Pi.  install.sh
-# installs torch==2.11.0 from PyTorch's CPU-only index first, which satisfies
-# ultralytics' torch requirement so pip never fetches the CUDA build.
+# installs torch==2.11.0 + torchvision==0.26.0 (a matched pair) from PyTorch's
+# CPU-only index first, which satisfies ultralytics' requirements so pip never
+# fetches the CUDA build or a mismatched torchvision.
 ultralytics==8.4.36
 # Pose runtimes (pipeline/anya2/pose_backend.py); pnnx is the NCNN exporter.
 ncnn
