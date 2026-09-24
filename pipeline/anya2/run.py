@@ -313,6 +313,55 @@ def _has_audio(video: str) -> bool:
         capture_output=True, text=True).stdout.strip())
 
 
+def audio_packets(video: str) -> List[Tuple[float, float]]:
+    """(pts, duration) of every packet of the first audio stream, in order."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "packet=pts_time,duration_time", "-of", "csv=p=0", video],
+        capture_output=True, text=True, check=True).stdout
+    pk = []
+    for line in out.splitlines():
+        a, _, b = line.partition(",")
+        try:
+            pk.append((float(a), float(b)))
+        except ValueError:
+            pass
+    return sorted(pk)
+
+
+def audio_packet_ranges(packets: List[Tuple[float, float]], segments: List[dict],
+                        video_durs: List[float]) -> List[Tuple[float, float]]:
+    """Whole-packet [inpoint, outpoint) audio ranges, one per video segment.
+
+    A copied AAC stream can only be cut between packets (1024 samples, 21.3 ms
+    at 48 kHz), so each range starts on the packet nearest its segment's start,
+    and ends where the audio's RUNNING length lands nearest the video's running
+    length.  Choosing against the running totals rather than per segment is
+    what keeps the error from accumulating: every join is within half a packet
+    (~11 ms) of the video, however many points the reel has.
+    """
+    import bisect
+    starts = [p[0] for p in packets]
+    ranges, a_total, v_total = [], 0.0, 0.0
+    for s, vd in zip(segments, video_durs):
+        v_total += vd
+        i = bisect.bisect_left(starts, s["start"])
+        if i > 0 and (i == len(starts)
+                      or s["start"] - starts[i - 1] < starts[i] - s["start"]):
+            i -= 1
+        j = i
+        # Take packets while taking the next one brings the running audio
+        # length closer to the running video length.
+        while j < len(packets) and abs(a_total + packets[j][1] - v_total) < abs(a_total - v_total):
+            a_total += packets[j][1]
+            j += 1
+        if j == i:
+            continue
+        end = starts[j] if j < len(starts) else packets[j - 1][0] + packets[j - 1][1]
+        ranges.append((starts[i], end))
+    return ranges
+
+
 def _cut_copy(video: str, segments: List[dict], output: str,
               cfg: Anya2Config, on_progress=None) -> str:
     """The reel as a STREAM COPY of the source: original resolution, codec and
@@ -329,12 +378,13 @@ def _cut_copy(video: str, segments: List[dict], output: str,
 
       1. each segment's VIDEO is copied alone, and the video-only segments are
          joined -- every frame kept (5972/5972 on clip 21), source frame rate;
-      2. the AUDIO is cut in ONE pass from the source, each range trimmed to the
-         MEASURED length of its video segment, so the two tracks share every
-         join exactly and cannot drift;
-      3. the two are muxed without touching the video.
+      2. the AUDIO is copied too, packet for packet, with each range sized
+         against the MEASURED video lengths (`audio_packet_ranges`), so every
+         join is within half an AAC frame (~11 ms) of the video, and the error
+         never accumulates;
+      3. the two are muxed.
 
-    Only the audio is encoded (AAC 256k, from the camera's own track).
+    Nothing is re-encoded: both tracks are the camera's own bits.
     """
     from pipeline import workdir as WD
     from pipeline.utilities import write_concat_list
@@ -367,17 +417,32 @@ def _cut_copy(video: str, segments: List[dict], output: str,
 
     tag = ["-tag:v", "hvc1"] if _codec(video) == "hevc" else []
     if cfg.keep_audio and _has_audio(video):
-        chains = [f"[0:a:0]atrim=start={s['start']:.6f}:duration={d:.6f},"
-                  f"asetpts=PTS-STARTPTS[a{i}]" for i, (s, d) in enumerate(zip(kept, durs))]
-        graph = ";".join(chains) + ";" + "".join(f"[a{i}]" for i in range(len(kept))) \
-            + f"concat=n={len(kept)}:v=0:a=1[a]"
-        gpath = os.path.join(tmp, "audio_graph.txt")
-        with open(gpath, "w") as fh:          # a long match is hundreds of
-            fh.write(graph)                   # segments: too long for argv
+        # Audio is COPIED too -- the camera's own AAC packets, not re-encoded --
+        # chosen per segment by `audio_packet_ranges` so the audio's running
+        # length tracks the video's to within half an AAC frame at every join.
+        #
+        # Cut from an audio-ONLY copy of the track, not the source: in a file
+        # with video the concat demuxer's inpoint seeks to the VIDEO keyframe
+        # and lets in the audio packets from there (114 extra over 9 joins on
+        # clip 21).  Alone, every audio packet is a seek point and the cut is
+        # packet-exact.
+        a_src = os.path.join(tmp, "source_audio.m4a")
+        cancel.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-i", video, "-map", "0:a:0", "-c", "copy", a_src],
+                   capture_output=True, check=True)
+        alist = os.path.join(tmp, "aconcat.txt")
+        src = a_src.replace("\\", "/").replace("'", "'\\''")
+        with open(alist, "w", encoding="utf-8") as fh:
+            for a0, a1 in audio_packet_ranges(audio_packets(a_src), kept, durs):
+                # Both ends 1 us early, at full precision: the demuxer keeps a
+                # packet whose pts rounds to just under the outpoint, and the
+                # range's LENGTH -- which places the next range -- is unchanged.
+                fh.write(f"file '{src}'\ninpoint {a0 - 1e-6:.9f}\n"
+                         f"outpoint {a1 - 1e-6:.9f}\n")
         aud = os.path.join(tmp, "audio.m4a")
         cancel.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-i", video, "-filter_complex_script", gpath, "-map", "[a]",
-                    "-c:a", "aac", "-b:a", "256k", aud],
+                    "-f", "concat", "-safe", "0", "-i", alist,
+                    "-map", "0:a:0", "-c", "copy", aud],
                    capture_output=True, check=True)
         cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                "-i", vid, "-i", aud, "-map", "0:v:0", "-map", "1:a:0",

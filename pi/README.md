@@ -127,7 +127,7 @@ Settings live in `/srv/anya/config.toml`; see `config.example.toml`. The default
 | `backend` | `"ncnn"` | Pose runs on NCNN, the ARM-optimised runtime. |
 | `hwaccel` | `"drm"` | Hardware HEVC decode. |
 | `single_decode` | `true` | One source decode builds both analysis proxies. |
-| `copy_video` | `true` | The reel is cut straight from the original: same resolution, codec and quality, no re-encode (only the audio is re-encoded). Each point may start up to one keyframe interval (~1 s) early. |
+| `copy_video` | `true` | The reel is cut straight from the original, video AND audio: same resolution, codec and quality, nothing re-encoded. Each point may start up to one keyframe interval (~1 s) early; audio joins are within ~11 ms of the video. |
 | `scale_height` | `1080` | Used only with `copy_video = false`: re-encode with x264 at this height. |
 
 **Expect roughly 2–4× the recording's length** on a Pi 5 (a 1-hour session takes 2–4 hours). Pose

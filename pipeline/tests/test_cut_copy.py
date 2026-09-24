@@ -52,3 +52,27 @@ def test_copy_reel_keeps_every_frame_and_the_codec(tmp_path, codec, tag):
                         "stream=duration", "-of", "csv=p=0", str(out)],
                        capture_output=True, text=True, check=True).stdout
     assert abs(float(a) - n / 30.0) < 0.1          # audio follows the video
+
+    # ...and it is the source's own AAC, packet for packet, never re-encoded.
+    def hashes(path):
+        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0",
+                              "-show_packets", "-show_data_hash", "MD5",
+                              "-show_entries", "packet=data_hash", "-of", "csv=p=0",
+                              str(path)], capture_output=True, text=True,
+                             check=True).stdout.split()
+        return out
+    src, reel = hashes(src), hashes(out)
+    assert reel and all(h in set(src) for h in reel)
+
+
+def test_audio_ranges_track_the_video_without_drift():
+    pk = [(i * 0.021333, 0.021333) for i in range(3000)]          # 64 s of AAC
+    segs = [{"start": 1.0, "stop": 0}, {"start": 20.0, "stop": 0},
+            {"start": 40.0, "stop": 0}]
+    vd = [5.005, 7.007, 3.003]                                    # 30000/1001 fps
+    rng = R.audio_packet_ranges(pk, segs, vd)
+    a = v = 0.0
+    for (a0, a1), d in zip(rng, vd):
+        a += a1 - a0
+        v += d
+        assert abs(a - v) <= 0.0107 + 1e-6                        # half a packet

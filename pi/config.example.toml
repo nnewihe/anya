@@ -8,9 +8,9 @@ poll_s = 30
 [processing]
 backend = "ncnn"            # pose runtime: ncnn (fastest on the Pi) / onnx / torch
 device = "cpu"
-copy_video = true           # reel is cut straight from the original: same resolution
-                            # and quality, no re-encode; each point may start up to
-                            # one keyframe interval (~1 s) early
+copy_video = true           # reel is cut straight from the original, video and audio:
+                            # same resolution and quality, nothing re-encoded; each
+                            # point may start up to one keyframe interval (~1 s) early
 scale_height = 1080         # only used with copy_video = false (x264 re-encode)
 hwaccel = "drm"             # Pi 5 hardware HEVC decode; "" to turn off
 single_decode = true        # build both analysis proxies from one decode

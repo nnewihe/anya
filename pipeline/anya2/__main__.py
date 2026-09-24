@@ -21,7 +21,7 @@ def main(argv=None):
     ap.add_argument("--backend", choices=["torch", "ncnn", "onnx"],
                     help="pose runtime (sets ANYA_POSE_BACKEND; default torch)")
     ap.add_argument("--copy", action="store_true",
-                    help="no re-encode: original resolution and quality, cuts "
+                    help="no re-encode (video or audio): original resolution and quality, cuts "
                          "start on the keyframe at or before each point "
                          "(fastest; ignores --scale-height)")
     ap.add_argument("--scale-height", type=int, default=1080,
