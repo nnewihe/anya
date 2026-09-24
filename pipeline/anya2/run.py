@@ -101,6 +101,16 @@ def ensure_court(video, on_progress=None) -> None:
     init_court(video, analysis_size=C.ANALYSIS_SIZE)
 
 
+def _single_decode() -> bool:
+    """ANYA_SINGLE_DECODE_PROXIES=1: build both proxies from one source decode.
+
+    Off by default so the desktop app's behaviour is unchanged; the Raspberry
+    Pi service turns it on, because there the source decode is the cost.
+    """
+    return os.environ.get("ANYA_SINGLE_DECODE_PROXIES", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _join(video, on_progress=None) -> str:
     """One source path from whatever the caller passed.
 
@@ -203,11 +213,13 @@ def cut(video: str, segments: List[dict], output: str,
     else:
         tmp = tempfile.mkdtemp(prefix="anya2_reel_")
     parts = []
+    from pipeline.proxy import hwaccel_args
     vf = (["-vf", f"scale=-2:{cfg.scale_height}"] if cfg.scale_height else [])
     for i, s in enumerate(segments):
         cancel.check()
         p = os.path.join(tmp, f"seg_{i:04d}.mp4")
         cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+               *hwaccel_args(),
                "-ss", f"{s['start']:.3f}", "-i", video,
                "-t", f"{s['stop'] - s['start']:.3f}", *vf,
                "-c:v", "libx264", "-crf", str(cfg.crf),
@@ -267,6 +279,21 @@ def build_reel(video_path, output_path: Optional[str] = None,
     # Before perceive: `PC.far`'s crop rectangle is sized from this track, and
     # a crop is a fixed ffmpeg rectangle that cannot follow a moving camera.
     _emit(on_progress, 3, "Tracking the camera")
+    if _single_decode():
+        # Both proxies from one decode of the source, using the band as it
+        # stands at calibration.  A camera that never moves (the fixed-mount
+        # case this is for) leaves the band unchanged and both later calls are
+        # cache hits; one that did move gets its far proxy rebuilt by
+        # `PC.far`, exactly as without this.  See proxy.ensure_proxies_once.
+        from pipeline import proxy as P
+        from pipeline.anya2 import court as C
+        try:
+            P.ensure_proxies_once(video_path, C.ANALYSIS_SIZE,
+                                  PC.far_band(video_path)[0], crf=14)
+        except cancel.Cancelled:
+            raise
+        except Exception as e:                  # pre-warming only
+            print(f"[proxies] single-decode build skipped: {e}")
     CAM.estimate(video_path, force=cfg.perceive.force,
                  sample_fps=cfg.perceive.camera_sample_fps or CAM.SAMPLE_FPS,
                  on_progress=lambda fr: _emit(on_progress, 3,
