@@ -6,6 +6,10 @@ set -euo pipefail
 
 [ "$(id -u)" = 0 ] || { echo "run with sudo"; exit 1; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Everything below that runs as $U inherits the working directory, and the
+# NCNN exporter (pnnx) runs its converter there.  The checkout is usually in
+# someone's home, which $U cannot enter -- so leave it.
+cd /
 APP=/opt/anya
 DATA=/srv/anya
 U=anya
