@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="How Anya Tennis works — a walkthrough from match video to a reel of just the rallies, and the story behind the app. Anya means eye in Igbo.">
+  <meta name="description" content="How Anya Tennis works — from match video to a reel of just the rallies, in five steps. Anya means eye in Igbo.">
   <title>About — Anya Tennis</title>
   <link rel="stylesheet" href="style.css">
   <style>
@@ -24,9 +24,9 @@
     .page h1 span { color: var(--lime); }
     .page h2 { font-size: 13px; letter-spacing: 0.18em; font-weight: 700;
                color: var(--lime); margin: 52px 0 14px; }
-    .page h3 { font-size: 19px; margin: 0 0 8px; }
     .page p { line-height: 1.6; color: rgba(255, 255, 255, 0.82); }
     .lede { font-size: 17px; }
+    .page p a:not(.cta) { color: var(--white); text-decoration-color: var(--lime); }
 
     /* Founder's story. Set apart because it is the one part of the page in
        Andy's own voice rather than the app's. */
@@ -37,49 +37,41 @@
     .byline { font-size: 13px; letter-spacing: 0.1em; font-weight: 700;
               color: rgba(255,255,255,0.6); margin-top: 14px; }
 
-    /* Walkthrough. Each step is numbered in the margin on a wide screen and
-       above the text on a phone, so the numbers never crowd the prose. */
-    .step { display: grid; grid-template-columns: 54px 1fr; gap: 0 18px;
-            margin: 0 0 38px; }
-    .step .num { font-size: 34px; font-weight: 900; line-height: 1;
-                 color: var(--lime); opacity: 0.85; }
-    .step .body > p { margin: 0 0 10px; }
-    .page ul { margin: 10px 0 0; padding-left: 20px; line-height: 1.6;
-               color: rgba(255,255,255,0.8); }
-    .page li { margin-bottom: 6px; }
-    /* Screenshots. The figure hides itself if the file is missing (see the
-       script at the end), so the page never shows a broken image. */
-    figure { margin: 18px 0 0; }
-    /* Every screenshot breaks out of the 760px prose column and centres on
-       the page at one shared width. Held to the column, the app windows render
-       around 630px wide, which puts their own 15pt labels under 8px. All the
-       sources are 1900px or wider, so they stand up to it. */
-    figure.shot-wide { width: min(720px, calc(100vw - 44px));
-                       margin: 26px 0 34px 50%; transform: translateX(-50%); }
-    figure img { display: block; width: 100%; height: auto; border-radius: 10px;
-                 border: 1px solid rgba(255,255,255,0.16);
-                 background: #000; }
-    figcaption { font-size: 13px; color: rgba(255,255,255,0.55);
-                 margin-top: 9px; line-height: 1.5; }
+    /* How it works: a slideshow of cards. The track is a native scroll-snap
+       strip, so a phone swipes it with no script at all; the arrows, dots and
+       keys below only drive that same scroll. */
+    .slides { position: relative; }
+    .track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
+             scroll-behavior: smooth; scrollbar-width: none;
+             border-radius: 14px; }
+    .track::-webkit-scrollbar { display: none; }
+    @media (prefers-reduced-motion: reduce) { .track { scroll-behavior: auto; } }
+    .card { flex: 0 0 100%; scroll-snap-align: start; margin: 0;
+            border: 1px solid rgba(255,255,255,0.14); border-radius: 14px;
+            background: rgba(255,255,255,0.03); overflow: hidden; }
+    .card .shot { aspect-ratio: 16 / 9; background: #000;
+                  border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .card .shot img { display: block; width: 100%; height: 100%;
+                      object-fit: contain; }
+    .card .text { padding: 20px 24px 24px; }
+    .card .num { font-size: 12px; letter-spacing: 0.16em; font-weight: 700;
+                 color: var(--lime); }
+    .card h3 { font-size: 21px; margin: 6px 0 8px; }
+    .card p { margin: 0; font-size: 15.5px; }
+    kbd { background: rgba(255,255,255,0.1); border-radius: 4px;
+          padding: 1px 6px; font-family: inherit; font-weight: 700; font-size: 13px; }
 
-    .note { border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 10px;
-            padding: 15px 18px; margin: 16px 0; font-size: 14.5px;
-            background: rgba(255, 255, 255, 0.03); }
-    .note strong { color: var(--white); }
-    code { background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px;
-           font-size: 13px; }
-
-    /* The seven stages, as the progress bar names them during a run. */
-    .stages { list-style: none; margin: 16px 0 0; padding: 0;
-              border-top: 1px solid rgba(255,255,255,0.12); }
-    .stages li { display: flex; gap: 14px; align-items: baseline;
-                 padding: 10px 2px; font-size: 14.5px;
-                 border-bottom: 1px solid rgba(255,255,255,0.08);
-                 color: rgba(255,255,255,0.82); }
-    .stages .n { flex: 0 0 22px; color: var(--lime); font-weight: 700;
-                 font-size: 12px; letter-spacing: 0.06em; }
-    .stages .what { flex: 0 0 150px; font-weight: 700; color: var(--white); }
-    .stages .why { color: rgba(255,255,255,0.62); }
+    .controls { display: flex; align-items: center; justify-content: center;
+                gap: 18px; margin-top: 16px; }
+    .arrow { width: 40px; height: 40px; border-radius: 50%; cursor: pointer;
+             border: 1px solid rgba(255,255,255,0.25); background: transparent;
+             color: var(--white); font-size: 18px; line-height: 1; }
+    .arrow:hover:not(:disabled) { border-color: var(--lime); color: var(--lime); }
+    .arrow:disabled { opacity: 0.3; cursor: default; }
+    .dots { display: flex; gap: 10px; }
+    .dot { width: 9px; height: 9px; padding: 0; border-radius: 50%; cursor: pointer;
+           border: 0; background: rgba(255,255,255,0.3); }
+    .dot[aria-current="true"] { background: var(--lime); }
 
     .cta { display: inline-block; margin: 8px 0 0; padding: 15px 30px;
            border-radius: 999px; background: var(--lime); color: #101200;
@@ -98,12 +90,7 @@
     @media (max-width: 700px) {
       .nav { padding: 20px 22px; }
       .page { padding: 0 22px 56px; }
-      .step { grid-template-columns: 1fr; gap: 6px; }
-      .step .num { font-size: 26px; }
-      figure.shot-wide { width: 100%; margin: 18px 0 0; transform: none; }
-      .stages li { flex-wrap: wrap; }
-      .stages .what { flex-basis: auto; }
-      .stages .why { flex-basis: 100%; padding-left: 36px; }
+      .card .text { padding: 16px 18px 20px; }
     }
   </style>
 </head>
@@ -118,16 +105,9 @@
 
   <main class="page">
     <h1>Your match, with the <span>dead time</span> taken out.</h1>
-    <p class="lede">A 90-minute tennis match holds about 30 minutes of tennis.
-    The rest is walking back, picking up balls, towelling off and waiting to
-    serve. Anya Tennis watches the recording, finds where each point starts and
-    ends, and gives you back a reel of only the rallies — on your own computer,
-    with the video never leaving it.</p>
-
-    <p class="lede">There are two ways to use it, and neither needs the other.
-    The <strong>rally reel</strong> watches your match and cuts the dead time
-    out by itself. The <strong>scoreboard</strong> lets you tag points and
-    render a reel with the score on it. Most people start with the first.</p>
+    <p class="lede">A 90-minute match holds about 30 minutes of tennis. Anya
+    Tennis finds every rally and cuts out the rest, on your own computer, with
+    the video never leaving it.</p>
 
     <div class="story">
       <p>“I created Anya Tennis so you can watch your tennis match without all
@@ -140,136 +120,69 @@
       <p class="byline">— ANDY NNEWIHE, FOUNDER</p>
     </div>
 
-    <h2>THE RALLY REEL, STEP BY STEP</h2>
+    <h2>HOW IT WORKS</h2>
 
-    <div class="step">
-      <div class="num">1</div>
-      <div class="body">
-        <h3>Record the match</h3>
-        <p>One camera, behind a baseline, high enough that the whole court stays
-        in frame — a phone on a fence clip or a GoPro on a tripod is plenty. No
-        markers, no special court, no second angle.</p>
-        <p>If your camera splits a long recording into chapters, select all of
-        them at once. Anya Tennis joins them into one video before it starts,
-        so a point that straddles a chapter boundary is not lost.</p>
+    <section class="slides" aria-roledescription="carousel" aria-label="How it works">
+      <div class="track" tabindex="0">
+        <figure class="card" aria-roledescription="slide" aria-label="1 of 5">
+          <div class="shot"><img src="screenshots/court-framing.jpg" alt="A recorded match seen from behind the near baseline, with the whole court in frame."></div>
+          <figcaption class="text">
+            <div class="num">STEP 1</div>
+            <h3>Record your match</h3>
+            <p>One camera behind a baseline — a phone on the fence or a GoPro on
+            a tripod — high enough that the whole court stays in frame.</p>
+          </figcaption>
+        </figure>
+        <figure class="card" aria-roledescription="slide" aria-label="2 of 5">
+          <div class="shot"><img src="screenshots/highlight-reel.png" alt="The Highlight Reel tab: an input video path with a Browse button and an output path."></div>
+          <figcaption class="text">
+            <div class="num">STEP 2</div>
+            <h3>Load the video</h3>
+            <p>Open the Highlight Reel tab and browse to your match. Split
+            camera chapters are joined into one video automatically.</p>
+          </figcaption>
+        </figure>
+        <figure class="card" aria-roledescription="slide" aria-label="3 of 5">
+          <div class="shot"><img src="screenshots/court-corners.jpg" alt="The court frame with its four corners marked BL, BR, TR and TL."></div>
+          <figcaption class="text">
+            <div class="num">STEP 3</div>
+            <h3>Click the four corners</h3>
+            <p>Ten seconds, once per match — the only thing you ever do by hand.
+            It's remembered, so re-runs never ask again.</p>
+          </figcaption>
+        </figure>
+        <figure class="card" aria-roledescription="slide" aria-label="4 of 5">
+          <div class="shot"><img src="screenshots/highlight-reel-done.png" alt="A finished run: full progress bar, Done — 18 rallies, and an Open Folder button."></div>
+          <figcaption class="text">
+            <div class="num">STEP 4</div>
+            <h3>Build the rally reel</h3>
+            <p>Press BUILD RALLY REEL and walk away. When it's done, Open Folder
+            takes you to a video of just the rallies.</p>
+          </figcaption>
+        </figure>
+        <figure class="card" aria-roledescription="slide" aria-label="5 of 5">
+          <div class="shot"><img src="screenshots/scoreboard.jpg" alt="The Scoreboard tab: a match frame, a live score panel and a list of tagged points."></div>
+          <figcaption class="text">
+            <div class="num">OPTIONAL</div>
+            <h3>Add the score</h3>
+            <p>In the Scoreboard tab, tap <kbd>S</kbd> when a point starts and
+            <kbd>A</kbd> or <kbd>B</kbd> for who won it. Render a reel with the
+            score in the corner, like a broadcast.</p>
+          </figcaption>
+        </figure>
       </div>
-    </div>
-
-    <figure class="shot-wide" data-shot>
-      <img src="screenshots/court-framing.jpg"
-           alt="A frame from a recorded match: an indoor court seen from behind the near baseline, with both baselines, both sidelines and the net all inside the frame.">
-      <figcaption>A frame from a real recording. Both baselines and both
-      sidelines are inside the picture — that is the whole requirement.</figcaption>
-    </figure>
-
-    <div class="step">
-      <div class="num">2</div>
-      <div class="body">
-        <h3>Point it at the video</h3>
-        <p>Open the <strong>Highlight Reel</strong> tab, browse to your match
-        file, and leave the output path blank unless you want the reel written
-        somewhere particular — it is generated next to the input if you don't.
-        That is the whole setup.</p>
+      <div class="controls">
+        <button class="arrow" data-dir="-1" aria-label="Previous step">&larr;</button>
+        <div class="dots" role="group" aria-label="Choose a step"></div>
+        <button class="arrow" data-dir="1" aria-label="Next step">&rarr;</button>
       </div>
-    </div>
-
-    <figure class="shot-wide" data-shot>
-      <img src="screenshots/highlight-reel.png"
-           alt="The top of the Highlight Reel tab in Anya Tennis: the tab bar, an input video path with a Browse button, an output video path, and a checkbox for keeping interim files.">
-      <figcaption>The whole of the setup: one path in, one path out.</figcaption>
-    </figure>
-
-    <div class="step">
-      <div class="num">3</div>
-      <div class="body">
-        <h3>Click the four corners of the court — once</h3>
-        <p>A single frame of your match opens and you click the court's four
-        corners in order: bottom-left, bottom-right, top-right, top-left. This
-        is the only thing Anya Tennis ever asks you to do by hand, and it takes
-        about ten seconds.</p>
-        <p>Those four clicks are what turn pixels into a court — where the
-        baselines are, which half of the frame is the near player, how far up
-        the image a metre is worth. They are cached beside the video, so running
-        the same match again never asks twice.</p>
-      </div>
-    </div>
-
-    <figure class="shot-wide" data-shot>
-      <img src="screenshots/court-corners.jpg"
-           alt="The same court frame with four markers on the court's corners, labelled BL, BR, TR and TL for bottom-left, bottom-right, top-right and top-left.">
-      <figcaption>The same frame as above, after the four clicks: BL, BR, TR,
-      TL. Ten seconds, once per match.</figcaption>
-    </figure>
-
-    <div class="step">
-      <div class="num">4</div>
-      <div class="body">
-        <h3>Press BUILD RALLY REEL and leave it</h3>
-        <p>From here it runs on its own through seven stages, naming each one as
-        it goes so you can see where it is. When it finishes, the status line
-        reads <code>Done — 18 rallies</code> (or however many your match had),
-        and <strong>Open Folder</strong> puts you next to the finished
-        <code>.mp4</code>.</p>
-        <p>On an Apple silicon Mac a 7-minute clip takes roughly 10 minutes, so
-        a full match is something to start and walk away from. Nothing is
-        uploaded while it works, and nothing needs to be: the models run on
-        your machine.</p>
-      </div>
-    </div>
-
-    <figure class="shot-wide" data-shot>
-      <img src="screenshots/highlight-reel-done.png"
-           alt="The bottom of the Highlight Reel tab after a finished run: a full progress bar, the status line Done — 18 rallies, a badge reading 18 RALLIES, and an Open Folder button.">
-      <figcaption>The end of a run: eighteen rallies found, and the reel
-      written next to the match.</figcaption>
-    </figure>
-
-    <h2>THE OTHER PATH: THE SCOREBOARD</h2>
-    <p>The <strong>Scoreboard</strong> tab is a second, self-contained way to
-    use Anya Tennis, and it needs nothing from the first. Load any match video,
-    mark a point start with <strong>S</strong> as it happens, and press
-    <strong>A</strong> or <strong>B</strong> to say who won it. The score keeps
-    itself — games, sets, deuce, tiebreaks — and
-    <strong>RENDER SCOREBOARD VIDEO</strong> writes a reel of the points you
-    tagged with the score burned into the corner, the way a broadcast would
-    carry it.</p>
-    <p>You can tag a match this way without ever building a rally reel. If you
-    have built one, <strong>Import segments from Highlight Reel</strong> brings
-    every detected rally in as a numbered point, so the tagging starts from
-    what the app already found rather than from nothing — but that is a
-    shortcut into this path, not a step of it.</p>
-    <ul>
-      <li>Space replays the current point; <strong>A</strong> and
-          <strong>B</strong> record a winner and move on.</li>
-      <li>Nudge a start or end by 1, 3 or 5 seconds, split a point at the
-          playhead, insert one that is missing, or delete one that shouldn't be
-          there.</li>
-      <li><strong>Match Setup</strong> holds the format — best of 3 or 5, games
-          per set, ad or no-ad, tiebreak or super tiebreak — and who served
-          first.</li>
-      <li>Your tagging saves out as a <code>tags.json</code> you can re-import
-          later.</li>
-    </ul>
-    <figure class="shot-wide" data-shot>
-      <img src="screenshots/scoreboard.jpg"
-           alt="The Scoreboard tab of Anya Tennis: a paused frame of a match on the left, a live score panel and a table of tagged points on the right, and point-review controls beneath the video.">
-      <figcaption>The Scoreboard tab: the point playing on the left, the
-      running score and the point list on the right, and the trim, split and
-      winner controls underneath.</figcaption>
-    </figure>
-
-    <div class="note">
-      <strong>Nothing about your match leaves your computer.</strong> The
-      neural networks and the video tools are inside the app — there is no
-      server that could receive a frame. Signing in and checking your
-      subscription exchange an email address and a login token, and that is the
-      whole list. See the
-      <a href="https://nnewihe.github.io/anya/privacy.html">privacy policy</a>.
-    </div>
+    </section>
 
     <h2>TRY IT ON YOUR OWN MATCH</h2>
-    <p>Anya Tennis runs on macOS 11 or later and on 64-bit Windows 10 and 11.
-    Cancel within 14 days for a full refund, from one button inside the app.</p>
+    <p>macOS 11+ and 64-bit Windows 10 and 11. Nothing about your match leaves
+    your computer — see the
+    <a href="https://nnewihe.github.io/anya/privacy.html">privacy policy</a>.
+    Cancel within 14 days for a full refund.</p>
     <p><a class="cta" href="download.html">Download Anya Tennis &rarr;</a></p>
   </main>
 
@@ -283,19 +196,63 @@
 
   <script>
   // A screenshot that hasn't been copied into screenshots/ yet should read as
-  // absent, not as a broken page. The caption goes with it — it describes an
-  // image, and on its own it describes nothing.
-  document.querySelectorAll("figure[data-shot] img").forEach(function (img) {
-    function hide() {
-      const fig = img.closest("figure");
-      if (fig) fig.style.display = "none";
-    }
+  // absent, not as a broken image. The card keeps its text either way.
+  document.querySelectorAll(".card .shot img").forEach(function (img) {
+    function hide() { img.closest(".shot").style.display = "none"; }
     img.addEventListener("error", hide);
     // This script runs after parsing, so a file that is already missing has
-    // already fired its error event and the listener above would never see
-    // it. A loaded-but-zero-width image is that case.
+    // already fired its error event. A loaded-but-zero-width image is that case.
     if (img.complete && img.naturalWidth === 0) hide();
   });
+
+  // The slideshow. Scrolling is the source of truth — swipes, trackpads and
+  // the buttons all move the track, and the observer reports where it landed.
+  (function () {
+    const track = document.querySelector(".track");
+    const cards = Array.from(track.querySelectorAll(".card"));
+    const dotsBox = document.querySelector(".dots");
+    const [prev, next] = document.querySelectorAll(".arrow");
+    let current = 0;
+
+    const dots = cards.map(function (card, i) {
+      const dot = document.createElement("button");
+      dot.className = "dot";
+      dot.setAttribute("aria-label", "Step " + (i + 1));
+      dot.addEventListener("click", function () { go(i); });
+      dotsBox.appendChild(dot);
+      return dot;
+    });
+
+    function go(i) {
+      i = Math.max(0, Math.min(cards.length - 1, i));
+      track.scrollTo({ left: cards[i].offsetLeft - track.offsetLeft });
+      // Take the new position now, not when the smooth scroll lands, so a
+      // quick run of presses counts every one of them.
+      show(i);
+    }
+
+    function show(i) {
+      current = i;
+      dots.forEach(function (d, j) { d.setAttribute("aria-current", j === i); });
+      prev.disabled = i === 0;
+      next.disabled = i === cards.length - 1;
+    }
+
+    const seen = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) show(cards.indexOf(e.target));
+      });
+    }, { root: track, threshold: 0.6 });
+    cards.forEach(function (c) { seen.observe(c); });
+
+    prev.addEventListener("click", function () { go(current - 1); });
+    next.addEventListener("click", function () { go(current + 1); });
+    track.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowLeft") { e.preventDefault(); go(current - 1); }
+      if (e.key === "ArrowRight") { e.preventDefault(); go(current + 1); }
+    });
+    show(0);
+  })();
   </script>
 </body>
 </html>
