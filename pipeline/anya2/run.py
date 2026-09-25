@@ -101,6 +101,16 @@ def ensure_court(video, on_progress=None) -> None:
     init_court(video, analysis_size=C.ANALYSIS_SIZE)
 
 
+def _single_decode() -> bool:
+    """ANYA_SINGLE_DECODE_PROXIES=1: build both proxies from one source decode.
+
+    Off by default so the desktop app's behaviour is unchanged; the Raspberry
+    Pi service turns it on, because there the source decode is the cost.
+    """
+    return os.environ.get("ANYA_SINGLE_DECODE_PROXIES", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _join(video, on_progress=None) -> str:
     """One source path from whatever the caller passed.
 
@@ -182,12 +192,62 @@ def _end_signals(video: str, force: bool = False) -> None:
                                   for k in NE.SIGNAL_NAMES})
 
 
+def keyframe_times(video: str) -> List[float]:
+    """Video keyframe timestamps in seconds, from packet flags (no decode)."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", video],
+        capture_output=True, text=True, check=True).stdout
+    kf = []
+    for line in out.splitlines():
+        t, _, flags = line.partition(",")
+        if "K" in flags:
+            try:
+                kf.append(float(t))
+            except ValueError:
+                pass
+    return sorted(kf)
+
+
+def snap_to_keyframes(segments: List[dict], keyframes: List[float]) -> List[dict]:
+    """Move each start back to the keyframe at or before it; merge overlaps.
+
+    A stream copy can only begin on a keyframe.  Moving the start EARLIER only
+    adds pre-roll (<= one GOP, 0.4-1 s on the corpus cameras) and never cuts
+    into a point, which is the direction that matters.  A start pulled back
+    past the previous segment's end would replay footage, so those two merge.
+    """
+    import bisect
+    out: List[dict] = []
+    for s in sorted(segments, key=lambda s: s["start"]):
+        i = bisect.bisect_right(keyframes, s["start"] + 1e-6) - 1
+        start = keyframes[i] if i >= 0 else 0.0
+        if out and start <= out[-1]["stop"]:
+            out[-1]["stop"] = max(out[-1]["stop"], s["stop"])
+            continue
+        out.append({**s, "start": start, "stop": s["stop"]})
+    return out
+
+
+def _codec(video: str) -> str:
+    try:
+        return subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=codec_name", "-of", "csv=p=0", video],
+            capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return ""
+
+
 def cut(video: str, segments: List[dict], output: str,
         cfg: Optional[Anya2Config] = None, on_progress=None) -> str:
-    """ffmpeg: encode each segment, then concat."""
+    """ffmpeg: encode (or, with cfg.copy_video, stream-copy) each segment, then concat."""
     cfg = cfg or Anya2Config()
     if not segments:
         raise ValueError("no segments to cut")
+    if cfg.copy_video:
+        return _cut_copy(video, snap_to_keyframes(segments, keyframe_times(video)),
+                         output, cfg, on_progress)
     from pipeline import workdir as WD
     # A work-dir override (the desktop app's tmp_anya) gets the scratch
     # segment files too; the app decides whether to keep them as part of the
@@ -203,11 +263,13 @@ def cut(video: str, segments: List[dict], output: str,
     else:
         tmp = tempfile.mkdtemp(prefix="anya2_reel_")
     parts = []
+    from pipeline.proxy import hwaccel_args
     vf = (["-vf", f"scale=-2:{cfg.scale_height}"] if cfg.scale_height else [])
     for i, s in enumerate(segments):
         cancel.check()
         p = os.path.join(tmp, f"seg_{i:04d}.mp4")
         cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+               *hwaccel_args(),
                "-ss", f"{s['start']:.3f}", "-i", video,
                "-t", f"{s['stop'] - s['start']:.3f}", *vf,
                "-c:v", "libx264", "-crf", str(cfg.crf),
@@ -231,6 +293,164 @@ def cut(video: str, segments: List[dict], output: str,
     cancel.run(concat_cmd(lst, output, with_audio=cfg.keep_audio,
                           audio_bitrate="160k", quiet=True),
                capture_output=True, check=True)
+    if not wd:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+    return output
+
+
+def _stream_duration(path: str) -> float:
+    return float(subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=duration", "-of", "csv=p=0", path],
+        capture_output=True, text=True, check=True).stdout.strip())
+
+
+def _has_audio(video: str) -> bool:
+    return bool(subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "stream=index", "-of", "csv=p=0", video],
+        capture_output=True, text=True).stdout.strip())
+
+
+def audio_packets(video: str) -> List[Tuple[float, float]]:
+    """(pts, duration) of every packet of the first audio stream, in order."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "packet=pts_time,duration_time", "-of", "csv=p=0", video],
+        capture_output=True, text=True, check=True).stdout
+    pk = []
+    for line in out.splitlines():
+        a, _, b = line.partition(",")
+        try:
+            pk.append((float(a), float(b)))
+        except ValueError:
+            pass
+    return sorted(pk)
+
+
+def audio_packet_ranges(packets: List[Tuple[float, float]], segments: List[dict],
+                        video_durs: List[float]) -> List[Tuple[float, float]]:
+    """Whole-packet [inpoint, outpoint) audio ranges, one per video segment.
+
+    A copied AAC stream can only be cut between packets (1024 samples, 21.3 ms
+    at 48 kHz), so each range starts on the packet nearest its segment's start,
+    and ends where the audio's RUNNING length lands nearest the video's running
+    length.  Choosing against the running totals rather than per segment is
+    what keeps the error from accumulating: every join is within half a packet
+    (~11 ms) of the video, however many points the reel has.
+    """
+    import bisect
+    starts = [p[0] for p in packets]
+    ranges, a_total, v_total = [], 0.0, 0.0
+    for s, vd in zip(segments, video_durs):
+        v_total += vd
+        i = bisect.bisect_left(starts, s["start"])
+        if i > 0 and (i == len(starts)
+                      or s["start"] - starts[i - 1] < starts[i] - s["start"]):
+            i -= 1
+        j = i
+        # Take packets while taking the next one brings the running audio
+        # length closer to the running video length.
+        while j < len(packets) and abs(a_total + packets[j][1] - v_total) < abs(a_total - v_total):
+            a_total += packets[j][1]
+            j += 1
+        if j == i:
+            continue
+        end = starts[j] if j < len(starts) else packets[j - 1][0] + packets[j - 1][1]
+        ranges.append((starts[i], end))
+    return ranges
+
+
+def _cut_copy(video: str, segments: List[dict], output: str,
+              cfg: Anya2Config, on_progress=None) -> str:
+    """The reel as a STREAM COPY of the source: original resolution, codec and
+    bitrate, not one pixel re-encoded.  `segments` must already start on
+    keyframes (`snap_to_keyframes`).
+
+    WHY VIDEO AND AUDIO ARE BUILT SEPARATELY.  Copying each segment with its
+    audio and joining them was tried first and is wrong: a copied segment's
+    audio runs a few ms longer or shorter than its video, the concat demuxer
+    offsets every following segment by the longer of the two, and the joined
+    video came out with non-monotonic timestamps at the joins and a wrong frame
+    rate (29.88 for 29.97 source, clip 21).  Padding each segment's audio to its
+    video with -shortest lost 30 frames.  So:
+
+      1. each segment's VIDEO is copied alone, and the video-only segments are
+         joined -- every frame kept (5972/5972 on clip 21), source frame rate;
+      2. the AUDIO is copied too, packet for packet, with each range sized
+         against the MEASURED video lengths (`audio_packet_ranges`), so every
+         join is within half an AAC frame (~11 ms) of the video, and the error
+         never accumulates;
+      3. the two are muxed.
+
+    Nothing is re-encoded: both tracks are the camera's own bits.
+    """
+    from pipeline import workdir as WD
+    from pipeline.utilities import write_concat_list
+    wd = WD.get_work_dir()
+    tmp = (os.path.join(wd, "cut_segments") if wd
+           else tempfile.mkdtemp(prefix="anya2_reel_"))
+    os.makedirs(tmp, exist_ok=True)
+    parts, durs, kept = [], [], []
+    for i, s in enumerate(segments):
+        cancel.check()
+        p = os.path.join(tmp, f"vseg_{i:04d}.mp4")
+        # -ss a hair past the keyframe so the input seek lands ON it rather
+        # than on the one before through float rounding.
+        cancel.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-ss", f"{s['start'] + 0.001:.3f}", "-i", video,
+                    "-t", f"{s['stop'] - s['start']:.3f}",
+                    "-map", "0:v:0", "-c", "copy", "-an",
+                    "-avoid_negative_ts", "make_zero", p],
+                   capture_output=True, check=True)
+        parts.append(p)
+        durs.append(_stream_duration(p))
+        kept.append(s)
+        _emit(on_progress, 9, f"Cutting segment {i + 1}/{len(segments)}",
+              (i + 1) / len(segments))
+    lst = write_concat_list(parts, os.path.join(tmp, "vconcat.txt"))
+    vid = os.path.join(tmp, "video_only.mp4")
+    cancel.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", vid],
+               capture_output=True, check=True)
+
+    tag = ["-tag:v", "hvc1"] if _codec(video) == "hevc" else []
+    if cfg.keep_audio and _has_audio(video):
+        # Audio is COPIED too -- the camera's own AAC packets, not re-encoded --
+        # chosen per segment by `audio_packet_ranges` so the audio's running
+        # length tracks the video's to within half an AAC frame at every join.
+        #
+        # Cut from an audio-ONLY copy of the track, not the source: in a file
+        # with video the concat demuxer's inpoint seeks to the VIDEO keyframe
+        # and lets in the audio packets from there (114 extra over 9 joins on
+        # clip 21).  Alone, every audio packet is a seek point and the cut is
+        # packet-exact.
+        a_src = os.path.join(tmp, "source_audio.m4a")
+        cancel.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-i", video, "-map", "0:a:0", "-c", "copy", a_src],
+                   capture_output=True, check=True)
+        alist = os.path.join(tmp, "aconcat.txt")
+        src = a_src.replace("\\", "/").replace("'", "'\\''")
+        with open(alist, "w", encoding="utf-8") as fh:
+            for a0, a1 in audio_packet_ranges(audio_packets(a_src), kept, durs):
+                # Both ends 1 us early, at full precision: the demuxer keeps a
+                # packet whose pts rounds to just under the outpoint, and the
+                # range's LENGTH -- which places the next range -- is unchanged.
+                fh.write(f"file '{src}'\ninpoint {a0 - 1e-6:.9f}\n"
+                         f"outpoint {a1 - 1e-6:.9f}\n")
+        aud = os.path.join(tmp, "audio.m4a")
+        cancel.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-f", "concat", "-safe", "0", "-i", alist,
+                    "-map", "0:a:0", "-c", "copy", aud],
+                   capture_output=True, check=True)
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+               "-i", vid, "-i", aud, "-map", "0:v:0", "-map", "1:a:0",
+               "-c", "copy", *tag, "-movflags", "+faststart", output]
+    else:
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+               "-i", vid, "-c", "copy", *tag, "-movflags", "+faststart", output]
+    cancel.run(cmd, capture_output=True, check=True)
     if not wd:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
@@ -267,6 +487,21 @@ def build_reel(video_path, output_path: Optional[str] = None,
     # Before perceive: `PC.far`'s crop rectangle is sized from this track, and
     # a crop is a fixed ffmpeg rectangle that cannot follow a moving camera.
     _emit(on_progress, 3, "Tracking the camera")
+    if _single_decode():
+        # Both proxies from one decode of the source, using the band as it
+        # stands at calibration.  A camera that never moves (the fixed-mount
+        # case this is for) leaves the band unchanged and both later calls are
+        # cache hits; one that did move gets its far proxy rebuilt by
+        # `PC.far`, exactly as without this.  See proxy.ensure_proxies_once.
+        from pipeline import proxy as P
+        from pipeline.anya2 import court as C
+        try:
+            P.ensure_proxies_once(video_path, C.ANALYSIS_SIZE,
+                                  PC.far_band(video_path)[0], crf=14)
+        except cancel.Cancelled:
+            raise
+        except Exception as e:                  # pre-warming only
+            print(f"[proxies] single-decode build skipped: {e}")
     CAM.estimate(video_path, force=cfg.perceive.force,
                  sample_fps=cfg.perceive.camera_sample_fps or CAM.SAMPLE_FPS,
                  on_progress=lambda fr: _emit(on_progress, 3,

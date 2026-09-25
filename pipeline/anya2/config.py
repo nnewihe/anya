@@ -98,4 +98,9 @@ class Anya2Config:
     crf: int = 20
     preset: str = "veryfast"
     scale_height: Optional[int] = None     # None = native resolution
+    copy_video: bool = False               # True: stream-copy the source, video
+                                           # AND audio, no re-encode -- original
+                                           # resolution and quality; cuts start on the
+                                           # keyframe at or before each start
+                                           # (crf/preset/scale_height ignored)
     keep_audio: bool = True
