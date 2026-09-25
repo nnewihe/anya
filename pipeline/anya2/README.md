@@ -442,10 +442,270 @@ Scored ±2.0 s over all **236 labelled ends on 13 clips**:
 | **anya2 pose-only** (clip 35, out-of-sample) | 60.0% | 60.0% | −0.92 s | **0** |
 
 Better recall than the ball-based policy with no ball at all; behind on
-precision. **Zero truncations on every clip** — no detected end lands more than
-2 s early, so the harmful error (deleting live tennis from the reel) does not
-occur. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and clip
-40 (doubles) are the weak ones at ~30–38%.
+precision. Per-clip recall spans 30.8%–78.6%; clip 58 (the 55-minute match) and
+clip 40 (doubles) are the weak ones at ~30–38%.
+
+### The point-end objective
+
+`orchestrator.point_end_score` is **the** metric, at the user's direction;
+everything else in `score_reel` is diagnostic. It scores **the point end the
+system chose** — `Segment.end_t`, before pre- or post-roll — against the
+labelled end. Deliberately not the cut point: roll is a separate, later decision
+about how much air to leave around a correct answer, and folding it in lets a
+tuning run paper over a bad end by padding it.
+
+That does **not** make the two independent. Roll cannot shift a scored `end_t`
+directly, but it changes where segments end, `smooth` then merges a different
+set of them, and the segment covering a given rally is no longer the same one —
+moving post-roll 1.0 → 2.0 took PES +0.051 → +0.008. The coupling runs through
+`merge_gap_s`, not the arithmetic, so re-check PES after moving roll.
+
+With `e = end_t − gt_end`:
+
+| range | score |
+|---|---|
+| `\|e\| ≤ 2 s` | **1.0**, flat — a point end is a moment a couple of seconds wide |
+| `e > +2 s` | linear from 1 down to **0** at the next labelled point start; never negative |
+| `e < −2 s` | `2 − exp((\|e\| − 2) / 2)` — crosses zero at 3.39 s early, −5.4 at 6 s |
+
+**The penalty saturates at −10, which the corpus forced.** Uncapped, one point
+of 208 was 88.2% of the objective and the worst three were 98.9% — that is
+tuning against a single moment of clip 58. The cap is also the honest shape: an
+end 15 s early and one 21 s early destroyed the same rally. Set
+`EARLY_MAX_PENALTY = None` for the pure exponential; `pes_errors` is reported
+either way.
+
+Tuned against it over 208 ends on 11 clips, **only the hysteresis moved** —
+`LIVE_HI/LO` 0.50/0.35 → **0.40/0.25**. `FAR_VETO_W = 0.8`, `TURN_HOLD_S = 0`,
+confident pairing, `LIVE_SMOOTH_S = 4.0` and `est_duration_pct = 85` were all
+re-checked at the new hysteresis and all held.
+
+| hi / lo | PES | within ±2 s | >2 s early | >2 s late | median err |
+|---|---|---|---|---|---|
+| 0.50 / 0.35 | +0.040 | 71 | 49 | 88 | +0.9 s |
+| **0.40 / 0.25** | +0.051 | **75** | 41 | 92 | +1.2 s |
+| 0.35 / 0.20 | **+0.102** | 64 | 31 | 113 | +2.5 s |
+| 0.30 / 0.15 | +0.064 | 57 | 23 | 128 | +5.1 s |
+
+**0.40/0.25 is not the top of the PES column, and was chosen knowing that.**
+0.35/0.20 maximises the objective, but not by putting more ends on the labelled
+time — it does the opposite. Points inside the ±2 s plateau *fall* from 71 to
+64 and median error grows to +2.5 s; what improves is only that fewer ends land
+early, bought by holding the live state open longer so every falling edge
+arrives later. The objective rewards that because late costs it only linearly.
+0.40/0.25 is the best row on the column that says *the end was right*.
+
+**The histogram settles it.** Binned by how early, the mistimed ends are one
+mode against the plateau edge and nothing beyond it:
+
+| s early | 0.50/0.35 | 0.40/0.25 | 0.35/0.20 |
+|---|---|---|---|
+| 2–3 | 23 | 21 | 14 |
+| 3–4 | 11 | 5 | 5 |
+| 4–5 | 2 | 2 | 1 |
+| 5–6 | 2 | 2 | 1 |
+| 6+ | 0 | 0 | 0 |
+
+Every genuinely mistimed end in the corpus is **under 6 s early**, at every
+setting, median ~2.7 s and p90 ~4.0 s. There is no catastrophic mid-rally tail
+for the exponential to punish — at 2.7 s early the score is still +0.35 — so the
+penalty barely engages, and the PES ranking is driven mostly by the eleven
+points with **no segment at all**, scored as full-duration truncations, which no
+hysteresis setting changes (11, 11, 10 across the three rows). Optimising PES
+here is largely optimising a serve-recall problem through the wrong knob.
+
+### Near serve — the wrist-separation term is gone
+
+The trophy was a product of three terms and one of them, `split` (the two
+wrists ≥ 0.149 body heights apart), **assumed a measurement the perception
+cannot make**. A player who serves side-on with the racket arm on the far side
+of their body occludes that arm through the toss, and the pose model puts *both*
+wrist keypoints on the visible arm. On Data/43's two missed serves the wrists sit
+**18 px apart on a 221 px body** (0.081 BH) and **8 px on a 229 px body**
+(0.037 BH). The other two trophy terms score 1.000 on the same samples, so the
+product was zero for want of evidence that was never there — and no threshold
+recovers it: at a `split` minimum of 0.04 the first serve reaches only 0.343 and
+the second is still exactly 0.000.
+
+`TROPHY_USE_SPLIT = False`. Scored over 96 labelled near serves on 11 clips at
+the ±5 s tolerance that credits the label-timing cases:
+
+| | recall | precision | F1 | misses |
+|---|---|---|---|---|
+| with `split` | 93.8% | **80.4%** | 86.5 | 6 |
+| **without** | **97.9%** | 76.4% | 85.8 | **2** |
+
+Both Data/43 misses go, as do 36@271.6 and 38@59.8. The two survivors are a
+**0.9-second labelled "rally"** and a matching reshuffle — neither reachable by
+any threshold. End to end the objective goes **+0.141 → +0.236** and points the
+reel never covers drop **8 → 5**, because serve recall feeds straight into
+coverage, which dominates the objective.
+
+The cost is 7 new false positives, and they are exactly the family `split`
+existed to reject: **5 of 7 are mid-rally**, a player with both arms up during
+live play. `lo_elev` does not cover that case — it saturates at 1.0 above
+−0.052 BH, so it only rejects a genuinely *one-armed* gesture (hand to cap, a
+wave), which it still does.
+
+Two things were measured and are worth recording:
+
+* **`live_gate_near` does not catch them.** Swept 0.5→0.9, **5 of 7 survive at
+  every setting** and PES gets *worse* (+0.236 → +0.207). The live score is low
+  at these moments despite them sitting inside labelled rallies.
+* **Most are harmless anyway.** Two are dropped by the orchestrator and four
+  land inside segments that are majority live tennis, where a spurious start
+  just re-anchors a segment the reel was keeping. Only **two** do real damage
+  (36@380.8, 38@193.6), stretching a segment across mostly-dead footage. Both
+  fire *between* points, 4–6 s before a real serve, so the targeted fix is a
+  tighter start-merge window rather than restoring `split`.
+
+Reviewed on video, at least two of the seven (58@46.4, 24@382.8) look like real
+serves inside over-long labelled rallies — 58's "rally 26–68 s" is 42 seconds
+and almost certainly spans more than one point — so the precision drop above is
+probably overstated.
+
+### The join chains, so the merge window came down
+
+Two false positives were stretching segments across mostly-dead footage, and the
+cause was not the detections — it was `smooth`'s join step. At `merge_gap_s =
+6.0` the join **chains**: three legitimately-spaced starts on clip 36 (367, 381,
+403 s) became one **54 s segment that was 27% live tennis**, each join licensing
+the next.
+
+| merge_gap | PES | within ±2 s | whole | dead_s | segs | cuts/min |
+|---|---|---|---|---|---|---|
+| 6.0 | +0.236 | 65 | **153** | 1550 | 146 | 1.6 |
+| **4.0** | **+0.313** | **75** | 150 | **1442** | 168 | 1.8 |
+| 3.0 | +0.330 | 76 | 146 | 1426 | 177 | 1.8 |
+| 2.0 | +0.353 | 79 | 146 | 1407 | 190 | 2.0 |
+| 0.0 | +0.473 | 95 | 128 | 1369 | 250 | 2.7 |
+
+The objective improves all the way down, and most of that is real: a joined
+segment carries the **last** point's `end_t`, so every earlier point in the chain
+is scored against an end tens of seconds late. But whole points fall away with
+it, and "every point in the reel" is the brief. **4.0** buys 10 more
+correctly-timed ends and 108 s of dead time for 3 whole points and 0.2 more cuts
+per minute; below it the whole-point cost accelerates. Clip 36's segment becomes
+three totalling 45 s at 33% live.
+
+**Clip 38's 91 s segment is not reachable this way, and the reason is
+structural.** Consecutive segments whose ends were *estimated* sit exactly
+`post_roll − (next_start_guard − pre_roll)` = 2.0 − (4.0 − 1.0) = **1.0 s**
+apart — the guard's intended dead space is eaten by post-roll. Clip 38 is seven
+such segments chained at 1.0–2.7 s, so breaking it needs `merge_gap` below 1.0,
+which costs **25 whole points**. Widening `next_start_guard_s` reaches it at
+6.0–8.0 but doubles truncations (6 → 12), because a longer guard cuts every
+estimated end short. Clip 38's real problem is upstream — 8 labelled points
+covered by 6 starts, four ending on an estimate — and belongs to point-end
+recall, not smoothing.
+
+### The nine points the reel never covers
+
+They carry 78% of the objective's penalty, so they are worth naming. Every one
+fails the same way twice: **no serve was detected at all**, and `recover_missed`
+— the live-score second line of defence — did not fire either, because live
+never reaches its 0.75 threshold inside the rally (observed max 0.22–0.92,
+median 0.06–0.68). No orchestrator rule drops any of them; nothing reaches the
+in-rally gate, the rapid-repeat filter or the service-run DP to be dropped.
+
+| clip / pt | side | best serve candidate | shortfall | near trk | far trk |
+|---|---|---|---|---|---|
+| 26 / 9 | far | far @ 319.9 s, p=0.988 | *fires, 1.3 s after a 3.4 s rally* | 1.00 | 0.60 |
+| 35 / 0 | far | far @ **−0.6 s**, p=0.665 | +0.085 | 0.28 | 1.00 |
+| 36 / 9 | near | near @ 270.7 s, p=0.616 | +0.084 | 1.00 | 0.96 |
+| 36 / 10 | near | near @ 280.2 s, p=0.692 | **+0.008** | 1.00 | 1.00 |
+| 43 / 0 | near | none at any score | — | 1.00 | 0.83 |
+| 50 / 5 | far | far @ 150.4 s, p=0.265 | +0.485 | 0.21 | **0.06** |
+| 58 / 4 | near | far @ 239.7 s, p=0.465 | +0.285 | 0.90 | 1.00 |
+| 58 / 60 | far | none at any score | — | 1.00 | **0.50** |
+| 58 / 61 | far | none at any score | — | 1.00 | **0.58** |
+
+Four distinct causes, and only one of them is about point ends:
+
+1. **Threshold near-misses (36/9, 36/10)** — tracking is perfect and the
+   detector scored 0.616 and 0.692 against a 0.70 bar. 36/10 misses by **0.008**.
+   Dropping the near threshold to 0.61 recovers both, at whatever precision cost
+   the near detector's own sweep says.
+2. **Far-player tracking (50/5, 58/60, 58/61)** — far coverage of 0.06, 0.50 and
+   0.58 inside the rally. Clip 50's far coverage is 0.20 *clip-wide*. A far serve
+   cannot be detected from a far player who is not there; this is a perception
+   problem, not a detector one.
+3. **Label artifacts (35/0, 26/9)** — 35/0 starts at 0.1 s, so the serve happened
+   before the clip did, and the detector still found it at −0.6 s. 26/9 is a
+   3.4 s labelled rally whose serve is detected 1.3 s *after* it ends, i.e. the
+   detection belongs to the next labelled rally. Both are scoring artifacts.
+4. **Genuine detector failures (43/0, 58/4)** — good tracking, no candidate at
+   any score. Two of 208.
+
+The corpus context that makes this legible: **30% of labelled points have a
+neighbouring point within 5 s** and the median inter-point gap is 10.3 s, when
+real tennis runs 15–25 s. The labels mark live ball-in-play stretches, so a
+fault or a let becomes two adjacent "points". Points with a sub-5 s neighbour are
+3× likelier to end up uncovered (8.1% against 2.7%), which is a real effect but
+not the dominant one — 62 points have such a neighbour and only 5 are uncovered.
+
+**The actionable item is `recover_live_thr`.** It exists precisely to catch
+points no serve detector found, and on all nine it never fires. Lowering it from
+0.75 would recover 43/0 (live peaks 0.92) and 35/0 (0.85) at least, and is a far
+cheaper fix than moving a serve threshold.
+
+### The truncation column was measuring the wrong thing
+
+**"Zero truncations on every clip" was a metric artifact, and the reel truncated
+anyway.** `eval.py` counts a truncation only when a *matched* end lands more
+than 2 s early. At 40.2% precision the majority of emitted ends match no label
+at all, so every end that cut a rally short by landing mid-point was invisible
+to the one column that existed to catch it.
+
+What made that harmful rather than merely wrong was `_pair_once`, which took
+`cand[0]` — the **earliest** end in the point's window, unconditionally. With
+most candidates being false positives, that rule systematically preferred a
+mid-rally artifact over the real end whenever both fell in the window.
+
+`score_reel` now carries the reel-level question instead: for a rally the reel
+got *some* of, how many seconds of its **tail** are missing. Three fixes,
+decomposed over all 208 labelled ends on 11 clips:
+
+| | recall | precision | whole | trunc pts | trunc_s | dead_s |
+|---|---|---|---|---|---|---|
+| shipped before | 47.1% | 36.3% | 108 | 21 | 127 | 926 |
+| + `turn_away` hold gate | 48.1% | 37.6% | 115 | 21 | 122 | 959 |
+| + confidence-aware pairing | 47.1% | 36.3% | 117 | 20 | 106 | 1100 |
+| + far-veto weight 0.8 | 49.5% | 37.7% | 119 | 18 | 119 | 998 |
+| **all three** | **50.5%** | **39.3%** | **128** | **17** | **93** | 1213 |
+
+Each is positive alone and they compose. 12 of the 17 remaining truncated points
+are on clip 58.
+
+1. **The union vetoed a player it knows nothing about.** All five members —
+   walking and `near_end`'s four — are computed from the *near* pose shim, yet
+   `raw = max(near, far) * (1 - union)` let near-player posture erase the far
+   player's activity. The commonest truncating case is exactly that: the near
+   player hits an approach and stands watching (`settle` saturates) while the
+   far player sprints to run it down. Exempting the far term *outright* is the
+   opposite error and costs more than it buys — detected segments run 24.3 s
+   against 15.7 s, because nothing then vetoes the far player walking to the
+   ball after the point. The union is *weak* evidence about the far player, not
+   none; `FAR_VETO_W = 0.8` is where recall and precision both peak.
+
+2. **`turn_away` fired on forehands — and the gate for it does NOT ship.** The
+   `conf` ramp already handled a player seen edge-on, but not rotation *past*
+   square: an open-stance takeback inverts the shoulder order with real
+   magnitude. Ungated, the signal fires above 0.5 on **3.3% of live tennis**,
+   and eroding it over a 2 s hold window cuts that 8.5× to 0.39%. That
+   measurement is real and reproducible — and the gate still loses end to end,
+   on every arm and every column, producing *more* badly-early ends rather than
+   fewer (see `near_end.TURN_HOLD_S`, which ships at **0.0**). Suppressing the
+   signal raises the live score and moves ends later. A half-window phase shift
+   was tried, on the theory that the centred erosion was merely delaying genuine
+   turns, and did not help either. The row above is its score under the earlier
+   reel-based metric, kept because it is what the decomposition measured; it is
+   not a claim that the gate is on.
+
+3. **Pairing threw away the discriminator it already had.** `detect_ends`
+   computes `p` = how far the live score falls *and stays fallen*; a real end
+   scores near 1, a mid-rally dip low. Picking the argmax instead of the
+   earliest costs nothing and needs no new evidence.
 
 ### Four measurements, in the order they killed the obvious designs
 
@@ -936,7 +1196,7 @@ anything else, so it exercises the stride logic at 8 rather than the usual 2-4.
 |---|---|---|---|---|
 | near serve | 5 | **100%** | **100%** | above |
 | far serve | 15 | **93.3%** | **93.3%** | well above |
-| point end | 20 | **60.0%** | **60.0%** (0 truncations) | above |
+| point end | 20 | **60.0%** | **60.0%** | above |
 
 All three land at or above their corpus averages, and the far-serve precision is
 the second-best on any clip. That is the strongest evidence available here that

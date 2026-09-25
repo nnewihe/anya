@@ -116,7 +116,38 @@ HEAD_ABOVE_SHO_BH = 0.14  # fallback head height above the shoulder line, body
                           # is the permissive direction and the gate leans on
                           # the trophy shape rather than on this constant.
 
-# ── ready phase ──────────────────────────────────────────────────────────
+# ── ready: A PLACE, NOT A POSTURE ────────────────────────────────────────
+# The pose ready term -- hands together on the grip, racket carried low, limbs
+# quiet -- is no longer scored, at the user's direction.  It is still computed
+# and returned as `cue_ready_pose` so it can be re-measured, on the same
+# principle as near_end's rejected cues: a deleted cue cannot be re-measured on
+# better footage.
+#
+# What replaced it is the LEGACY detector's ready ZONE, a box on the server's
+# feet rather than a shape made by their arms.  Two reasons that is the better
+# question to ask.  The pose term answered "does this look like someone about to
+# serve", which a player adjusting strings or waiting to receive also satisfies;
+# the zone answers "were they STANDING WHERE A SERVER STANDS", which nothing
+# else on a tennis court does.  And the pose term could not tell a player who
+# was not ready from a player who was not VISIBLE -- on the three candidates
+# that exposed this, `ready` read 0.000 because the slot had no track across the
+# lookback at all, not because the stance was absent.  A position rule fails the
+# same way (NaN is outside the box) but it fails HONESTLY, because being
+# untracked really is being unable to show you were in the zone.
+#
+# Values are `anya_near_serve.NearServeConfig`'s, unchanged, so the two near
+# detectors agree about where a server stands:
+READY_ZONE_MIN_FT = -3.5  # legacy zone_y_min_ft; behind the near baseline
+READY_ZONE_MAX_FT = 0.5   # legacy zone_y_max_ft; and barely into the court
+READY_ZONE_X_PAD_FT = 3.0 # legacy zone_x_pad_ft, outside the singles sidelines
+COURT_WIDTH_FT = 27.0     # legacy court_width_ft (singles)
+# The server may LEAVE the zone -- they walk to the line, bounce the ball, rock
+# forward into the swing -- so this is a recency test, not a containment one:
+# the last sample with their feet in the zone must be no older than this at the
+# trophy.  2.0 s spans a normal toss-and-strike from a standing start without
+# reaching back into the previous point.
+READY_ZONE_MAX_AGE_S = 2.0
+
 TOGETHER_BH = 0.10        # wrist separation at or under this = hands on the grip
 SPLIT_BH    = 0.26        # ...and at or over this they are definitely apart
 READY_HI_MAX_BH = 0.10    # in ready, even the higher wrist stays under this far
@@ -174,6 +205,24 @@ TROPHY_LO_FULL_BH = -0.052    # ...and near the shoulder = full credit.
                               # family (hand to cap, hand to face, a wave, a
                               # raised finger): those leave the other wrist down.
 TROPHY_SPLIT_MIN_BH = 0.149   # hands must have come apart to score at all
+# ...EXCEPT THAT THE WRISTS ARE NOT SEPARATELY TRACKABLE ON EVERY SERVE, which
+# is what this term silently assumed.  A player who serves side-on with the
+# racket arm on the far side of their body occludes that arm through the toss,
+# and the pose model puts BOTH wrist keypoints on the visible arm.  Measured on
+# Data/43's two missed serves, at the trophy the two wrists sit 18 px apart on a
+# 221 px body (0.081 BH) and 8 px on a 229 px body (0.037 BH) -- against the
+# 0.149 required here.  The other two trophy terms score 1.000 on the same
+# samples, so the product is zero for want of a measurement the perception
+# cannot make.  No threshold recovers it: at 0.04 the first serve reaches only
+# 0.343 and the second is still exactly 0.000.
+#
+# So the term is switched OFF.  What it was for -- rejecting a single raised arm
+# -- is largely covered by TROPHY_LO_FULL_BH, which demands the OTHER wrist be
+# near the shoulder line and scores a genuinely one-armed gesture (hand to cap,
+# a wave) at zero because that wrist hangs well below it.  What is genuinely
+# lost is the case where both wrists are up and it is not a serve, and the
+# corpus is what says whether that costs more than it buys.
+TROPHY_USE_SPLIT = False
 TROPHY_MIN = 0.35             # run threshold for calling a sample "trophy"
 
 # THE TROPHY IS A PHASE, NOT AN INSTANT.
@@ -265,7 +314,13 @@ SERVE_ZONE_MAX_FT =  1.0  # ...and no further INTO the court than this, which is
 # multiplies.  The floor keeps the veto soft — at 15 Hz contact spans about two
 # samples, so a real serve can be caught mid-stroke with a partial swing score,
 # and a hard gate would throw those away.
-W_TROPHY, W_READY = 0.45, 0.20
+# W_READY is gone with the pose ready term: the shape is now the trophy alone,
+# and the ready zone is a GATE rather than a weighted contributor.  Note what
+# that quietly fixes -- under the old blend a candidate with ready = 0 had a
+# ceiling of W_TROPHY/(W_TROPHY+W_READY) = 0.6923, BELOW the 0.70 threshold, so
+# "ready" was silently mandatory rather than weighted.  Three candidates in the
+# corpus sat pinned at exactly 0.6923.  A gate says the same thing out loud.
+W_TROPHY = 0.45
 SWING_FLOOR = 0.45        # what a candidate retains with NO swing evidence at
                           # all.  Chosen so the two adversarial cases above land
                           # at 0.42 (rejected) while a serve seen with only half
@@ -276,7 +331,21 @@ SWING_FLOOR = 0.45        # what a candidate retains with NO swing evidence at
 # fitted to the corpus -- which is the only reason a threshold chosen on the
 # same clips it is scored on is worth anything.  Clip 58's 44 near serves are
 # the holdout.
-THRESHOLD = 0.70
+# Lowered from 0.70 at the user's direction alongside dropping the split term.
+# Scored over the 96 labelled near serves on 11 clips, matching at the +/-5 s
+# tolerance that credits the label-timing cases:
+#
+#     thr    recall   precision   F1    detections
+#     0.50    97.9%     75.2%    85.1      125
+#     0.60    97.9%     75.2%    85.1      125     <-- here
+#     0.70    97.9%     76.4%    85.8      123
+#
+# Recall is flat across the whole range -- the two remaining misses are a
+# 0.9 s labelled "rally" and a matching reshuffle, neither reachable by a
+# threshold -- so this buys nothing on recall and costs two detections of
+# precision.  It is a deliberate margin for footage unlike the corpus rather
+# than a fitted optimum, and the table is here so that is explicit.
+THRESHOLD = 0.60
 REFRACT_S = 3.0           # as anya_near_serve.event_refract_s
 
 # ── when is the point start? ─────────────────────────────────────────────
@@ -367,7 +436,8 @@ def _movmax(x, w):
 
 def serve_primitives(kp, bbox, fps: float,
                      court_y: Optional[Sequence[float]] = None,
-                     eligible: Optional[Sequence[bool]] = None) -> Dict[str, np.ndarray]:
+                     eligible: Optional[Sequence[bool]] = None,
+                     court_x: Optional[Sequence[float]] = None) -> Dict[str, np.ndarray]:
     """Per-sample phase primitives for one near-player pose track.
 
     `kp` [N, 17, 3] and `bbox` [N, 4] are one near slot of `anya2.tracks`,
@@ -447,7 +517,9 @@ def serve_primitives(kp, bbox, fps: float,
     together = 1.0 - _ramp(gap_bh, TOGETHER_BH, SPLIT_BH)
     carried = 1.0 - _ramp(hi_elev, READY_HI_MAX_BH, READY_HI_MAX_BH + 0.14)
     ready_raw = together * carried * still
-    ready = _movmean_nan(ready_raw, max(1, int(round(READY_WIN_S * fps))), _movmean)
+    # Computed and returned, no longer scored -- see the READY ZONE block above.
+    cue_ready_pose = _movmean_nan(ready_raw,
+                                  max(1, int(round(READY_WIN_S * fps))), _movmean)
 
     # ── trophy ───────────────────────────────────────────────────────────
     # A product, not a sum: all three have to hold at once.  Both wrists up AND
@@ -459,9 +531,10 @@ def serve_primitives(kp, bbox, fps: float,
     # quantity that a noisy keypoint can drive arbitrarily high.
     dil = max(1, int(round(TROPHY_DILATE_S * fps)) * 2 + 1)
     trophy = (_movmax(_ramp(hi_head, TROPHY_HEAD_MIN_BH, TROPHY_ABOVE_HEAD_BH), dil)
-              * _movmax(_ramp(lo_elev, TROPHY_LO_MIN_BH, TROPHY_LO_FULL_BH), dil)
-              * _movmax(_ramp(gap_bh, TROPHY_SPLIT_MIN_BH,
-                              TROPHY_SPLIT_MIN_BH + 0.12), dil))
+              * _movmax(_ramp(lo_elev, TROPHY_LO_MIN_BH, TROPHY_LO_FULL_BH), dil))
+    if TROPHY_USE_SPLIT:
+        trophy = trophy * _movmax(_ramp(gap_bh, TROPHY_SPLIT_MIN_BH,
+                                        TROPHY_SPLIT_MIN_BH + 0.12), dil)
 
     if court_y is not None:
         cy = np.asarray(court_y, dtype=np.float64)
@@ -473,12 +546,34 @@ def serve_primitives(kp, bbox, fps: float,
     else:
         on_court = np.ones(n, dtype=bool)
 
+    # ── the ready zone ───────────────────────────────────────────────────
+    # The legacy box, on the same ground-contact point the serve-zone gate
+    # uses.  Both dimensions, not just the baseline band: the legacy rule pads
+    # the SINGLES sidelines by 3 ft, and a player standing in the doubles alley
+    # or off the side of the court is not in a serving position however close to
+    # the baseline they are.  NaN fails both comparisons, so an untracked sample
+    # is out of the zone -- see the note above; here it is not merely
+    # conservative but correct, since a player who cannot be seen cannot
+    # demonstrate where they were standing.
+    if court_y is not None and court_x is not None:
+        cyy = np.asarray(court_y, dtype=np.float64)
+        cxx = np.asarray(court_x, dtype=np.float64)
+        in_ready_zone = ((cyy >= READY_ZONE_MIN_FT * FT_TO_M)
+                         & (cyy <= READY_ZONE_MAX_FT * FT_TO_M)
+                         & (cxx >= -READY_ZONE_X_PAD_FT * FT_TO_M)
+                         & (cxx <= (COURT_WIDTH_FT + READY_ZONE_X_PAD_FT) * FT_TO_M))
+    else:
+        in_ready_zone = np.ones(n, dtype=bool)
+    if eligible is not None:
+        in_ready_zone = in_ready_zone & np.asarray(eligible, dtype=bool)
+
     if eligible is not None:
         on_court = on_court & np.asarray(eligible, dtype=bool)
 
     return {
         "valid": valid & both,
-        "ready": ready,
+        "in_ready_zone": in_ready_zone,
+        "cue_ready_pose": cue_ready_pose,
         "trophy": trophy,
         "elev_l": elev_l, "elev_r": elev_r,
         "head_l": head_l, "head_r": head_r,
@@ -533,20 +628,24 @@ def detect_serves(prim: Dict[str, np.ndarray],
                   track: Optional[int] = None,
                   lead_s: Optional[float] = None,
                   refract_s: Optional[float] = None) -> List[Dict]:
-    """Sequence-match ready -> trophy -> swing over the primitives.
+    """Sequence-match ready zone -> trophy -> swing over the primitives.
 
     Each trophy run is one candidate.  The run's peak sample fixes the trophy
-    time and which arm is tossing; the ready term is searched BACKWARD and the
-    swing term FORWARD, both in bounded windows.  A candidate that cannot find
-    its swing scores zero on that term rather than being discarded outright, so
-    the arbitration stays graded — a strong trophy over a long, clean ready is
-    still allowed to carry a serve whose contact fell between two samples.
+    time and which arm is tossing; the READY ZONE is searched BACKWARD as a
+    recency gate and the swing term FORWARD as a graded score.  A candidate
+    whose feet were not in the zone within READY_ZONE_MAX_AGE_S of the trophy is
+    dropped outright -- position is a requirement, not a contributor.  A
+    candidate that cannot find its swing scores zero on that term rather than
+    being discarded, so that arbitration stays graded: a strong trophy from a
+    server who was demonstrably in the zone still carries a serve whose contact
+    fell between two samples.
 
     Returns dicts with `t` (trophy onset — see `serve_t` below), `p`, the three
     component scores, and the phase timestamps, sorted by time.
     """
     fps = float(prim["fps"])
-    trophy, ready = prim["trophy"], prim["ready"]
+    trophy = prim["trophy"]
+    in_zone = np.asarray(prim["in_ready_zone"], dtype=bool)
     n = len(trophy)
 
     tro = np.nan_to_num(trophy, nan=0.0)
@@ -554,7 +653,7 @@ def detect_serves(prim: Dict[str, np.ndarray],
     if require_court:
         cand = cand & prim["on_court"]
 
-    back_lo, back_hi = int(round(READY_BACK_MAX_S * fps)), int(round(READY_BACK_MIN_S * fps))
+    zone_age = max(1, int(round(READY_ZONE_MAX_AGE_S * fps)))
     fwd_lo, fwd_hi = max(1, int(round(SWING_MIN_S * fps))), int(round(SWING_MAX_S * fps))
 
     out: List[Dict] = []
@@ -562,11 +661,20 @@ def detect_serves(prim: Dict[str, np.ndarray],
         k = lo + int(np.argmax(tro[lo:hi]))
         s_trophy = float(tro[k])
 
-        # Ready: the best sustained ready score in the lookback window.
-        a, b = max(0, k - back_lo), max(0, k - back_hi)
-        rd = ready[a:b]
-        rd = rd[np.isfinite(rd)]
-        s_ready = float(rd.max()) if rd.size else 0.0
+        # READY ZONE, as a recency gate.  The server is allowed to leave the
+        # zone -- they rock forward into the swing, and by the trophy their feet
+        # are often already past the baseline -- so what is required is that
+        # they were STILL IN IT recently, not that they are in it now.  A
+        # candidate whose last in-zone sample is older than READY_ZONE_MAX_AGE_S
+        # is not a serve: whoever it is was somewhere else when the point
+        # started.  This is where mid-court overheads, a receiver's swing and a
+        # candidate built on a fragmentary track all leave.
+        z_lo = max(0, k - zone_age)
+        zw = np.flatnonzero(in_zone[z_lo:k + 1])
+        if not zw.size:
+            continue
+        t_last_zone = (z_lo + int(zw[-1])) / fps
+        zone_age_s = k / fps - t_last_zone
 
         # Swing: the tossing arm is whichever carried the high wrist at trophy;
         # the racket arm is the other one.  Contact wants the racket wrist over
@@ -585,9 +693,11 @@ def detect_serves(prim: Dict[str, np.ndarray],
                 s_swing = float(_ramp(peak, 0.0, PEAK_ABOVE_HEAD_BH))
                 t_contact = (c + j) / fps
 
-        # Shape first, normalised so a perfect trophy over a perfect ready is
-        # 1.0, then gated by the swing — see the SWING_FLOOR comment.
-        shape = (W_TROPHY * s_trophy + W_READY * s_ready) / (W_TROPHY + W_READY)
+        # The trophy IS the shape now; the ready zone has already vetoed above
+        # rather than contributing a weighted share.  W_TROPHY cancels out of a
+        # one-term normalised sum and is kept only as documentation of what the
+        # shape is made of.
+        shape = s_trophy
         p = shape * (SWING_FLOOR + (1.0 - SWING_FLOOR) * s_swing)
         if p < threshold:
             continue
@@ -598,7 +708,8 @@ def detect_serves(prim: Dict[str, np.ndarray],
             "p": round(p, 4),
             "trophy": round(s_trophy, 4),
             "swing": round(s_swing, 4),
-            "ready": round(s_ready, 4),
+            "zone_age_s": round(zone_age_s, 3),
+            "t_last_zone": round(t_last_zone, 3),
             "t_trophy": round(k / fps, 3),
             "t_contact": round(t_contact, 3) if t_contact is not None else None,
             "toss_arm": "left" if toss_left else "right",
@@ -680,7 +791,8 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
             continue
         prim = serve_primitives(kp[:, slot], bbox[:, slot], fps,
                                 court_y=ct[:, slot, 1],
-                                eligible=el[:, slot])
+                                eligible=el[:, slot],
+                                court_x=ct[:, slot, 0])
         ev = detect_serves(prim, threshold=threshold,
                            require_court=require_court, track=int(slot),
                            lead_s=lead_s, refract_s=refract_s)
@@ -707,7 +819,7 @@ def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=NEAR_SERVE,
                   track=e["track"],
                   detail={k: e[k] for k in
-                          ("trophy", "swing", "ready", "t_trophy",
+                          ("trophy", "swing", "zone_age_s", "t_trophy",
                            "t_contact", "toss_arm", "t_basis")})
             for e in kept]
 
@@ -734,7 +846,7 @@ def main() -> None:
         d = e.detail
         print(f"  {e.t:8.2f}s  p={e.p:.3f}  slot={e.track}  "
               f"trophy={d['trophy']:.2f} swing={d['swing']:.2f} "
-              f"ready={d['ready']:.2f}  toss={d['toss_arm']:5s}")
+              f"zone_age={d['zone_age_s']:.2f}s  toss={d['toss_arm']:5s}")
     out = a.json or events_path(a.video)
     dump_events(ev, out, fps=None, threshold=a.threshold,
                 requirement=REQUIREMENT.__dict__)
