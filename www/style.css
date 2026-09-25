@@ -364,10 +364,32 @@ h1 span {
   box-shadow: 0 0 20px rgba(223, 255, 0, 0.4);
 }
 
+/* ── The about page ───────────────────────────────────────────────────────
+   A second, quieter call to action under the hero's download button, for a
+   visitor who wants to know what the app does before taking 330 MB of it. */
+.hero-secondary {
+  margin: 14px 0 0;
+  font-size: 15px;
+}
+
+.hero-secondary a {
+  color: rgba(255, 255, 255, 0.86);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(223, 255, 0, 0.55);
+  padding-bottom: 2px;
+}
+
+.hero-secondary a:hover {
+  color: var(--lime);
+  border-bottom-color: var(--lime);
+}
+
 @media (max-width: 700px) {
-  /* Two nav buttons do not fit beside the brand on a phone; the hero's own
-     call to action carries the download there, so the nav keeps Contact. */
-  .nav-download {
+  /* Three nav buttons do not fit beside the brand on a phone; the hero's own
+     two calls to action carry Download and About there, so the nav keeps
+     Contact. */
+  .nav-download,
+  .nav-about {
     display: none;
   }
 }

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="How Anya Tennis works — from match video to a reel of just the rallies, in five steps. Anya means eye in Igbo.">
+  <title>About — Anya Tennis</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    /* Page-specific, same arrangement as download.html: the shared sheet gives
+       the palette, the body, the nav and the brand; everything here is the
+       document layout those two pages have no use for. */
+    /* The shared sheet styles .contact-button for the hero's <button>; here
+       they are links, and on a phone Download stays because this page has no
+       hero call to action of its own to carry it. */
+    .nav a { text-decoration: none; }
+    .nav .contact-button { display: inline-block; }
+    @media (max-width: 700px) { .nav .nav-download { display: inline-block; } }
+
+    .page { position: relative; z-index: 2; max-width: 760px; margin: 0 auto;
+            padding: 0 28px 72px; }
+    .page h1 { font-size: clamp(34px, 5vw, 52px); font-weight: 900;
+               letter-spacing: -0.02em; line-height: 1.05; margin: 18px 0 10px; }
+    .page h1 span { color: var(--lime); }
+    .page h2 { font-size: 13px; letter-spacing: 0.18em; font-weight: 700;
+               color: var(--lime); margin: 52px 0 14px; }
+    .page p { line-height: 1.6; color: rgba(255, 255, 255, 0.82); }
+    .lede { font-size: 17px; }
+    .page p a:not(.cta) { color: var(--white); text-decoration-color: var(--lime); }
+
+    /* Founder's story. Set apart because it is the one part of the page in
+       Andy's own voice rather than the app's. */
+    .story { border-left: 2px solid var(--lime); padding: 2px 0 2px 22px;
+             margin: 34px 0 8px; }
+    .story p { font-size: 17px; line-height: 1.65; color: rgba(255,255,255,0.9); }
+    .story .meaning { color: var(--lime); font-weight: 700; }
+    .byline { font-size: 13px; letter-spacing: 0.1em; font-weight: 700;
+              color: rgba(255,255,255,0.6); margin-top: 14px; }
+
+    /* How it works: a slideshow of cards. The track is a native scroll-snap
+       strip, so a phone swipes it with no script at all; the arrows, dots and
+       keys below only drive that same scroll. */
+    .slides { position: relative; }
+    .track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
+             scroll-behavior: smooth; scrollbar-width: none;
+             border-radius: 14px; }
+    .track::-webkit-scrollbar { display: none; }
+    @media (prefers-reduced-motion: reduce) { .track { scroll-behavior: auto; } }
+    .card { flex: 0 0 100%; scroll-snap-align: start; margin: 0;
+            border: 1px solid rgba(255,255,255,0.14); border-radius: 14px;
+            background: rgba(255,255,255,0.03); overflow: hidden; }
+    .card .shot { aspect-ratio: 16 / 9; background: #000;
+                  border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .card .shot img { display: block; width: 100%; height: 100%;
+                      object-fit: contain; }
+    .card .text { padding: 20px 24px 24px; }
+    .card .num { font-size: 12px; letter-spacing: 0.16em; font-weight: 700;
+                 color: var(--lime); }
+    .card h3 { font-size: 21px; margin: 6px 0 8px; }
+    .card p { margin: 0; font-size: 15.5px; }
+    kbd { background: rgba(255,255,255,0.1); border-radius: 4px;
+          padding: 1px 6px; font-family: inherit; font-weight: 700; font-size: 13px; }
+
+    .controls { display: flex; align-items: center; justify-content: center;
+                gap: 18px; margin-top: 16px; }
+    .arrow { width: 40px; height: 40px; border-radius: 50%; cursor: pointer;
+             border: 1px solid rgba(255,255,255,0.25); background: transparent;
+             color: var(--white); font-size: 18px; line-height: 1; }
+    .arrow:hover:not(:disabled) { border-color: var(--lime); color: var(--lime); }
+    .arrow:disabled { opacity: 0.3; cursor: default; }
+    .dots { display: flex; gap: 10px; }
+    .dot { width: 9px; height: 9px; padding: 0; border-radius: 50%; cursor: pointer;
+           border: 0; background: rgba(255,255,255,0.3); }
+    .dot[aria-current="true"] { background: var(--lime); }
+
+    .cta { display: inline-block; margin: 8px 0 0; padding: 15px 30px;
+           border-radius: 999px; background: var(--lime); color: #101200;
+           font-weight: 700; font-size: 15px; text-decoration: none;
+           transition: transform .12s ease, box-shadow .12s ease; }
+    .cta:hover { transform: translateY(-1px);
+                 box-shadow: 0 0 20px rgba(223,255,0,0.4); }
+
+    .page-footer { max-width: 760px; margin: 0 auto; padding: 22px 28px 40px;
+                   border-top: 1px solid rgba(255,255,255,0.12);
+                   display: flex; gap: 16px; flex-wrap: wrap;
+                   justify-content: space-between;
+                   font-size: 13px; color: rgba(255,255,255,0.5); }
+    .page-footer a { color: rgba(255,255,255,0.72); }
+
+    @media (max-width: 700px) {
+      .nav { padding: 20px 22px; }
+      .page { padding: 0 22px 56px; }
+      .card .text { padding: 16px 18px 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="index.html" style="color:inherit">ANYA <span>TENNIS</span></a>
+    <div class="nav-actions">
+      <a class="contact-button nav-download" href="download.html">Download</a>
+      <a class="contact-button" href="index.html">Home</a>
+    </div>
+  </header>
+
+  <main class="page">
+    <h1>Your match, with the <span>dead time</span> taken out.</h1>
+    <p class="lede">A 90-minute match holds about 30 minutes of tennis. Anya
+    Tennis finds every rally and cuts out the rest, on your own computer, with
+    the video never leaving it.</p>
+
+    <div class="story">
+      <p>“I created Anya Tennis so you can watch your tennis match without all
+      the dead time. <span class="meaning">Anya means eye in Igbo</span> — the
+      Nigerian language my family speaks. I want you to be able to see the match
+      and your game easily. The process is simple: you record your match, load
+      it in the software, and it outputs the active match play. The inner
+      workings are over a year of neural network and ML development, pioneered
+      by me — tennis coach, biomechanics expert, and AI-forward developer.”</p>
+      <p class="byline">— ANDY NNEWIHE, FOUNDER</p>
+    </div>
+
+    <h2>HOW IT WORKS</h2>
+
+    <section class="slides" aria-roledescription="carousel" aria-label="How it works">
+      <div class="track" tabindex="0">
+        <figure class="card" aria-roledescription="slide" aria-label="1 of 5">
+          <div class="shot"><img src="screenshots/court-framing.jpg" alt="A recorded match seen from behind the near baseline, with the whole court in frame."></div>
+          <figcaption class="text">
+            <div class="num">STEP 1</div>
+            <h3>Record your match</h3>
+            <p>One camera behind a baseline — a phone on the fence or a GoPro on
+            a tripod — high enough that the whole court stays in frame.</p>
+          </figcaption>
+        </figure>
+        <figure class="card" aria-roledescription="slide" aria-label="2 of 5">
+          <div class="shot"><img src="screenshots/highlight-reel.png" alt="The Highlight Reel tab: an input video path with a Browse button and an output path."></div>
+          <figcaption class="text">
+            <div class="num">STEP 2</div>
+            <h3>Load the video</h3>
+            <p>Open the Highlight Reel tab and browse to your match. Split
+            camera chapters are joined into one video automatically.</p>
+          </figcaption>
+        </figure>
+        <figure class="card" aria-roledescription="slide" aria-label="3 of 5">
+          <div class="shot"><img src="screenshots/court-corners.jpg" alt="The court frame with its four corners marked BL, BR, TR and TL."></div>
+          <figcaption class="text">
+            <div class="num">STEP 3</div>
+            <h3>Click the four corners</h3>
+            <p>Ten seconds, once per match — the only thing you ever do by hand.
+            It's remembered, so re-runs never ask again.</p>
+          </figcaption>
+        </figure>
+        <figure class="card" aria-roledescription="slide" aria-label="4 of 5">
+          <div class="shot"><img src="screenshots/highlight-reel-done.png" alt="A finished run: full progress bar, Done — 18 rallies, and an Open Folder button."></div>
+          <figcaption class="text">
+            <div class="num">STEP 4</div>
+            <h3>Build the rally reel</h3>
+            <p>Press BUILD RALLY REEL and walk away. When it's done, Open Folder
+            takes you to a video of just the rallies.</p>
+          </figcaption>
+        </figure>
+        <figure class="card" aria-roledescription="slide" aria-label="5 of 5">
+          <div class="shot"><img src="screenshots/scoreboard.jpg" alt="The Scoreboard tab: a match frame, a live score panel and a list of tagged points."></div>
+          <figcaption class="text">
+            <div class="num">OPTIONAL</div>
+            <h3>Add the score</h3>
+            <p>In the Scoreboard tab, tap <kbd>S</kbd> when a point starts and
+            <kbd>A</kbd> or <kbd>B</kbd> for who won it. Render a reel with the
+            score in the corner, like a broadcast.</p>
+          </figcaption>
+        </figure>
+      </div>
+      <div class="controls">
+        <button class="arrow" data-dir="-1" aria-label="Previous step">&larr;</button>
+        <div class="dots" role="group" aria-label="Choose a step"></div>
+        <button class="arrow" data-dir="1" aria-label="Next step">&rarr;</button>
+      </div>
+    </section>
+
+    <h2>TRY IT ON YOUR OWN MATCH</h2>
+    <p>macOS 11+ and 64-bit Windows 10 and 11. Nothing about your match leaves
+    your computer — see the
+    <a href="https://nnewihe.github.io/anya/privacy.html">privacy policy</a>.
+    Cancel within 14 days for a full refund.</p>
+    <p><a class="cta" href="download.html">Download Anya Tennis &rarr;</a></p>
+  </main>
+
+  <footer class="page-footer">
+    <span>© 2026 Anya Tennis · Cut the dead time. See the action.</span>
+    <span>
+      <a href="https://nnewihe.github.io/anya/terms.html">Terms</a> ·
+      <a href="https://nnewihe.github.io/anya/privacy.html">Privacy</a>
+    </span>
+  </footer>
+
+  <script>
+  // A screenshot that hasn't been copied into screenshots/ yet should read as
+  // absent, not as a broken image. The card keeps its text either way.
+  document.querySelectorAll(".card .shot img").forEach(function (img) {
+    function hide() { img.closest(".shot").style.display = "none"; }
+    img.addEventListener("error", hide);
+    // This script runs after parsing, so a file that is already missing has
+    // already fired its error event. A loaded-but-zero-width image is that case.
+    if (img.complete && img.naturalWidth === 0) hide();
+  });
+
+  // The slideshow. Scrolling is the source of truth — swipes, trackpads and
+  // the buttons all move the track, and the observer reports where it landed.
+  (function () {
+    const track = document.querySelector(".track");
+    const cards = Array.from(track.querySelectorAll(".card"));
+    const dotsBox = document.querySelector(".dots");
+    const [prev, next] = document.querySelectorAll(".arrow");
+    let current = 0;
+
+    const dots = cards.map(function (card, i) {
+      const dot = document.createElement("button");
+      dot.className = "dot";
+      dot.setAttribute("aria-label", "Step " + (i + 1));
+      dot.addEventListener("click", function () { go(i); });
+      dotsBox.appendChild(dot);
+      return dot;
+    });
+
+    function go(i) {
+      i = Math.max(0, Math.min(cards.length - 1, i));
+      track.scrollTo({ left: cards[i].offsetLeft - track.offsetLeft });
+      // Take the new position now, not when the smooth scroll lands, so a
+      // quick run of presses counts every one of them.
+      show(i);
+    }
+
+    function show(i) {
+      current = i;
+      dots.forEach(function (d, j) { d.setAttribute("aria-current", j === i); });
+      prev.disabled = i === 0;
+      next.disabled = i === cards.length - 1;
+    }
+
+    const seen = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) show(cards.indexOf(e.target));
+      });
+    }, { root: track, threshold: 0.6 });
+    cards.forEach(function (c) { seen.observe(c); });
+
+    prev.addEventListener("click", function () { go(current - 1); });
+    next.addEventListener("click", function () { go(current + 1); });
+    track.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowLeft") { e.preventDefault(); go(current - 1); }
+      if (e.key === "ArrowRight") { e.preventDefault(); go(current + 1); }
+    });
+    show(0);
+  })();
+  </script>
+</body>
+</html>

@@ -5,10 +5,14 @@ A simple GitHub Pages landing page for Anya Tennis.
 ## Files
 
 - `index.html` — landing page and contact modal
+- `about.html` — a short intro, the founder's story, and a five-card
+  slideshow of how the app is used
 - `download.html` — download page for macOS and Windows
 - `style.css` — styling, shared by both pages
 - `script.js` — modal behavior and mailto contact form
 - `anya-poster.png` — Anya Tennis promotional poster used as the background
+- `screenshots/` — the five screenshots on `about.html`'s slideshow cards; see the README
+  in there for what each one is and what size it wants
 - `CNAME` — the custom domain, `anyatennis.com`
 
 ## GitHub Pages
