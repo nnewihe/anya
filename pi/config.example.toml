@@ -1,0 +1,26 @@
+# anya Pi settings -- copy to /srv/anya/config.toml (install.sh does this once).
+# Every key is optional; the values shown are the defaults.
+
+root = "/srv/anya"          # inbox/, work/, reels/, state/, models/ live here
+# site = "/srv/anya/site"   # fixed-camera calibration (python -m pipeline.anya2.site save)
+poll_s = 30
+
+[processing]
+backend = "ncnn"            # pose runtime: ncnn (fastest on the Pi) / onnx / torch
+device = "cpu"
+copy_video = true           # reel is cut straight from the original, video and audio:
+                            # same resolution and quality, nothing re-encoded; each
+                            # point may start up to one keyframe interval (~1 s) early
+scale_height = 1080         # only used with copy_video = false (x264 re-encode)
+hwaccel = "drm"             # Pi 5 hardware HEVC decode; "" to turn off
+single_decode = true        # build both analysis proxies from one decode
+threads = 0                 # 0 = let torch/ncnn pick (all 4 cores)
+keep_inbox_days = 14        # copied camera originals are deleted this long after the reel
+
+[youtube]
+enabled = false
+privacy = "unlisted"        # unlisted / private / public
+title_prefix = "Tennis"
+playlist_id = ""            # needs `youtube-auth --playlists`
+# token = "/srv/anya/state/youtube_token.json"
+max_attempts = 20

@@ -1,0 +1,4 @@
+# Any USB filesystem that appears (the Osmo Action in USB-drive mode, or an SD
+# card reader) starts one ingest run for it.  The unit mounts it READ-ONLY and
+# ignores it unless it holds DCIM/DJI_*, so other USB sticks are left alone.
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", TAG+="systemd", ENV{SYSTEMD_WANTS}+="anya-ingest@%k.service"

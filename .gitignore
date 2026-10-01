@@ -35,3 +35,11 @@ serviceAccount*.json
 # someone show our consent screen to our own users.
 # See desktop/oauth_client.example.py.
 desktop/oauth_client.py
+
+# Pose model exports for pipeline/anya2/pose_backend.py -- generated per
+# machine and per far-band shape by export_pose.py, never committed.
+pipeline/models/pose/
+
+# The Pi service's YouTube OAuth client and refresh token (pi/README.md).
+client_secret*.json
+youtube_token.json

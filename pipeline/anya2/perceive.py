@@ -149,12 +149,18 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
     present at full strength in the band for all 13 labelled serves while the
     tracked slots caught six.
     """
-    from ultralytics import YOLO
-    model = YOLO(POSE_MODEL)
+    from pipeline.anya2 import pose_backend as PB
 
     cap = open_video(video, label)
     src_fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_hw = ((to_analysis[1], to_analysis[0]) if to_analysis is not None else
+                (int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                 int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))))
+    # torch (default), or an NCNN/ONNX export -- see pose_backend.py for why an
+    # NCNN export must match this frame's letterbox scale and runs batch-1.
+    model = PB.load(frame_hw, imgsz)
+    print(f"[{label}] pose model: {model}")
     if limit:
         total = min(total, limit)
     idx = list(range(0, total, stride))
@@ -173,9 +179,13 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
         nonlocal empty, done
         if not buf:
             return
-        res = model.predict(buf if len(buf) > 1 else buf[0], imgsz=imgsz,
-                            conf=POSE_CONF, device=device, classes=[0],
-                            verbose=False)
+        res = model.predict(list(buf), conf=POSE_CONF, device=device,
+                            classes=[0], verbose=False)
+        if len(res) != len(slots):
+            # zip() below would otherwise truncate silently and leave the
+            # remaining frames looking like frames with nobody in them.
+            raise RuntimeError(f"[{label}] {model} returned {len(res)} results "
+                               f"for {len(slots)} frames")
         for j, r in zip(slots, res):
             done += 1
             if r.keypoints is None or len(r.boxes) == 0:
@@ -208,10 +218,16 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
     pos = {f: j for j, f in enumerate(idx)}
     f = 0
     while f < total:
-        ok, frame = cap.read()
-        if not ok:
+        # grab() for every frame, retrieve() only for the sampled ones: a
+        # skipped frame still has to be decoded (it is a reference for the
+        # next), but not colour-converted and copied out.  Half the frames at
+        # 30 fps / stride 2, and it matters on a CPU that is also running pose.
+        if not cap.grab():
             break
         if f in want:
+            ok, frame = cap.retrieve()
+            if not ok:
+                break
             if to_analysis is not None:
                 frame = cv2.resize(frame, to_analysis, interpolation=cv2.INTER_AREA)
             buf.append(frame)
@@ -250,6 +266,7 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
                         src_fps=np.float64(src_fps),
                         stride=np.float64(stride_src),
                         n_src_frames=np.float64(total),
+                        pose_backend=np.str_(model.kind),
                         crop=np.asarray(crop if crop is not None else (0, 0, 0, 0),
                                         dtype=np.int32))
     per = np.mean(np.sum(np.isfinite(cf), axis=1))

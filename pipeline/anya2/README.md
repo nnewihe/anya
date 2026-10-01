@@ -994,6 +994,27 @@ python -m pipeline.join GX010123.MP4 GX020123.MP4   # prints the joined path
 See `pipeline/join.py` for why the pipeline joins rather than learning to read
 a list of inputs.
 
+### Headless: one command, a fixed camera, other pose runtimes
+
+```bash
+python -m pipeline.anya2 DJI_..._0001_D.MP4 DJI_..._0002_D.MP4 \
+    --site site/ --backend ncnn --device cpu -o reel.mp4
+```
+
+This never prompts (`headless.py`). The court corners come from a **site profile**: the corners
+clicked once plus the frame they were clicked on (`site.py`, made with `python -m
+pipeline.anya2.site save`). Each new recording's reference frame is registered against the
+profile frame with the camera track's own ORB/ground-plane fit, and the corners are moved by that
+warp. A move of more than 15 px raises `NeedsCalibration` instead of guessing.
+
+`ANYA_POSE_BACKEND=ncnn|onnx` (`pose_backend.py`) swaps the pose runtime without touching the
+passes. NCNN exports are made at **exactly** the rectangle PyTorch infers at. With the same scale
+but 32 px of extra padding, conf moved 0.14 (p95) and far boxes lost IoU. At the exact shape,
+`export_pose parity` measured IoU p5 ≥ 0.968, conf p95 ≤ 0.015 and keypoint error p95 ≤ 0.9% of
+box height, both passes, Langmead clip. That is **parity only**; an `eval.py` run over the corpus
+with the backend set is still owed. `ANYA_FFMPEG_HWACCEL` and `ANYA_SINGLE_DECODE_PROXIES` cut
+source-decode cost (`proxy.py`). The Raspberry Pi service that uses all of this is in `pi/`.
+
 ## Known gaps
 
 - **Precision on a full match is gated by the composition layer**, not by this
