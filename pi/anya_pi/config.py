@@ -32,7 +32,7 @@ class Processing:
 class YouTube:
     enabled: bool = False
     privacy: str = "unlisted"        # unlisted / private / public
-    title_prefix: str = "Tennis"
+    session_name: str = "Wimbledon Session"   # titles: "6:30 PM · Oct 1, 2026 · <this>"
     playlist_id: str = ""
     token: str = ""                  # default <state>/youtube_token.json
     max_attempts: int = 20           # then the job is left as upload_failed
@@ -65,6 +65,15 @@ class Config:
     @property
     def jobs(self):
         return self.state / "jobs"
+
+    @property
+    def recordings(self):
+        return self.root / "recordings"     # the Pi camera's (pi/recorder)
+
+    @property
+    def recording_flag(self):
+        """Exists while the Pi camera records; the worker pauses meanwhile."""
+        return self.state / "recording"
 
     @property
     def models(self):

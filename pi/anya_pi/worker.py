@@ -6,12 +6,22 @@ Run by `anya-worker.service`; by hand:  python -m anya_pi worker [--once]
 One at a time because the Pi has 4 GB and both the pose runtime and a 4K
 decode want a good share of it; two concurrent runs would each take longer
 than running them back to back.
+
+Uploads run on their own thread: an 11 GB recording over the court Wi-Fi (or
+no Wi-Fi at all) must not hold up processing, and processing must not hold up
+the upload of the raw recording.
+
+While the Pi camera records (pi/recorder writes <state>/recording), no job
+starts and a running one is cancelled back to pending: processing pins all
+four cores, and the camera's software encoder would drop frames.  The re-run
+resumes from anya2's per-stage caches.
 """
 
 import datetime as dt
 import os
 import shutil
 import signal
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -49,13 +59,14 @@ def write_status(cfg, q):
         if s == J.RUNNING and j.get("stage"):
             s += f" ({j['stage']}"
             s += f", {j['progress']:.0%})" if j.get("progress") is not None else ")"
-        yt = (j.get("youtube") or {})
-        if yt.get("status") not in (None, J.UP_DISABLED):
-            s += f"  youtube: {yt['status']}"
-            if yt.get("url"):
-                s += f" {yt['url']}"
-            if yt.get("forced_private"):
-                s += " (PRIVATE -- see README)"
+        for key, what in (("youtube_raw", "raw"), ("youtube", "youtube")):
+            yt = (j.get(key) or {})
+            if yt.get("status") not in (None, J.UP_DISABLED):
+                s += f"  {what}: {yt['status']}"
+                if yt.get("url"):
+                    s += f" {yt['url']}"
+                if yt.get("forced_private"):
+                    s += " (PRIVATE -- see README)"
         lines.append(f"{j['id']}  {s}")
         if j.get("error") and j["status"] != J.DONE:
             lines.append(f"    {j['error'].splitlines()[0][:300]}")
@@ -82,9 +93,7 @@ class _Progress:
         now = time.time()
         if now - self.last_write >= 15 or label != self.last_label:
             self.last_label = label
-            self.job["stage"] = f"{i}/{n} {label}"
-            self.job["progress"] = frac
-            self.q.put(self.job)
+            self.q.update(self.job["id"], stage=f"{i}/{n} {label}", progress=frac)
             write_status(self.cfg, self.q)
             self.last_write = now
 
@@ -95,8 +104,8 @@ def process(cfg, job, log=print):
     from pipeline.anya2 import site as S
 
     q = J.Queue(cfg)
-    job.update(status=J.RUNNING, started=J.now(), error=None, stage="starting")
-    q.put(job)
+    job = q.update(job["id"], status=J.RUNNING, started=J.now(), error=None,
+                   stage="starting")
     write_status(cfg, q)
     _apply_env(cfg)
     work = cfg.work / job["id"]
@@ -112,19 +121,19 @@ def process(cfg, job, log=print):
                              site=str(cfg.site_dir) if cfg.site_dir.is_dir() else None,
                              on_progress=_Progress(q, job, cfg, log))
     except (H.NotCalibrated, S.NeedsCalibration) as e:
-        job.update(status=J.NEEDS_CALIBRATION, error=str(e), finished=J.now())
-        q.put(job)
+        job = q.update(job["id"], status=J.NEEDS_CALIBRATION, error=str(e),
+                       finished=J.now())
         log(f"[worker] {job['id']}: needs calibration -- {e}")
         return job
     except Exception as e:                      # noqa: BLE001 -- recorded on the job
         from pipeline import cancel
         if isinstance(e, cancel.Cancelled):
-            # Shutdown, not failure: leave it RUNNING so `recover` resumes it.
-            log(f"[worker] {job['id']}: stopped for shutdown; will resume")
+            # Shutdown or a recording, not failure: `run` decides what the
+            # job goes back to; either way it resumes from the caches.
+            log(f"[worker] {job['id']}: stopped; will resume")
             raise
-        job.update(status=J.FAILED, finished=J.now(),
-                   error=f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
-        q.put(job)
+        job = q.update(job["id"], status=J.FAILED, finished=J.now(),
+                       error=f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
         log(f"[worker] {job['id']}: FAILED -- {e}")
         return job
     finally:
@@ -132,12 +141,11 @@ def process(cfg, job, log=print):
 
     kept = sum(s["stop"] - s["start"] for s in segs)
     J.write_json(cfg.reels / f"{name}.segments.json", segs)
-    job.update(status=J.DONE, finished=J.now(), stage=None, progress=None,
-               reel=reel, segments=len(segs), kept_s=round(kept, 1),
-               elapsed_s=round(time.time() - t0),
-               youtube={"status": J.UP_PENDING if cfg.youtube.enabled and reel
-                        else J.UP_DISABLED, "attempts": 0})
-    q.put(job)
+    job = q.update(job["id"], status=J.DONE, finished=J.now(), stage=None,
+                   progress=None, reel=reel, segments=len(segs),
+                   kept_s=round(kept, 1), elapsed_s=round(time.time() - t0),
+                   youtube={"status": J.UP_PENDING if cfg.youtube.enabled and reel
+                            else J.UP_DISABLED, "attempts": 0})
     # The work dir holds the join, both proxies and every cached stage: tens
     # of GB for a long match, and useless once the reel exists.
     shutil.rmtree(work, ignore_errors=True)
@@ -148,48 +156,101 @@ def process(cfg, job, log=print):
     return job
 
 
+def titles(job, cfg):
+    """("6:30 PM · Oct 1, 2026 · Wimbledon Session", "... Highlights")."""
+    start = dt.datetime.fromisoformat(job["recording"]["start"])
+    hour = start.hour % 12 or 12
+    base = (f"{hour}:{start:%M} {start:%p} · {start:%b} {start.day}, {start.year}"
+            f" · {cfg.youtube.session_name}")
+    return base, f"{base} Highlights"
+
+
+def _upload_one(cfg, q, job, key, path, title, desc, uploader, log):
+    """One attempt at one upload.  Failures leave it pending for the next
+    pass until `max_attempts` (no network at the court is the normal case)."""
+    attempts = int((job.get(key) or {}).get("attempts", 0)) + 1
+    q.modify(job["id"], lambda j: j[key].update(status=J.UP_UPLOADING,
+                                                attempts=attempts))
+    try:
+        log(f"[youtube] uploading {path} as {title!r}")
+        res = uploader(path, title, desc, cfg.youtube_token,
+                       privacy=cfg.youtube.privacy,
+                       playlist_id=cfg.youtube.playlist_id, log=log)
+    except Exception as e:                      # noqa: BLE001 -- retried next pass
+        give_up = attempts >= cfg.youtube.max_attempts
+        q.modify(job["id"], lambda j: j[key].update(
+            status=J.UP_FAILED if give_up else J.UP_PENDING,
+            error=f"{type(e).__name__}: {e}"))
+        log(f"[youtube] {job['id']} {key}: attempt {attempts} failed -- {e}")
+        return None
+    q.modify(job["id"], lambda j: j[key].update(status=J.UP_DONE, error=None,
+                                                uploaded=J.now(), **res))
+    log(f"[youtube] {job['id']} {key}: {res['url']} ({res['privacy']})")
+    return res
+
+
 def upload_pending(cfg, log=print, uploader=None):
-    """Upload every DONE reel waiting for YouTube; each failure just waits for
-    the next loop (no network at the court is the normal case, not an error)."""
+    """Upload every raw recording waiting for YouTube, oldest first, then
+    every finished reel."""
     if not cfg.youtube.enabled:
+        return
+    if not cfg.youtube_token.is_file():
+        log(f"[youtube] no token at {cfg.youtube_token}; see pi/README.md")
         return
     from . import youtube as Y
     uploader = uploader or Y.upload
     q = J.Queue(cfg)
+
     for job in q.all():
-        yt = job.setdefault("youtube", {})
+        yt = job.get("youtube_raw") or {}
+        if yt.get("status") != J.UP_PENDING:
+            continue
+        src = (job.get("chapters") or [None])[0]
+        if not src or not os.path.isfile(src):
+            q.modify(job["id"], lambda j: j["youtube_raw"].update(
+                status=J.UP_FAILED, error="recording file is missing"))
+            continue
+        dur = (job["recording"].get("duration") or 0) / 60
+        _upload_one(cfg, q, job, "youtube_raw", src, titles(job, cfg)[0],
+                    f"Full recording, {dur:.0f} min.", uploader, log)
+
+    for job in q.all():
+        yt = job.get("youtube") or {}
         if job["status"] != J.DONE or yt.get("status") != J.UP_PENDING:
             continue
         if not job.get("reel") or not os.path.isfile(job["reel"]):
-            yt.update(status=J.UP_FAILED, error="reel file is missing")
-            q.put(job)
+            q.modify(job["id"], lambda j: j["youtube"].update(
+                status=J.UP_FAILED, error="reel file is missing"))
             continue
-        if not cfg.youtube_token.is_file():
-            log(f"[youtube] no token at {cfg.youtube_token}; see pi/README.md")
-            return
-        start = dt.datetime.fromisoformat(job["recording"]["start"])
-        title = f"{cfg.youtube.title_prefix} {start:%Y-%m-%d %H:%M}"
         desc = (f"{job.get('segments', '?')} points, "
                 f"{(job.get('kept_s') or 0) / 60:.0f} min of play from a "
                 f"{(job['recording'].get('duration') or 0) / 60:.0f} min recording. "
                 f"Dead time removed by anya.")
-        yt["attempts"] = int(yt.get("attempts", 0)) + 1
+        res = _upload_one(cfg, q, job, "youtube", job["reel"], titles(job, cfg)[1],
+                          desc, uploader, log)
+        if res:
+            Path(job["reel"]).with_suffix(".youtube.txt").write_text(res["url"] + "\n")
+
+
+def _upload_loop(cfg, stopping, log):
+    while not stopping["flag"]:
         try:
-            log(f"[youtube] uploading {job['reel']}")
-            res = uploader(job["reel"], title, desc, cfg.youtube_token,
-                           privacy=cfg.youtube.privacy,
-                           playlist_id=cfg.youtube.playlist_id, log=log)
-        except Exception as e:                  # noqa: BLE001 -- retried next loop
-            yt["error"] = f"{type(e).__name__}: {e}"
-            if yt["attempts"] >= cfg.youtube.max_attempts:
-                yt["status"] = J.UP_FAILED
-            q.put(job)
-            log(f"[youtube] {job['id']}: attempt {yt['attempts']} failed -- {e}")
-            continue
-        yt.update(status=J.UP_DONE, error=None, uploaded=J.now(), **res)
-        q.put(job)
-        Path(job["reel"]).with_suffix(".youtube.txt").write_text(res["url"] + "\n")
-        log(f"[youtube] {job['id']}: {res['url']} ({res['privacy']})")
+            upload_pending(cfg, log)
+        except Exception as e:          # noqa: BLE001 -- never kill the thread
+            log(f"[youtube] {e}")
+        for _ in range(cfg.poll_s):
+            if stopping["flag"]:
+                return
+            time.sleep(1)
+
+
+def _pause_watch(cfg, stopping, running):
+    """Cancel the running job while the camera records (see module doc)."""
+    from pipeline import cancel
+    while not stopping["flag"]:
+        if running["id"] and cfg.recording_flag.exists():
+            cancel.request()
+        time.sleep(2)
 
 
 def cleanup_inbox(cfg, log=print):
@@ -205,6 +266,14 @@ def cleanup_inbox(cfg, log=print):
             shutil.rmtree(d, ignore_errors=True)
             log(f"[worker] removed originals of {job['id']} (kept "
                 f"{cfg.processing.keep_inbox_days} days)")
+        # A Pi-camera recording is the only copy until YouTube has it.
+        if (job["recording"].get("source") == "picam"
+                and (job.get("youtube_raw") or {}).get("status") == J.UP_DONE):
+            for c in job.get("chapters") or []:
+                if os.path.isfile(c):
+                    os.remove(c)
+                    log(f"[worker] removed {c} (on YouTube, kept "
+                        f"{cfg.processing.keep_inbox_days} days)")
 
 
 def run(cfg, once=False, log=print):
@@ -216,6 +285,7 @@ def run(cfg, once=False, log=print):
         log(f"[worker] resuming {n} interrupted job(s)")
 
     stopping = {"flag": False}
+    running = {"id": None}
 
     def _stop(signum, frame):
         stopping["flag"] = True
@@ -224,26 +294,45 @@ def run(cfg, once=False, log=print):
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
+    if not once:
+        threading.Thread(target=_upload_loop, args=(cfg, stopping, log),
+                         daemon=True).start()
+        threading.Thread(target=_pause_watch, args=(cfg, stopping, running),
+                         daemon=True).start()
+
+    paused_logged = False
     while not stopping["flag"]:
         write_status(cfg, q)
-        job = q.next_pending()
+        recording = cfg.recording_flag.exists()
+        job = None if recording else q.next_pending()
+        if recording and q.next_pending() and not paused_logged:
+            log("[worker] the camera is recording; processing waits")
+        paused_logged = recording
         if job:
             cancel.clear()
+            running["id"] = job["id"]
             try:
                 process(cfg, job, log)
             except cancel.Cancelled:
-                break
+                if stopping["flag"]:
+                    break               # left RUNNING; `recover` resumes it
+                q.update(job["id"], status=J.PENDING,
+                         stage="paused while recording")
+                log(f"[worker] {job['id']}: paused while the camera records")
+            finally:
+                running["id"] = None
             write_status(cfg, q)
             continue                    # straight on to the next job
-        try:
-            upload_pending(cfg, log)
-        except Exception as e:          # noqa: BLE001 -- never kill the loop
-            log(f"[youtube] {e}")
+        if once:
+            try:
+                upload_pending(cfg, log)
+            except Exception as e:      # noqa: BLE001 -- never kill the loop
+                log(f"[youtube] {e}")
         cleanup_inbox(cfg, log)
         write_status(cfg, q)
         if once:
             break
-        for _ in range(cfg.poll_s):
+        for _ in range(cfg.poll_s if not recording else 2):
             if stopping["flag"]:
                 break
             time.sleep(1)

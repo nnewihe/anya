@@ -5,7 +5,7 @@ python -m anya_pi <command>
     worker [--once]      process the queue (what anya-worker.service runs)
     status               list jobs
     retry ID             put a failed / needs-calibration job back in the queue
-    reupload ID          queue a finished reel for YouTube again
+    reupload ID [--raw]  queue a finished reel (or, --raw, the recording) for YouTube again
     youtube-auth         one-time YouTube consent (run on a laptop with a browser)
 """
 
@@ -29,6 +29,8 @@ def main(argv=None):
     p.add_argument("id")
     p = sub.add_parser("reupload")
     p.add_argument("id")
+    p.add_argument("--raw", action="store_true",
+                   help="the Pi-camera recording itself, not the reel")
     p = sub.add_parser("youtube-auth")
     p.add_argument("--client-secrets", required=True)
     p.add_argument("--out", default="youtube_token.json")
@@ -53,9 +55,11 @@ def main(argv=None):
         W.run(cfg, once=a.once)
     elif a.cmd == "status":
         for j in q.all():
-            yt = (j.get("youtube") or {}).get("status", "")
+            ups = [f"{what}: {st}" for key, what in (("youtube_raw", "raw"),
+                                                     ("youtube", "youtube"))
+                   if (st := (j.get(key) or {}).get("status")) and st != J.UP_DISABLED]
             print(f"{j['id']}  {j['status']:<18} {j.get('stage') or ''}  "
-                  f"{'youtube: ' + yt if yt and yt != J.UP_DISABLED else ''}")
+                  f"{'  '.join(ups)}")
             if j.get("error") and j["status"] != J.DONE:
                 print(f"    {j['error'].splitlines()[0][:200]}")
     elif a.cmd in ("retry", "reupload"):
@@ -69,6 +73,11 @@ def main(argv=None):
                       "fix the camera settings and record again", file=sys.stderr)
                 return 1
             j.update(status=J.PENDING, error=None, stage=None)
+        elif a.raw:
+            if not j.get("chapters"):
+                print("this job has no recording to upload", file=sys.stderr)
+                return 1
+            j["youtube_raw"] = {"status": J.UP_PENDING, "attempts": 0}
         else:
             if j["status"] != J.DONE:
                 print("only a finished job can be uploaded", file=sys.stderr)

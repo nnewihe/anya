@@ -42,7 +42,7 @@ runuser -u $U -- $APP/venv/bin/pip install -q --resume-retries 20 \
   -r $APP/src/pi/requirements-pi.txt
 
 echo "== data dirs under $DATA"
-mkdir -p $DATA/{inbox,work,reels,state/jobs,models,site}
+mkdir -p $DATA/{inbox,work,reels,recordings,state/jobs,models,site}
 [ -f $DATA/config.toml ] || cp $APP/src/pi/config.example.toml $DATA/config.toml
 chown -R $U:$U $DATA
 chmod 700 $DATA/state
@@ -74,18 +74,28 @@ echo "== udev + systemd"
 install -m 644 $APP/src/pi/udev/99-anya-camera.rules /etc/udev/rules.d/
 install -m 644 $APP/src/pi/systemd/anya-ingest@.service /etc/systemd/system/
 install -m 644 $APP/src/pi/systemd/anya-worker.service /etc/systemd/system/
+install -m 644 $APP/src/pi/recorder/anya-recorder.service /etc/systemd/system/
 chmod +x $APP/src/pi/bin/anya-ingest-device
 udevadm control --reload
 systemctl daemon-reload
-systemctl enable anya-worker.service
+systemctl enable anya-worker.service anya-recorder.service
+# The first, hand-installed recorder ran from here.
+rm -rf /opt/anya-recorder
+
+echo "== sudo rule: the recorder may close other rpicam programs (and only that)"
+SUDOERS=/etc/sudoers.d/anya-recorder
+echo "$U ALL=(root) NOPASSWD: $(command -v pkill) rpicam" > $SUDOERS.tmp
+chmod 440 $SUDOERS.tmp
+visudo -cf $SUDOERS.tmp >/dev/null && mv $SUDOERS.tmp $SUDOERS || { rm -f $SUDOERS.tmp; echo "   sudoers rule rejected; skipped"; }
 
 echo "== NCNN pose export for the near pass (the far one is made per site on first use)"
 runuser -u $U -- env PYTHONPATH=$APP/src ANYA_POSE_MODELS=$DATA/models \
   $APP/venv/bin/python -m pipeline.anya2.export_pose export --backend ncnn
 
-systemctl restart anya-worker.service
+systemctl restart anya-worker.service anya-recorder.service
 echo
 echo "Installed.  Next steps (pi/README.md):"
 echo "  1. put a site profile in $DATA/site   (python -m pipeline.anya2.site save ...)"
 echo "  2. sudo smbpasswd -a $U               (to reach the reels share)"
 echo "  3. plug the camera in; follow with:  journalctl -fu anya-worker -u 'anya-ingest@*'"
+echo "  Pi camera: http://$(hostname).local:8080   (journalctl -fu anya-recorder)"

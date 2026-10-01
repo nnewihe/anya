@@ -21,6 +21,10 @@ camera ──USB──▶ udev ─▶ anya-ingest@  ─▶ /srv/anya/inbox/<id>/
                   YouTube (unlisted) → reels/<name>.youtube.txt
 ```
 
+**Recording with the Pi's own camera instead?** `pi/recorder/` is a phone-friendly
+Start/Stop page. Each recording goes into the same queue, is uploaded raw to YouTube,
+processed, and uploaded again as highlights. See `pi/recorder/README.md`.
+
 ## Hardware
 
 - **Raspberry Pi 5** (4 GB works; the install sets up 4 GB of swap) with the **Active Cooler**.

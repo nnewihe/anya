@@ -11,6 +11,7 @@ file, never half of a new one.
 import datetime as dt
 import json
 import os
+import threading
 from pathlib import Path
 
 # Job lifecycle.  Terminal states wait for a person (`anya-pi retry <id>`).
@@ -21,11 +22,18 @@ FAILED = "failed"
 NEEDS_CALIBRATION = "needs_calibration"
 UNSUPPORTED = "unsupported"
 
-# YouTube sub-state, on a DONE job.
+# YouTube sub-states: `youtube` is the reel (on a DONE job), `youtube_raw`
+# the recording itself (Pi-camera jobs, uploaded as soon as they are queued).
 UP_DISABLED = "disabled"
 UP_PENDING = "pending"
+UP_UPLOADING = "uploading"
 UP_DONE = "done"
 UP_FAILED = "failed"
+
+# The worker's processing loop and its uploader thread both write job files.
+# Every read-modify-write goes through Queue.modify under this lock, so one
+# never writes back a stale copy over the other's fields.
+_LOCK = threading.RLock()
 
 
 def now():
@@ -66,6 +74,18 @@ class Queue:
         write_json(self.path(job["id"]), job)
         return job
 
+    def modify(self, job_id, fn):
+        """Re-read the job, apply `fn(job)` to it, write it back; returns it."""
+        with _LOCK:
+            job = self.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            fn(job)
+            return self.put(job)
+
+    def update(self, job_id, **fields):
+        return self.modify(job_id, lambda j: j.update(fields))
+
     def all(self):
         out = []
         if self.cfg.jobs.is_dir():
@@ -75,11 +95,14 @@ class Queue:
                     out.append(j)
         return sorted(out, key=lambda j: j.get("created", ""))
 
-    def create(self, job_id, recording, chapters, status=PENDING, error=None):
+    def create(self, job_id, recording, chapters, status=PENDING, error=None,
+               upload_raw=False):
         job = {"id": job_id, "status": status, "created": now(),
                "recording": recording, "chapters": [str(c) for c in chapters],
                "stage": None, "progress": None, "error": error,
-               "reel": None, "youtube": {"status": UP_DISABLED}}
+               "reel": None, "youtube": {"status": UP_DISABLED},
+               "youtube_raw": {"status": UP_PENDING if upload_raw else UP_DISABLED,
+                               "attempts": 0}}
         return self.put(job)
 
     def next_pending(self):
@@ -95,11 +118,19 @@ class Queue:
         last finished stage rather than from the start."""
         n = 0
         for j in self.all():
+            changed = False
             if j["status"] == RUNNING:
                 j["status"] = PENDING
                 j["stage"] = "resuming after interruption"
-                self.put(j)
+                changed = True
                 n += 1
+            # An upload cut off by the shutdown starts again.
+            for key in ("youtube", "youtube_raw"):
+                if (j.get(key) or {}).get("status") == UP_UPLOADING:
+                    j[key]["status"] = UP_PENDING
+                    changed = True
+            if changed:
+                self.put(j)
         return n
 
 

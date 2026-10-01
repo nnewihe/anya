@@ -4,10 +4,14 @@ After=network-online.target local-fs.target
 Wants=network-online.target
 
 [Service]
-User=nnewihe
-Group=video
-ExecStart=/usr/bin/python3 /opt/anya-recorder/recorder.py --dir /srv/anya/recordings --port 8080
+# The same user as anya-worker: the recorder queues jobs in its state dir.
+User=anya
+Group=anya
+SupplementaryGroups=video
+Environment=PYTHONPATH=/opt/anya/src:/opt/anya/src/pi
 Environment=PYTHONUNBUFFERED=1
+Environment=ANYA_PI_CONFIG=/srv/anya/config.toml
+ExecStart=/opt/anya/venv/bin/python /opt/anya/src/pi/recorder/recorder.py --port 8080
 # Stopping the service (or a reboot) signals only the server, which stops the
 # camera cleanly and waits for the .mp4 before exiting.  60 s covers the
 # rewrap of a long recording on an SSD.

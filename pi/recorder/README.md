@@ -1,100 +1,163 @@
 # Court recorder (Raspberry Pi camera)
 
 A web page on the Pi with one big **Start / Stop** button. It records with the
-Pi's own camera through `rpicam-vid` and saves one `.mp4` per recording in
-`/srv/anya/recordings/`, ready for anya to process.
+Pi's own camera, then does the rest of the work without anyone touching it:
 
 ```
-phone ──http──▶ recorder.py :8080 ──▶ rpicam-vid ──▶ 2026-09-30_180000.ts
-                                         Stop ──▶ ffmpeg -c copy ──▶ 2026-09-30_180000.mp4
+phone ──▶ recorder.py :8080 ──▶ rpicam-vid ──▶ recordings/2026-10-01_183005.mp4
+                                                   │  queued for anya-worker
+                                                   ▼
+             YouTube (unlisted)  "6:30 PM · Oct 1, 2026 · Wimbledon Session"
+             anya on the Pi      cuts the dead time out (~2–4× the recording's length)
+             YouTube (unlisted)  "6:30 PM · Oct 1, 2026 · Wimbledon Session Highlights"
 ```
 
-- **Recording writes MPEG-TS.** If the Pi crashes or loses power mid-recording,
-  everything up to that point can still be read. An MP4 without its index can't be.
-- **Stop rewraps to `.mp4` without re-encoding.** It takes a few seconds per hour of
-  video. The `.ts` is deleted only once the `.mp4` reads back with the same duration.
-- **A `.ts` left behind by a crash is converted the next time the service starts.**
-- **Each recording has a `<name>.log`** with `rpicam-vid`'s output. If the camera
-  stops by itself (unplugged, or it errors), the page shows the error and the end of this log.
+- **Start** checks first whether another `rpicam` program (`rpicam-hello`, a
+  hand-run `rpicam-vid`) has the camera. If one does, the page lists it and asks
+  whether to close it. **OK** runs `pkill rpicam` and starts a fresh recording.
+- **Recordings stop by themselves at 90 minutes.** Press Start again to keep going.
+- **While recording, the camera writes MPEG-TS,** which survives a crash or power cut.
+  Stop rewraps it to `.mp4` without re-encoding. A `.ts` left behind by a crash is
+  converted the next time the service starts.
+- **Each recording is then queued for `anya-worker`** (see `pi/README.md`):
+  - It uploads the raw recording. This happens on its own thread, so slow or no court
+    Wi-Fi never holds up processing.
+  - It cuts the dead time out.
+  - It uploads the highlights.
 
-## Install (Raspberry Pi OS Bookworm)
+  The page shows how far each recording has got, with links once a video is on YouTube.
+- **Processing pauses while the camera records.** It uses all four cores, and the
+  camera's software encoder would drop frames. It resumes after Stop from the stage
+  it reached.
+- **The page has no login.** Anyone on the same network can use it. Don't expose port
+  8080 to the internet.
+
+## Install
+
+This uses the anya Pi service. Get the code onto the Pi into `~/anya` (`git clone`/`git pull`
+once this branch is pushed, or copy it from the Mac):
 
 ```bash
-sudo apt install -y rpicam-apps ffmpeg
+rsync -a --exclude __pycache__ pipeline walking pi nnewihe@biquet.local:~/anya/
+```
+
+Then on the Pi:
+
+```bash
+cd ~/anya && sudo pi/install.sh
+```
+
+The installer sets up everything:
+- the anya user;
+- the Python environment with the NCNN pose model;
+- `/srv/anya/` (recordings, reels and queue);
+- `anya-worker` and `anya-recorder`, which replaces the first hand-installed
+  version, including `/opt/anya-recorder`;
+- one sudo rule, which allows the `anya` user to run exactly `pkill rpicam`, so the
+  page can close an `rpicam-hello` started from your own login.
+
+Re-run it after every update.
+
+The page is at **http://biquet.local:8080**. The logs:
+
+```bash
+journalctl -fu anya-recorder -u anya-worker
+```
+
+## One-time setup (only you can do these)
+
+### 1. YouTube, as nnewihe@gmail.com
+The steps are in `pi/README.md` → *YouTube*. In short:
+1. Create a Google Cloud project and enable **YouTube Data API v3**.
+2. Set the OAuth consent screen to **In production**. In *Testing*, the login expires
+   after 7 days.
+3. Create a *Desktop app* OAuth client.
+4. On the Mac, run `youtube-auth` and **sign in as nnewihe@gmail.com**.
+5. Copy the token to `/srv/anya/state/`.
+6. Set `[youtube] enabled = true` in `/srv/anya/config.toml`, then run
+   `sudo systemctl restart anya-worker anya-recorder`.
+
+A recording made while YouTube was off isn't uploaded later on its own. Queue it with
+`python -m anya_pi reupload <name> --raw`, run the same way as `retry` below.
+
+> **Unlisted won't stick at first.** YouTube locks every upload made through an
+> **unaudited** Google Cloud project to **private**, whatever the uploader asks for.
+> The page marks these videos "(private)". Until the project passes YouTube's
+> [API compliance audit](https://support.google.com/youtube/contact/yt_api_form),
+> switch each one to Unlisted in YouTube Studio.
+> The default quota covers about six uploads a day, so three sessions (raw + highlights each).
+
+The title's last words come from `[youtube] session_name` in `/srv/anya/config.toml`
+(default `"Wimbledon Session"`).
+
+### 2. Court calibration
+The court corners are clicked once on a computer with a screen, then reused for every
+recording. On the Mac, with any recording from the Pi:
+
+```bash
+scp nnewihe@biquet.local:/srv/anya/recordings/<name>.mp4 .
 ```
 
 ```bash
-sudo mkdir -p /opt/anya-recorder /srv/anya/recordings && sudo chown nnewihe:nnewihe /srv/anya/recordings
+python -m pipeline.anya2.site save <name>.mp4 site
+```
+
+Click the four **singles** corners. Then copy the profile to the Pi:
+
+```bash
+scp -r site nnewihe@biquet.local:/tmp/site
 ```
 
 ```bash
-sudo cp pi/recorder/recorder.py /opt/anya-recorder/ && sudo cp pi/recorder/anya-recorder.service /etc/systemd/system/
+ssh nnewihe@biquet.local 'sudo rsync -a /tmp/site/ /srv/anya/site/ && sudo chown -R anya:anya /srv/anya/site'
 ```
+
+Until this is done, recordings show **"needs court calibration"**, but their raw
+uploads still go out. Once the site profile is in place, re-queue them:
 
 ```bash
-sudo systemctl daemon-reload && sudo systemctl enable --now anya-recorder
+sudo -u anya env PYTHONPATH=/opt/anya/src:/opt/anya/src/pi /opt/anya/venv/bin/python -m anya_pi retry <name>
 ```
 
-Then open **http://\<pi-hostname\>.local:8080** on a phone on the same Wi-Fi.
-The service runs as the user `nnewihe` (the Pi `biquet`). For another user, change
-`User=` in the unit.
-
-Useful commands:
-
-```bash
-journalctl -fu anya-recorder
-```
-
-To try it without the service, run `python3 pi/recorder/recorder.py --dir ~/recordings`.
-
-There is **no login**. Anyone on the same network can press Start or Stop, so
-don't expose port 8080 to the internet.
+If the camera mount moves, redo this.
 
 ## Camera settings
 
-They are in the `CAMERA_ARGS` list at the top of `recorder.py`. They are the
-original command's settings with these changes:
+They're in `CAMERA_ARGS` at the top of `recorder.py`, tuned for the **HQ Camera
+(IMX477)** on a **Pi 5**:
 
-| Change | Why |
+| Setting | Why |
 |---|---|
-| `--timeout 0` | Record until Stop, where `15000` would stop after 15 s. |
-| `--codec libav --libav-format mpegts` | The Pi 5 has no hardware H.264 encoder, so it encodes through libav (software). MPEG-TS survives a crash. |
-| `--bitrate 16000000` | 16 Mbps, about 7 GB an hour. The software encoder's default is too low for a tennis ball. |
-| `-n` | No preview window, since the Pi runs headless. |
+| 1920×1080 at **50 fps** | The IMX477's fastest mode that covers the whole width at 1080p. At 60 fps it would drop to a lower-resolution mode. |
+| no `--autofocus-mode` | The HQ Camera's lens is focused by hand. |
+| `--codec libav --libav-format mpegts` | The Pi 5 has no hardware H.264 encoder. MPEG-TS survives a crash. |
+| `--bitrate 16000000` | 16 Mbps, about 7 GB an hour (11 GB for 90 minutes). |
+| `--intra 50` | A keyframe every second, so each point in the highlights starts at most a second early. |
+| `--timeout 0`, `-n` | Record until stopped, with no preview window. |
 
-The page refuses to start with less than 5 GB free.
+The page refuses to start with less than 5 GB free. A recording is deleted from the
+Pi `keep_inbox_days` (14) days after it's on YouTube and its highlights are done.
 
-## First checks on the Pi
-
-1. **The Pi 5 keeps up with 1080p60.** Record for 2 minutes, then count the frames:
-
-   ```bash
-   ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 /srv/anya/recordings/<name>.mp4
-   ```
-
-   You should get about 6000 (120 s × 50). Also look in `<name>.log` for dropped-frame
-   warnings. If frames drop, lower `--framerate` to 30 or `--bitrate`, or add
-   `"--libav-video-codec-opts", "preset=ultrafast"`.
-2. **The camera is the HQ Camera (IMX477).** It has a manual-focus lens, so there is
-   no `--autofocus-mode`; focus the lens by hand. It reaches at most 50 fps at
-   1080p (its 2028x1080 mode), so the frame rate is 50, not 60.
+## Check on the first sessions
+- **Dropped frames.** Count a 2-minute recording's frames. You should get about
+  6000 (120 s × 50).
+  ```bash
+  ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 /srv/anya/recordings/<name>.mp4
+  ```
+- **Highlights quality.** anya was tuned on 4K action-camera footage. At 1080p the far
+  player is half the size, so the first processed session is the real test.
+- **Processing speed.** The worker log reports "× realtime" for each job. If decoding
+  errors appear, set `hwaccel = ""` in `/srv/anya/config.toml`: the Pi 5 decodes
+  H.264 only in software.
 
 ## Tests (on a laptop, needs ffmpeg)
 
 ```bash
-python -m pytest pi/recorder/test_recorder.py
+python -m pytest pi/recorder pi/tests
 ```
 
-`fake_rpicam_vid.py` stands in for the camera. To click through the page on a
-laptop, run:
+`fake_rpicam_vid.py` stands in for the camera. To click through the page on a laptop:
 
 ```bash
-RPICAM_VID=pi/recorder/fake_rpicam_vid.py python3 pi/recorder/recorder.py --dir /tmp/rec
+RPICAM_VID=pi/recorder/fake_rpicam_vid.py python3 pi/recorder/recorder.py --dir /tmp/rec --no-queue
 ```
-
-## Next: processing at the end of the day
-
-Not built yet. Recordings are named `YYYY-MM-DD_HHMMSS.mp4` in one folder, so a
-nightly job (or a "Process today" button on this page) can run anya2 over the day's
-files. The Pi worker in PR #11 reads only DJI files, so it would need a small
-input path for these.

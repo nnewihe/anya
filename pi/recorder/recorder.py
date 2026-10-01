@@ -7,12 +7,18 @@ Start/stop web page for recording tennis with the Raspberry Pi camera.
 Open http://<pi>.local:8080 on a phone on the same network.
 
 Start launches rpicam-vid, which records to <dir>/<YYYY-MM-DD_HHMMSS>.ts until
-Stop is pressed.  MPEG-TS survives a crash or power cut (an MP4 without its
-index does not).  On stop the file is rewrapped, without re-encoding, into an
-.mp4 next to it, which is what the anya pipeline reads.  The .ts is deleted
-only after the .mp4 reads back with the same duration.
+Stop is pressed, or for at most 90 minutes.  If another rpicam program already
+has the camera, the page asks before closing it (`pkill rpicam`).  MPEG-TS
+survives a crash or power cut (an MP4 without its index does not).  On stop
+the file is rewrapped, without re-encoding, into an .mp4 next to it, and the
+.ts is deleted only after the .mp4 reads back with the same duration.
 
-Standard library only: the Pi needs rpicam-apps and ffmpeg, nothing from pip.
+Each .mp4 is then queued for the anya Pi worker (pi/anya_pi), which uploads it
+to YouTube, cuts the dead time out, and uploads the highlights.  The page shows
+how far each recording has got.  While the camera records, the worker pauses.
+
+Standard library only (plus pi/anya_pi, itself stdlib): the Pi needs
+rpicam-apps and ffmpeg for this part.
 """
 
 import argparse
@@ -27,6 +33,10 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # pi/, for anya_pi
+from anya_pi import config as CFG  # noqa: E402
+from anya_pi import jobs as J  # noqa: E402
 
 # The camera settings.  Pi 5 has no hardware H.264 encoder, so encoding goes
 # through libav (software).  If the log shows dropped frames, lower
@@ -44,6 +54,9 @@ CAMERA_ARGS = [
     "--denoise", "cdn_off",
     "--awb", "auto",
     "--bitrate", "16000000",            # 16 Mbps, about 7 GB an hour
+    # A keyframe every second: the highlights are cut without re-encoding,
+    # so each point starts up to one keyframe interval early.
+    "--intra", "50",
     "--timeout", "0",                   # record until stopped
     "--codec", "libav",
     "--libav-format", "mpegts",
@@ -51,8 +64,22 @@ CAMERA_ARGS = [
 ]
 
 MIN_FREE_GB = 5
+MAX_RECORDING_S = 90 * 60
 STOP_GRACE_S = 10        # after SIGINT, before SIGTERM
 DURATION_TOLERANCE_S = 1.0
+
+# Who else has the camera, and how to close them.  sudo first (a sudoers rule
+# from install.sh) so it can close an rpicam-hello started from a login shell;
+# the plain pkill covers processes of the service's own user.
+CAMERA_USERS_CMD = ["pgrep", "-a", "rpicam"]
+CLOSE_CAMERA_CMDS = (["sudo", "-n", "pkill", "rpicam"], ["pkill", "rpicam"])
+CLOSE_WAIT_S = 3
+
+
+class CameraBusy(Exception):
+    def __init__(self, procs):
+        super().__init__("camera in use")
+        self.procs = procs
 
 IDLE, RECORDING, FINISHING = "idle", "recording", "finishing"
 
@@ -106,11 +133,106 @@ def log_tail(path, n=5):
         return ""
 
 
+def camera_users():
+    """[{pid, command}] of running rpicam programs."""
+    try:
+        r = subprocess.run(CAMERA_USERS_CMD, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    out = []
+    for line in r.stdout.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        if pid.isdigit():
+            out.append({"pid": int(pid), "command": cmd or "rpicam"})
+    return out
+
+
+def close_camera_users():
+    """`pkill rpicam`; returns whatever is still running afterwards."""
+    left = camera_users()
+    for cmd in CLOSE_CAMERA_CMDS:
+        if not left:
+            break
+        log(f"closing {', '.join(p['command'] for p in left)}: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        end = time.time() + CLOSE_WAIT_S
+        while (left := camera_users()) and time.time() < end:
+            time.sleep(0.2)
+    return left
+
+
+def recording_start(stem):
+    try:
+        return dt.datetime.strptime(stem, "%Y-%m-%d_%H%M%S")
+    except ValueError:
+        return None
+
+
+def chips(job):
+    """What the page shows for a recording's job: [{text, url?, kind}]."""
+    if not job:
+        return []
+    out = []
+    raw = job.get("youtube_raw") or {}
+    st = raw.get("status")
+    if st == J.UP_DONE:
+        out.append({"text": "Raw on YouTube" + (" (private)" if raw.get("forced_private")
+                                                else ""),
+                    "url": raw.get("url"), "kind": "ok"})
+    elif st == J.UP_UPLOADING:
+        out.append({"text": "Uploading raw", "kind": "busy"})
+    elif st == J.UP_PENDING:
+        out.append({"text": "Raw: retrying upload" if raw.get("error")
+                    else "Raw: waiting to upload", "kind": "busy"})
+    elif st == J.UP_FAILED:
+        out.append({"text": "Raw upload failed", "kind": "err"})
+
+    s = job["status"]
+    if s == J.PENDING:
+        out.append({"text": "Highlights: paused while recording"
+                    if job.get("stage") == "paused while recording"
+                    else "Highlights: queued", "kind": "busy"})
+    elif s == J.RUNNING:
+        stage = (job.get("stage") or "").split(" ", 1)[-1]
+        pct = f" {job['progress']:.0%}" if job.get("progress") is not None else ""
+        out.append({"text": f"Highlights: {stage}{pct}", "kind": "busy"})
+    elif s == J.NEEDS_CALIBRATION:
+        out.append({"text": "Highlights: needs court calibration", "kind": "err"})
+    elif s in (J.FAILED, J.UNSUPPORTED):
+        out.append({"text": "Highlights failed", "kind": "err"})
+    elif s == J.DONE:
+        yt = job.get("youtube") or {}
+        if yt.get("status") == J.UP_DONE:
+            out.append({"text": "Highlights on YouTube" + (
+                " (private)" if yt.get("forced_private") else ""),
+                "url": yt.get("url"), "kind": "ok"})
+        elif yt.get("status") in (J.UP_PENDING, J.UP_UPLOADING):
+            out.append({"text": "Uploading highlights", "kind": "busy"})
+        elif yt.get("status") == J.UP_FAILED:
+            out.append({"text": "Highlights upload failed", "kind": "err"})
+        else:
+            out.append({"text": "Highlights ready", "kind": "ok"})
+    return out
+
+
 class Recorder:
-    def __init__(self, out_dir, camera=None):
+    def __init__(self, out_dir, camera=None, cfg=None):
+        """`cfg` (anya_pi.config.Config): queue each recording for the worker
+        and pause it while recording.  None: just record."""
         self.dir = Path(out_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.camera = camera or os.environ.get("RPICAM_VID", "rpicam-vid")
+        self.cfg = cfg
+        self.queue = J.Queue(cfg) if cfg else None
+        if cfg:
+            cfg.ensure_dirs()
+            # A flag left by a crash would pause the worker forever.
+            cfg.recording_flag.unlink(missing_ok=True)
+        self.timer = None
+        self.notice = None
         self.lock = threading.Lock()
         self.state = IDLE
         self.proc = None
@@ -124,8 +246,21 @@ class Recorder:
     def free_gb(self):
         return shutil.disk_usage(self.dir).free / 1e9
 
-    def start(self):
-        """Returns an error string, or None."""
+    def start(self, force=False):
+        """Returns an error string, or None.  Raises CameraBusy when another
+        rpicam program has the camera, unless `force`, which closes it."""
+        if self.state == IDLE:
+            # Our own camera process is gone when idle, so anything found
+            # belongs to someone else.  Outside the lock: closing takes seconds.
+            users = camera_users()
+            if users and not force:
+                raise CameraBusy(users)
+            if users:
+                left = close_camera_users()
+                if left:
+                    return ("could not close " + ", ".join(
+                        f"{p['command']} (pid {p['pid']})" for p in left)
+                        + ". On the Pi, run: sudo pkill rpicam")
         with self.lock:
             if self.state != IDLE:
                 return f"already {self.state}"
@@ -149,12 +284,22 @@ class Recorder:
             finally:
                 logf.close()             # the child has its own copy
             self.proc, self.file, self.started = proc, ts, time.time()
-            self.state, self.error = RECORDING, None
+            self.state, self.error, self.notice = RECORDING, None, None
+            if self.cfg:
+                self.cfg.recording_flag.write_text(ts.name + "\n")
+            self.timer = threading.Timer(MAX_RECORDING_S, self._limit, args=(proc,))
+            self.timer.daemon = True
+            self.timer.start()
             log(f"recording {ts.name}")
             threading.Thread(target=self._watch, args=(proc,), daemon=True).start()
             return None
 
-    def stop(self):
+    def _limit(self, proc):
+        if self.proc is proc and self.state == RECORDING:
+            log(f"{MAX_RECORDING_S // 60}-minute limit reached")
+            self.stop(reason="limit")
+
+    def stop(self, reason=None):
         """Returns an error string, or None.  Returns once the camera has
         closed the file; the rewrap to .mp4 carries on in the background."""
         with self.lock:
@@ -162,6 +307,9 @@ class Recorder:
                 return "not recording"
             self.state = FINISHING
             proc = self.proc
+            if reason == "limit":
+                self.notice = (f"Stopped at the {MAX_RECORDING_S // 60}-minute limit. "
+                               f"Press Start to keep recording.")
         log("stopping")
         for sig, wait in ((signal.SIGINT, STOP_GRACE_S), (signal.SIGTERM, 5),
                           (signal.SIGKILL, 5)):
@@ -182,6 +330,10 @@ class Recorder:
         """Runs for each recording: waits for the camera to exit, for any
         reason, and hands the file to the rewrap."""
         rc = proc.wait()
+        if self.timer:
+            self.timer.cancel()
+        if self.cfg:
+            self.cfg.recording_flag.unlink(missing_ok=True)
         with self.lock:
             stopped = self.state == FINISHING
             ts, started = self.file, self.started
@@ -199,6 +351,8 @@ class Recorder:
                 err = rewrap(ts)
                 if err:
                     self._set_error(err)
+                else:
+                    self._enqueue(ts.with_suffix(".mp4"))
             elif stopped:
                 self._set_error(f"{ts.name}: the camera wrote nothing; "
                                 f"see {ts.with_suffix('.log').name}")
@@ -219,6 +373,19 @@ class Recorder:
                 err = rewrap(ts)
                 if err:
                     self._set_error(err)
+                else:
+                    self._enqueue(ts.with_suffix(".mp4"))
+
+    def _enqueue(self, mp4):
+        """Hand a finished recording to the anya worker (once)."""
+        if not self.queue or self.queue.get(mp4.stem):
+            return
+        start = recording_start(mp4.stem) or dt.datetime.fromtimestamp(mp4.stat().st_mtime)
+        self.queue.create(mp4.stem,
+                          {"start": start.isoformat(timespec="seconds"),
+                           "duration": probe_duration(mp4), "source": "picam"},
+                          [mp4], upload_raw=self.cfg.youtube.enabled)
+        log(f"queued {mp4.name} for processing")
 
     # -- status --------------------------------------------------------
     def _duration(self, p):
@@ -228,14 +395,15 @@ class Recorder:
             self._durations[key] = probe_duration(p)
         return self._durations[key]
 
-    def recordings(self):
-        today = f"{dt.date.today():%Y-%m-%d}"
+    def recordings(self, limit=10):
+        """The newest recordings, with how far the worker has got."""
         out = []
-        for p in sorted(self.dir.glob(f"{today}_*.mp4"), reverse=True):
-            if p.name.endswith(".part.mp4"):
-                continue
+        files = [p for p in self.dir.glob("*.mp4") if not p.name.endswith(".part.mp4")]
+        for p in sorted(files, reverse=True)[:limit]:
+            job = self.queue.get(p.stem) if self.queue else None
             out.append({"name": p.name, "duration_s": self._duration(p),
-                        "size_mb": round(p.stat().st_size / 1e6)})
+                        "size_mb": round(p.stat().st_size / 1e6),
+                        "chips": chips(job)})
         return out
 
     def status(self):
@@ -244,6 +412,8 @@ class Recorder:
                  "file": self.file.name if self.file else None,
                  "elapsed_s": round(time.time() - self.started, 1) if self.started else None,
                  "error": self.error,
+                 "notice": self.notice,
+                 "max_s": MAX_RECORDING_S,
                  "saving": self.pending_rewraps}
         s["free_gb"] = round(self.free_gb(), 1)
         s["recordings"] = self.recordings()
@@ -257,10 +427,14 @@ PAGE = r"""<!doctype html>
 <title>Court Recorder</title>
 <style>
 :root { --bg:#f6f6f4; --fg:#1b1b1b; --muted:#6b6b6b; --card:#fff; --line:#e2e2de;
-        --go:#1f7a3a; --stop:#c62828; --warn:#8a5a00; --warnbg:#fff4dc; }
+        --go:#1f7a3a; --stop:#c62828; --warn:#8a5a00; --warnbg:#fff4dc;
+        --info:#1d4f91; --infobg:#e6eefa; --ok:#1f7a3a; --okbg:#e3f3e7;
+        --chip:#4b4b4b; --chipbg:#ececea; --bad:#b3261e; --badbg:#fbe5e3; }
 @media (prefers-color-scheme: dark) {
   :root { --bg:#141414; --fg:#eee; --muted:#9a9a9a; --card:#1f1f1f; --line:#333;
-          --go:#2e9d50; --stop:#e04444; --warn:#f0c060; --warnbg:#3a2e14; } }
+          --go:#2e9d50; --stop:#e04444; --warn:#f0c060; --warnbg:#3a2e14;
+          --info:#9cc2f5; --infobg:#17263a; --ok:#7fd49a; --okbg:#173022;
+          --chip:#c9c9c9; --chipbg:#2b2b2b; --bad:#f2a49c; --badbg:#3a1d1a; } }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--fg);
        font:16px/1.4 -apple-system, system-ui, sans-serif; }
@@ -276,25 +450,36 @@ button { width:100%; padding:28px; font-size:26px; font-weight:700; border:0;
          border-radius:14px; color:#fff; background:var(--go); cursor:pointer; }
 .rec button { background:var(--stop); }
 button:disabled { opacity:.5; cursor:default; }
-.err { white-space:pre-wrap; background:var(--warnbg); color:var(--warn);
-       padding:12px; border-radius:10px; margin-top:16px; font-size:14px; }
+.err, .note { white-space:pre-wrap; padding:12px; border-radius:10px;
+       margin-top:16px; font-size:14px; }
+.err { background:var(--warnbg); color:var(--warn); }
+.note { background:var(--infobg); color:var(--info); }
+.limit { color:var(--muted); font-size:14px; margin:-18px 0 22px; }
 .meta { color:var(--muted); font-size:14px; margin-top:14px; }
 h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); font-weight:600; }
 ul { list-style:none; padding:0; margin:0; background:var(--card);
      border:1px solid var(--line); border-radius:10px; }
-li { display:flex; justify-content:space-between; gap:8px; padding:10px 12px;
-     border-top:1px solid var(--line); font-size:14px; }
+li { padding:10px 12px; border-top:1px solid var(--line); font-size:14px; }
 li:first-child { border-top:0; }
-li span:last-child { color:var(--muted); white-space:nowrap; }
+.row { display:flex; justify-content:space-between; gap:8px; }
+.row span:last-child { color:var(--muted); white-space:nowrap; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.chip { font-size:12px; padding:2px 8px; border-radius:999px;
+        background:var(--chipbg); color:var(--chip); text-decoration:none; }
+.chip.ok { background:var(--okbg); color:var(--ok); }
+.chip.err { background:var(--badbg); color:var(--bad); }
+a.chip { text-decoration:underline; }
 </style></head>
 <body><main id="app">
 <h1>Court Recorder</h1>
 <div class="status"><span class="dot"></span><span id="state">Connecting…</span></div>
 <div class="timer" id="timer">0:00:00</div>
+<div class="limit" id="limit"></div>
 <button id="btn" disabled>Start</button>
+<div class="note" id="note" hidden></div>
 <div class="err" id="err" hidden></div>
 <div class="meta" id="meta"></div>
-<h2>Today's recordings</h2>
+<h2>Recent recordings</h2>
 <ul id="list"><li><span>None yet</span></li></ul>
 </main>
 <script>
@@ -316,6 +501,9 @@ function render(s) {
   $("btn").textContent = rec ? "Stop" : "Start";
   $("btn").disabled = busy || state === "finishing";
   if (rec) { elapsed = s.elapsed_s; base = performance.now(); } else { elapsed = 0; }
+  $("limit").textContent = "Stops automatically at " + hms(s.max_s);
+  $("note").hidden = !s.notice;
+  $("note").textContent = s.notice || "";
   $("err").hidden = !s.error;
   $("err").textContent = s.error || "";
   $("meta").textContent = s.free_gb + " GB free (about " +
@@ -325,11 +513,20 @@ function render(s) {
   if (!s.recordings.length) list.innerHTML = "<li><span>None yet</span></li>";
   for (const r of s.recordings) {
     const li = document.createElement("li");
-    li.innerHTML = "<span></span><span></span>";
-    li.children[0].textContent = r.name;
-    li.children[1].textContent =
+    li.innerHTML = '<div class="row"><span></span><span></span></div><div class="chips"></div>';
+    const row = li.firstChild;
+    row.children[0].textContent = r.name;
+    row.children[1].textContent =
       (r.duration_s == null ? "?" : hms(r.duration_s)) + " · " +
       (r.size_mb >= 1000 ? (r.size_mb / 1000).toFixed(1) + " GB" : r.size_mb + " MB");
+    for (const c of r.chips) {
+      const el = document.createElement(c.url ? "a" : "span");
+      el.className = "chip " + c.kind;
+      el.textContent = c.text;
+      if (c.url) { el.href = c.url; el.target = "_blank"; el.rel = "noopener"; }
+      li.lastChild.appendChild(el);
+    }
+    if (!r.chips.length) li.lastChild.remove();
     list.appendChild(li);
   }
 }
@@ -341,12 +538,28 @@ async function poll() {
     $("state").textContent = "Can't reach the Pi";
   }
 }
+async function post(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+                               body: JSON.stringify(body || {})});
+  return [r, await r.json()];
+}
+function showError(msg) { $("err").hidden = false; $("err").textContent = msg; }
 $("btn").onclick = async () => {
   busy = true; $("btn").disabled = true;
   try {
-    const r = await fetch(state === "recording" ? "/api/stop" : "/api/start", {method: "POST"});
-    const body = await r.json();
-    if (!r.ok) { $("err").hidden = false; $("err").textContent = body.error; }
+    if (state === "recording") {
+      const [r, body] = await post("/api/stop");
+      if (!r.ok) showError(body.error);
+      return;
+    }
+    let [r, body] = await post("/api/start");
+    if (r.status === 409 && body.busy) {
+      const who = body.busy.map(p => p.command + " (pid " + p.pid + ")").join("\n");
+      if (!confirm("The camera is currently in use by:\n\n" + who +
+                   "\n\nClose it and start a fresh recording?")) return;
+      [r, body] = await post("/api/start", {force: true});
+    }
+    if (!r.ok) showError(body.error);
   } finally { busy = false; await poll(); }
 };
 setInterval(() => {
@@ -381,7 +594,16 @@ def make_handler(rec):
         def do_POST(self):
             if self.path not in ("/api/start", "/api/stop"):
                 return self._send(404, {"error": "not found"})
-            err = rec.start() if self.path == "/api/start" else rec.stop()
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except (ValueError, json.JSONDecodeError):
+                body = {}
+            try:
+                err = (rec.start(force=bool(body.get("force")))
+                       if self.path == "/api/start" else rec.stop())
+            except CameraBusy as e:
+                return self._send(409, {"error": "The camera is in use.", "busy": e.procs})
             if err:
                 self._send(409, {"error": err})
             else:
@@ -395,13 +617,17 @@ def make_handler(rec):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--dir", default="/srv/anya/recordings",
-                    help="where recordings go (default %(default)s)")
+    ap.add_argument("--dir", help="where recordings go (default <root>/recordings "
+                                   "from the anya Pi config)")
+    ap.add_argument("--config", help=f"anya Pi settings (default {CFG.DEFAULT_PATH})")
+    ap.add_argument("--no-queue", action="store_true",
+                    help="just record: don't hand recordings to the anya worker")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
     a = ap.parse_args(argv)
 
-    rec = Recorder(a.dir)
+    cfg = CFG.load(a.config)
+    rec = Recorder(a.dir or cfg.recordings, cfg=None if a.no_queue else cfg)
     rec.recover()
     server = ThreadingHTTPServer((a.host, a.port), make_handler(rec))
 

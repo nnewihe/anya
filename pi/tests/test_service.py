@@ -1,6 +1,9 @@
 """pi/anya_pi: ingest -> queue -> worker -> YouTube, without the pipeline or the network."""
 import shutil
+import signal
 import subprocess
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -133,7 +136,7 @@ def test_upload_retries_then_records_url(cfg, tmp_path):
     W.upload_pending(cfg, log=lambda *_: None, uploader=flaky)
     yt = q.get(job["id"])["youtube"]
     assert yt["status"] == J.UP_DONE and yt["forced_private"]
-    assert calls[0] == "Tennis 2026-09-23 18:00"
+    assert calls[0] == "6:00 PM · Sep 23, 2026 · Wimbledon Session Highlights"
     assert (cfg.reels / "r.youtube.txt").read_text().strip() == "https://youtu.be/abc"
 
 
@@ -168,3 +171,98 @@ def test_config_file(tmp_path):
     p.write_text('[youtube]\nprivcy = "public"\n')
     with pytest.raises(ValueError, match="privcy"):
         CFG.load(p)
+
+
+def test_titles(cfg):
+    job = {"recording": {"start": "2026-10-01T18:30:05"}}
+    assert W.titles(job, cfg) == ("6:30 PM · Oct 1, 2026 · Wimbledon Session",
+                                  "6:30 PM · Oct 1, 2026 · Wimbledon Session Highlights")
+    job = {"recording": {"start": "2026-10-01T00:05:00"}}
+    assert W.titles(job, cfg)[0].startswith("12:05 AM · Oct 1, 2026")
+
+
+def test_raw_is_uploaded_and_then_the_highlights(cfg, tmp_path):
+    q = J.Queue(cfg)
+    rec = tmp_path / "2026-10-01_183005.mp4"
+    rec.write_bytes(b"raw")
+    job = q.create("2026-10-01_183005",
+                   {"start": "2026-10-01T18:30:05", "duration": 5400.0, "source": "picam"},
+                   [rec], upload_raw=True)
+    cfg.youtube.enabled = True
+    cfg.youtube_token.write_text("{}")
+    calls = []
+
+    def ok(path, title, desc, token, privacy, playlist_id, log):
+        calls.append((Path(path).name, title))
+        assert q.get(job["id"])[("youtube_raw" if path == str(rec) else "youtube")][
+            "status"] == J.UP_UPLOADING
+        return {"video_id": "v", "url": f"https://youtu.be/{len(calls)}",
+                "privacy": "unlisted", "requested": privacy, "forced_private": False}
+
+    W.upload_pending(cfg, log=lambda *_: None, uploader=ok)
+    assert calls == [(rec.name, "6:30 PM · Oct 1, 2026 · Wimbledon Session")]
+    assert q.get(job["id"])["youtube_raw"]["url"] == "https://youtu.be/1"
+
+    reel = cfg.reels / "reel.mp4"
+    reel.write_bytes(b"reel")
+    q.update(job["id"], status=J.DONE, reel=str(reel), segments=4, kept_s=600,
+             youtube={"status": J.UP_PENDING, "attempts": 0})
+    W.upload_pending(cfg, log=lambda *_: None, uploader=ok)
+    assert calls[1] == ("reel.mp4", "6:30 PM · Oct 1, 2026 · Wimbledon Session Highlights")
+    j = q.get(job["id"])
+    assert j["youtube"]["status"] == J.UP_DONE and j["youtube_raw"]["status"] == J.UP_DONE
+
+
+def test_interrupted_upload_starts_again(cfg, tmp_path):
+    q, job = _queued(cfg, tmp_path)
+    q.update(job["id"], youtube_raw={"status": J.UP_UPLOADING, "attempts": 1})
+    q.recover()
+    assert q.get(job["id"])["youtube_raw"]["status"] == J.UP_PENDING
+
+
+def test_modify_from_two_threads_keeps_both_writers_fields(cfg, tmp_path):
+    q, job = _queued(cfg, tmp_path)
+
+    def bump(key):
+        for _ in range(50):
+            q.modify(job["id"], lambda j: j.__setitem__(key, j.get(key, 0) + 1))
+
+    ts = [threading.Thread(target=bump, args=(k,)) for k in ("a", "b")]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    j = q.get(job["id"])
+    assert j["a"] == 50 and j["b"] == 50
+
+
+def test_processing_pauses_while_the_camera_records(cfg, tmp_path, monkeypatch):
+    from pipeline import cancel
+    q, job = _queued(cfg, tmp_path)
+    cfg.poll_s = 1
+    seen = []
+
+    def fake_process(c, j, log):
+        seen.append(j.get("stage"))
+        if len(seen) == 1:
+            # The recorder presses Start mid-run; the watcher must cancel us.
+            cfg.recording_flag.write_text("x.ts")
+            threading.Timer(3, cfg.recording_flag.unlink).start()
+            end = time.time() + 10
+            while time.time() < end:
+                cancel.check()
+                time.sleep(0.05)
+            raise AssertionError("never cancelled")
+        q.update(j["id"], status=J.DONE)
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)   # end the loop
+
+    monkeypatch.setattr(W, "process", fake_process)
+    old = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+    try:
+        W.run(cfg, log=lambda *_: None)
+    finally:
+        signal.signal(signal.SIGTERM, old[0])
+        signal.signal(signal.SIGINT, old[1])
+        cancel.clear()
+    assert seen == [None, "paused while recording"]
+    assert q.get(job["id"])["status"] == J.DONE

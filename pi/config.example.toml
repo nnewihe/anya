@@ -12,7 +12,9 @@ copy_video = true           # reel is cut straight from the original, video and 
                             # same resolution and quality, nothing re-encoded; each
                             # point may start up to one keyframe interval (~1 s) early
 scale_height = 1080         # only used with copy_video = false (x264 re-encode)
-hwaccel = "drm"             # Pi 5 hardware HEVC decode; "" to turn off
+hwaccel = "drm"             # Pi 5 hardware HEVC decode; "" to turn off.  The Pi
+                            # camera records H.264, which the Pi 5 can only decode
+                            # in software: use "" for it
 single_decode = true        # build both analysis proxies from one decode
 threads = 0                 # 0 = let torch/ncnn pick (all 4 cores)
 keep_inbox_days = 14        # copied camera originals are deleted this long after the reel
@@ -20,7 +22,7 @@ keep_inbox_days = 14        # copied camera originals are deleted this long afte
 [youtube]
 enabled = false
 privacy = "unlisted"        # unlisted / private / public
-title_prefix = "Tennis"
+session_name = "Wimbledon Session"   # "6:30 PM · Oct 1, 2026 · Wimbledon Session" (+ " Highlights")
 playlist_id = ""            # needs `youtube-auth --playlists`
 # token = "/srv/anya/state/youtube_token.json"
 max_attempts = 20
