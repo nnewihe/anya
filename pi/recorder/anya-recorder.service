@@ -1,0 +1,21 @@
+[Unit]
+Description=anya: start/stop recording web page (Pi camera)
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+User=nnewihe
+Group=video
+ExecStart=/usr/bin/python3 /opt/anya-recorder/recorder.py --dir /srv/anya/recordings --port 8080
+Environment=PYTHONUNBUFFERED=1
+# Stopping the service (or a reboot) signals only the server, which stops the
+# camera cleanly and waits for the .mp4 before exiting.  60 s covers the
+# rewrap of a long recording on an SSD.
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
