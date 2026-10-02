@@ -70,13 +70,13 @@ journalctl -fu anya-recorder -u anya-worker
 
 ## One-time setup (only you can do these)
 
-### 1. YouTube, as nnewihe@gmail.com
+### 1. YouTube, as smarttenniswithandy@gmail.com
 The steps are in `pi/README.md` → *YouTube*. In short:
 1. Create a Google Cloud project and enable **YouTube Data API v3**.
 2. Set the OAuth consent screen to **In production**. In *Testing*, the login expires
    after 7 days.
 3. Create a *Desktop app* OAuth client.
-4. On the Mac, run `youtube-auth` and **sign in as nnewihe@gmail.com**.
+4. On the Mac, run `youtube-auth` and **sign in as smarttenniswithandy@gmail.com**.
 5. Copy the token to `/srv/anya/state/`.
 6. Set `[youtube] enabled = true` in `/srv/anya/config.toml`, then run
    `sudo systemctl restart anya-worker anya-recorder`.
