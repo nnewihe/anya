@@ -164,6 +164,12 @@ def close_camera_users():
     return left
 
 
+def clean_player(name):
+    """A first name fit for a YouTube title: letters, spaces, - ' . only."""
+    name = "".join(c for c in str(name or "") if c.isalpha() or c in " -'.")
+    return " ".join(name.split())[:30]
+
+
 def recording_start(stem):
     try:
         return dt.datetime.strptime(stem, "%Y-%m-%d_%H%M%S")
@@ -233,6 +239,7 @@ class Recorder:
             cfg.recording_flag.unlink(missing_ok=True)
         self.timer = None
         self.notice = None
+        self.player = ""
         self.lock = threading.Lock()
         self.state = IDLE
         self.proc = None
@@ -246,9 +253,11 @@ class Recorder:
     def free_gb(self):
         return shutil.disk_usage(self.dir).free / 1e9
 
-    def start(self, force=False):
+    def start(self, force=False, player=""):
         """Returns an error string, or None.  Raises CameraBusy when another
-        rpicam program has the camera, unless `force`, which closes it."""
+        rpicam program has the camera, unless `force`, which closes it.
+        `player` (a first name) goes into the YouTube titles."""
+        player = clean_player(player)
         if self.state == IDLE:
             # Our own camera process is gone when idle, so anything found
             # belongs to someone else.  Outside the lock: closing takes seconds.
@@ -269,6 +278,9 @@ class Recorder:
             name = f"{dt.datetime.now():%Y-%m-%d_%H%M%S}"
             ts = self.dir / f"{name}.ts"
             logf = open(self.dir / f"{name}.log", "w")
+            # Beside the recording, so a crash-recovered .ts keeps its player.
+            if player:
+                (self.dir / f"{name}.player").write_text(player + "\n")
             try:
                 proc = subprocess.Popen(
                     [self.camera, *CAMERA_ARGS, "-o", str(ts)],
@@ -284,6 +296,7 @@ class Recorder:
             finally:
                 logf.close()             # the child has its own copy
             self.proc, self.file, self.started = proc, ts, time.time()
+            self.player = player
             self.state, self.error, self.notice = RECORDING, None, None
             if self.cfg:
                 self.cfg.recording_flag.write_text(ts.name + "\n")
@@ -383,9 +396,16 @@ class Recorder:
         start = recording_start(mp4.stem) or dt.datetime.fromtimestamp(mp4.stat().st_mtime)
         self.queue.create(mp4.stem,
                           {"start": start.isoformat(timespec="seconds"),
-                           "duration": probe_duration(mp4), "source": "picam"},
+                           "duration": probe_duration(mp4), "source": "picam",
+                           "player": self._player_of(mp4)},
                           [mp4], upload_raw=self.cfg.youtube.enabled)
         log(f"queued {mp4.name} for processing")
+
+    def _player_of(self, mp4):
+        try:
+            return clean_player(mp4.with_suffix(".player").read_text())
+        except OSError:
+            return ""
 
     # -- status --------------------------------------------------------
     def _duration(self, p):
@@ -401,9 +421,10 @@ class Recorder:
         files = [p for p in self.dir.glob("*.mp4") if not p.name.endswith(".part.mp4")]
         for p in sorted(files, reverse=True)[:limit]:
             job = self.queue.get(p.stem) if self.queue else None
+            player = ((job or {}).get("recording") or {}).get("player") \
+                or self._player_of(p)
             out.append({"name": p.name, "duration_s": self._duration(p),
-                        "size_mb": round(p.stat().st_size / 1e6),
-                        "chips": chips(job)})
+                        "player": player, "chips": chips(job)})
         return out
 
     def status(self):
@@ -413,10 +434,12 @@ class Recorder:
                  "elapsed_s": round(time.time() - self.started, 1) if self.started else None,
                  "error": self.error,
                  "notice": self.notice,
+                 "player": self.player if self.state == RECORDING else "",
                  "max_s": MAX_RECORDING_S,
                  "saving": self.pending_rewraps}
-        s["free_gb"] = round(self.free_gb(), 1)
         s["recordings"] = self.recordings()
+        s["default_session"] = (self.cfg.youtube.session_name if self.cfg
+                                else CFG.YouTube().session_name)
         return s
 
 
@@ -424,101 +447,159 @@ PAGE = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Court Recorder</title>
+<meta name="theme-color" content="#070807">
+<title>Anya Court Recorder</title>
 <style>
-:root { --bg:#f6f6f4; --fg:#1b1b1b; --muted:#6b6b6b; --card:#fff; --line:#e2e2de;
-        --go:#1f7a3a; --stop:#c62828; --warn:#8a5a00; --warnbg:#fff4dc;
-        --info:#1d4f91; --infobg:#e6eefa; --ok:#1f7a3a; --okbg:#e3f3e7;
-        --chip:#4b4b4b; --chipbg:#ececea; --bad:#b3261e; --badbg:#fbe5e3; }
-@media (prefers-color-scheme: dark) {
-  :root { --bg:#141414; --fg:#eee; --muted:#9a9a9a; --card:#1f1f1f; --line:#333;
-          --go:#2e9d50; --stop:#e04444; --warn:#f0c060; --warnbg:#3a2e14;
-          --info:#9cc2f5; --infobg:#17263a; --ok:#7fd49a; --okbg:#173022;
-          --chip:#c9c9c9; --chipbg:#2b2b2b; --bad:#f2a49c; --badbg:#3a1d1a; } }
+/* After anyatennis.com: near-black, white type, the lime accent, pills. */
+:root { --lime:#dfff00; --white:#fff; --dark:#070807; --card:#111311;
+        --line:#2a2d2a; --field:#080908; --fieldline:#454845;
+        --muted:rgba(255,255,255,.62); --stop:#ff4d4d;
+        --warnbg:rgba(255,190,60,.12); --warn:#ffcf70;
+        --okbg:rgba(223,255,0,.12); --badbg:rgba(255,77,77,.14); --bad:#ff8d8d; }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--fg);
-       font:16px/1.4 -apple-system, system-ui, sans-serif; }
-main { max-width:480px; margin:0 auto; padding:24px 16px; }
-h1 { font-size:20px; margin:0 0 20px; }
-.status { display:flex; align-items:center; gap:10px; font-size:18px; margin-bottom:6px; }
-.dot { width:14px; height:14px; border-radius:50%; background:var(--muted); }
-.rec .dot { background:var(--stop); animation:blink 1s infinite; }
+html, body { margin:0; min-height:100%; background:var(--dark); color:var(--white);
+             font-family:Arial, Helvetica, sans-serif; }
+main { max-width:480px; margin:0 auto; padding:20px 16px 40px; }
+.logo { display:block; width:150px; height:auto; margin:4px auto 2px; }
+.kicker { text-align:center; color:var(--lime); font-size:12px; font-weight:800;
+          letter-spacing:.32em; margin:0 0 26px; }
+.card { background:var(--card); border:1px solid rgba(223,255,0,.45);
+        border-radius:18px; padding:20px; }
+label { display:block; font-size:13px; font-weight:700; margin:0 0 7px; }
+input { width:100%; padding:13px 14px; border:1px solid var(--fieldline);
+        border-radius:9px; background:var(--field); color:var(--white);
+        font:inherit; font-size:17px; outline:none; }
+input:focus { border-color:var(--lime); }
+input:disabled { opacity:.6; }
+.hint { color:var(--muted); font-size:12px; margin:7px 0 20px; }
+.status { display:flex; align-items:center; gap:10px; font-size:16px; font-weight:700; }
+.dot { width:10px; height:10px; border-radius:50%; background:var(--lime);
+       box-shadow:0 0 14px var(--lime); flex:none; }
+.rec .dot { background:var(--stop); box-shadow:0 0 14px var(--stop);
+            animation:blink 1s infinite; }
 @keyframes blink { 50% { opacity:.25; } }
-.timer { font:600 56px/1.1 ui-monospace, Menlo, monospace; margin:8px 0 24px;
-         font-variant-numeric:tabular-nums; }
-button { width:100%; padding:28px; font-size:26px; font-weight:700; border:0;
-         border-radius:14px; color:#fff; background:var(--go); cursor:pointer; }
-.rec button { background:var(--stop); }
+.timer { font-size:60px; font-weight:900; letter-spacing:-.03em; line-height:1;
+         margin:14px 0 6px; font-variant-numeric:tabular-nums; }
+.limit { color:var(--muted); font-size:13px; margin:0 0 20px; }
+button { width:100%; padding:22px; font:inherit; font-size:22px; font-weight:900;
+         letter-spacing:.04em; border:0; border-radius:999px; cursor:pointer;
+         background:var(--lime); color:#000; transition:.2s ease; }
+.rec button { background:var(--stop); color:#fff; }
 button:disabled { opacity:.5; cursor:default; }
-.err, .note { white-space:pre-wrap; padding:12px; border-radius:10px;
-       margin-top:16px; font-size:14px; }
+.err, .note { white-space:pre-wrap; padding:12px 14px; border-radius:9px;
+              margin-top:16px; font-size:14px; }
 .err { background:var(--warnbg); color:var(--warn); }
-.note { background:var(--infobg); color:var(--info); }
-.limit { color:var(--muted); font-size:14px; margin:-18px 0 22px; }
-.meta { color:var(--muted); font-size:14px; margin-top:14px; }
-h2 { font-size:15px; margin:28px 0 8px; color:var(--muted); font-weight:600; }
+.note { background:var(--okbg); color:var(--lime); }
+h2 { color:var(--lime); font-size:12px; font-weight:800; letter-spacing:.24em;
+     text-transform:uppercase; margin:30px 0 10px; }
 ul { list-style:none; padding:0; margin:0; background:var(--card);
-     border:1px solid var(--line); border-radius:10px; }
-li { padding:10px 12px; border-top:1px solid var(--line); font-size:14px; }
+     border:1px solid var(--line); border-radius:18px; overflow:hidden; }
+li { padding:12px 16px; border-top:1px solid var(--line); font-size:14px; }
 li:first-child { border-top:0; }
 .row { display:flex; justify-content:space-between; gap:8px; }
 .row span:last-child { color:var(--muted); white-space:nowrap; }
-.chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
-.chip { font-size:12px; padding:2px 8px; border-radius:999px;
-        background:var(--chipbg); color:var(--chip); text-decoration:none; }
-.chip.ok { background:var(--okbg); color:var(--ok); }
-.chip.err { background:var(--badbg); color:var(--bad); }
-a.chip { text-decoration:underline; }
+.who { color:var(--muted); font-size:12px; margin-top:2px; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.chip { font-size:12px; font-weight:700; padding:4px 10px; border-radius:999px;
+        border:1px solid rgba(255,255,255,.25); color:var(--muted); text-decoration:none; }
+.chip.ok { border-color:rgba(223,255,0,.55); color:var(--lime); background:var(--okbg); }
+.chip.err { border-color:rgba(255,77,77,.5); color:var(--bad); background:var(--badbg); }
+a.chip:hover { background:var(--lime); color:#000; }
+footer { text-align:center; color:rgba(255,255,255,.4); font-size:12px; margin-top:28px; }
 </style></head>
 <body><main id="app">
-<h1>Court Recorder</h1>
-<div class="status"><span class="dot"></span><span id="state">Connecting…</span></div>
-<div class="timer" id="timer">0:00:00</div>
-<div class="limit" id="limit"></div>
-<button id="btn" disabled>Start</button>
-<div class="note" id="note" hidden></div>
-<div class="err" id="err" hidden></div>
-<div class="meta" id="meta"></div>
+<svg class="logo" viewBox="60 20 680 545" role="img" aria-label="Anya Tennis">
+  <defs><mask id="ball">
+    <circle cx="400" cy="240" r="130" fill="white"/>
+    <path d="M 356 110 Q 298 240 356 370" fill="none" stroke="black" stroke-width="14" stroke-linecap="round"/>
+    <path d="M 444 110 Q 502 240 444 370" fill="none" stroke="black" stroke-width="14" stroke-linecap="round"/>
+    <circle cx="400" cy="240" r="44" fill="black"/>
+  </mask></defs>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="100" y="50" width="600" height="380" rx="6" stroke-width="1.5"/>
+    <path d="M 100 122 L 100 50 L 172 50" stroke-width="5"/>
+    <path d="M 628 50 L 700 50 L 700 122" stroke-width="5"/>
+    <path d="M 100 358 L 100 430 L 172 430" stroke-width="5"/>
+    <path d="M 628 430 L 700 430 L 700 358" stroke-width="5"/>
+    <circle cx="400" cy="240" r="156" stroke-width="1.5" stroke-dasharray="8,7"/>
+    <path d="M76 240H100M700 240H724M400 26V50M400 430V454" stroke-width="2.5"/>
+    <path d="M76 145H92M76 335H92M708 145H724M708 335H724" stroke-width="1.5"/>
+  </g>
+  <circle cx="400" cy="240" r="130" fill="#fff" mask="url(#ball)"/>
+  <text x="400" y="510" text-anchor="middle" fill="#fff" font-size="70" font-weight="500"
+        letter-spacing="18" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">ANYA</text>
+  <text x="400" y="552" text-anchor="middle" fill="#fff" font-size="13" letter-spacing="4"
+        font-family="'Courier New', Courier, monospace">see the game differently</text>
+</svg>
+<p class="kicker">COURT RECORDER</p>
+
+<div class="card">
+  <label for="player">Your first name</label>
+  <input id="player" maxlength="30" autocomplete="given-name" autocapitalize="words"
+         placeholder="e.g. Andy">
+  <p class="hint" id="titleHint">Videos are titled “6:30 PM · Oct 1, 2026 · Wimbledon Session”.</p>
+
+  <div class="status"><span class="dot"></span><span id="state">Connecting…</span></div>
+  <div class="timer" id="timer">0:00:00</div>
+  <div class="limit" id="limit"></div>
+  <button id="btn" disabled>Start</button>
+  <div class="note" id="note" hidden></div>
+  <div class="err" id="err" hidden></div>
+</div>
+
 <h2>Recent recordings</h2>
 <ul id="list"><li><span>None yet</span></li></ul>
+<footer>© 2026 Anya Tennis · Cut the dead time. See the action.</footer>
 </main>
 <script>
 const $ = id => document.getElementById(id);
-let state = null, elapsed = 0, base = 0, busy = false;
+let state = null, elapsed = 0, base = 0, busy = false, fallback = "Wimbledon Session";
 
+function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
 function hms(s) {
   s = Math.max(0, Math.floor(s));
   const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60;
   return h + ":" + String(m).padStart(2, "0") + ":" + String(x).padStart(2, "0");
 }
+function player() { return $("player").value.trim(); }
+function hint() {
+  $("titleHint").textContent = "Videos are titled “6:30 PM · Oct 1, 2026 · " +
+    (player() ? player() + " Session" : fallback) + "”.";
+}
+$("player").value = load("anya-player");
+$("player").oninput = () => { store("anya-player", player()); hint(); };
+
 function render(s) {
   state = s.state;
+  fallback = s.default_session || fallback;
+  hint();
   const rec = state === "recording";
   $("app").classList.toggle("rec", rec);
-  $("state").textContent = rec ? "Recording " + s.file.replace(/\.ts$/, "")
+  $("state").textContent = rec ? "Recording" + (s.player ? " · " + s.player : "")
     : state === "finishing" ? "Stopping…"
-    : s.saving ? "Saving to MP4…" : "Ready";
+    : s.saving ? "Saving…" : "Ready";
   $("btn").textContent = rec ? "Stop" : "Start";
   $("btn").disabled = busy || state === "finishing";
+  $("player").disabled = rec || state === "finishing";
   if (rec) { elapsed = s.elapsed_s; base = performance.now(); } else { elapsed = 0; }
   $("limit").textContent = "Stops automatically at " + hms(s.max_s);
   $("note").hidden = !s.notice;
   $("note").textContent = s.notice || "";
   $("err").hidden = !s.error;
   $("err").textContent = s.error || "";
-  $("meta").textContent = s.free_gb + " GB free (about " +
-    Math.floor(s.free_gb / 7) + " h of recording)";
   const list = $("list");
   list.innerHTML = "";
   if (!s.recordings.length) list.innerHTML = "<li><span>None yet</span></li>";
   for (const r of s.recordings) {
     const li = document.createElement("li");
-    li.innerHTML = '<div class="row"><span></span><span></span></div><div class="chips"></div>';
+    li.innerHTML = '<div class="row"><span></span><span></span></div>' +
+                   '<div class="who"></div><div class="chips"></div>';
     const row = li.firstChild;
     row.children[0].textContent = r.name;
-    row.children[1].textContent =
-      (r.duration_s == null ? "?" : hms(r.duration_s)) + " · " +
-      (r.size_mb >= 1000 ? (r.size_mb / 1000).toFixed(1) + " GB" : r.size_mb + " MB");
+    row.children[1].textContent = r.duration_s == null ? "" : hms(r.duration_s);
+    li.children[1].textContent = r.player || "";
+    if (!r.player) li.children[1].remove();
     for (const c of r.chips) {
       const el = document.createElement(c.url ? "a" : "span");
       el.className = "chip " + c.kind;
@@ -552,12 +633,13 @@ $("btn").onclick = async () => {
       if (!r.ok) showError(body.error);
       return;
     }
-    let [r, body] = await post("/api/start");
+    const name = player();
+    let [r, body] = await post("/api/start", {player: name});
     if (r.status === 409 && body.busy) {
       const who = body.busy.map(p => p.command + " (pid " + p.pid + ")").join("\n");
       if (!confirm("The camera is currently in use by:\n\n" + who +
                    "\n\nClose it and start a fresh recording?")) return;
-      [r, body] = await post("/api/start", {force: true});
+      [r, body] = await post("/api/start", {player: name, force: true});
     }
     if (!r.ok) showError(body.error);
   } finally { busy = false; await poll(); }
@@ -600,7 +682,8 @@ def make_handler(rec):
             except (ValueError, json.JSONDecodeError):
                 body = {}
             try:
-                err = (rec.start(force=bool(body.get("force")))
+                err = (rec.start(force=bool(body.get("force")),
+                                 player=body.get("player") or "")
                        if self.path == "/api/start" else rec.stop())
             except CameraBusy as e:
                 return self._send(409, {"error": "The camera is in use.", "busy": e.procs})

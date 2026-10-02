@@ -157,11 +157,16 @@ def process(cfg, job, log=print):
 
 
 def titles(job, cfg):
-    """("6:30 PM · Oct 1, 2026 · Wimbledon Session", "... Highlights")."""
+    """("6:30 PM · Oct 1, 2026 · Andy Session", "... Highlights").
+
+    The player's first name, typed on the recorder page, names the session;
+    without one it is `[youtube] session_name` ("Wimbledon Session")."""
     start = dt.datetime.fromisoformat(job["recording"]["start"])
     hour = start.hour % 12 or 12
+    player = (job["recording"].get("player") or "").strip()
+    session = f"{player} Session" if player else cfg.youtube.session_name
     base = (f"{hour}:{start:%M} {start:%p} · {start:%b} {start.day}, {start.year}"
-            f" · {cfg.youtube.session_name}")
+            f" · {session}")
     return base, f"{base} Highlights"
 
 

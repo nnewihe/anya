@@ -259,3 +259,37 @@ def test_chips():
                                "url": "https://youtu.be/h", "kind": "ok"}
     job.update(status=J.NEEDS_CALIBRATION)
     assert R.chips(job)[1]["kind"] == "err"
+
+
+def test_player_name_goes_with_the_recording(tmp_path, cfg):
+    rec = R.Recorder(tmp_path / "rec", camera=FAKE, cfg=cfg)
+    assert rec.start(player="  Mary-Jane  <O'Neil> ") is None
+    assert rec.status()["player"] == "Mary-Jane O'Neil"
+    time.sleep(1)
+    rec.stop()
+    assert saved(rec)
+    mp4 = next((tmp_path / "rec").glob("*.mp4"))
+    assert J.Queue(cfg).get(mp4.stem)["recording"]["player"] == "Mary-Jane O'Neil"
+    st = rec.status()
+    assert st["recordings"][0]["player"] == "Mary-Jane O'Neil"
+    assert st["default_session"] == "Wimbledon Session"
+    assert "free_gb" not in st and "size_mb" not in st["recordings"][0]
+
+
+def test_player_name_survives_a_crash(tmp_path, cfg):
+    d = tmp_path / "rec"
+    d.mkdir()
+    ts = d / "2026-10-01_183005.ts"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=50", "-t", "1", "-c:v", "libx264",
+                    "-preset", "ultrafast", "-f", "mpegts", str(ts)], check=True)
+    ts.with_suffix(".player").write_text("Andy\n")
+    R.Recorder(d, camera=FAKE, cfg=cfg).recover()
+    assert J.Queue(cfg).get(ts.stem)["recording"]["player"] == "Andy"
+
+
+def test_http_start_passes_the_name(server, rec):
+    code, body = post_json(server + "/api/start", {"player": "Andy"})
+    assert code == 200 and body["player"] == "Andy"
+    rec.stop()
+    assert saved(rec)

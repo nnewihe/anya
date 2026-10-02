@@ -7,10 +7,14 @@ Pi's own camera, then does the rest of the work without anyone touching it:
 phone ──▶ recorder.py :8080 ──▶ rpicam-vid ──▶ recordings/2026-10-01_183005.mp4
                                                    │  queued for anya-worker
                                                    ▼
-             YouTube (unlisted)  "6:30 PM · Oct 1, 2026 · Wimbledon Session"
+             YouTube (unlisted)  "6:30 PM · Oct 1, 2026 · Andy Session"
              anya on the Pi      cuts the dead time out (~2–4× the recording's length)
-             YouTube (unlisted)  "6:30 PM · Oct 1, 2026 · Wimbledon Session Highlights"
+             YouTube (unlisted)  "6:30 PM · Oct 1, 2026 · Andy Session Highlights"
 ```
+
+- **Your first name** goes in the box above Start. It replaces "Wimbledon" in both
+  YouTube titles, and the phone remembers it. Leave it empty to get
+  `[youtube] session_name` ("Wimbledon Session").
 
 - **Start** checks first whether another `rpicam` program (`rpicam-hello`, a
   hand-run `rpicam-vid`) has the camera. If one does, the page lists it and asks
@@ -87,7 +91,8 @@ A recording made while YouTube was off isn't uploaded later on its own. Queue it
 > switch each one to Unlisted in YouTube Studio.
 > The default quota covers about six uploads a day, so three sessions (raw + highlights each).
 
-The title's last words come from `[youtube] session_name` in `/srv/anya/config.toml`
+The title ends with the first name typed on the page ("Andy Session"). With the box
+empty, it ends with `[youtube] session_name` from `/srv/anya/config.toml` instead
 (default `"Wimbledon Session"`).
 
 ### 2. Court calibration

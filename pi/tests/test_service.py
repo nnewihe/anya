@@ -179,6 +179,9 @@ def test_titles(cfg):
                                   "6:30 PM · Oct 1, 2026 · Wimbledon Session Highlights")
     job = {"recording": {"start": "2026-10-01T00:05:00"}}
     assert W.titles(job, cfg)[0].startswith("12:05 AM · Oct 1, 2026")
+    job = {"recording": {"start": "2026-10-01T18:30:05", "player": "Andy"}}
+    assert W.titles(job, cfg) == ("6:30 PM · Oct 1, 2026 · Andy Session",
+                                  "6:30 PM · Oct 1, 2026 · Andy Session Highlights")
 
 
 def test_raw_is_uploaded_and_then_the_highlights(cfg, tmp_path):
