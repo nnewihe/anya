@@ -118,7 +118,11 @@ def process(cfg, job, log=print):
                              H.make_config(cfg.processing.device,
                                            cfg.processing.scale_height or None,
                                            copy_video=cfg.processing.copy_video),
-                             site=str(cfg.site_dir) if cfg.site_dir.is_dir() else None,
+                             # install.sh creates the dir empty: only a saved
+                             # profile counts, or the run fails on a missing file
+                             # instead of asking for calibration.
+                             site=(str(cfg.site_dir)
+                                   if (cfg.site_dir / "court.json").is_file() else None),
                              on_progress=_Progress(q, job, cfg, log))
     except (H.NotCalibrated, S.NeedsCalibration) as e:
         job = q.update(job["id"], status=J.NEEDS_CALIBRATION, error=str(e),

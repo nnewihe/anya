@@ -269,3 +269,20 @@ def test_processing_pauses_while_the_camera_records(cfg, tmp_path, monkeypatch):
         cancel.clear()
     assert seen == [None, "paused while recording"]
     assert q.get(job["id"])["status"] == J.DONE
+
+
+def test_empty_site_dir_asks_for_calibration(cfg, tmp_path, monkeypatch):
+    """install.sh makes <root>/site empty; that is 'not calibrated', not a crash."""
+    from pipeline.anya2 import headless as H
+    q, job = _queued(cfg, tmp_path)
+    cfg.site_dir.mkdir(parents=True)
+    seen = {}
+
+    def fake_build(videos, output, c, site=None, on_progress=None, dry_run=False):
+        seen["site"] = site
+        raise H.NotCalibrated("no corners")
+
+    monkeypatch.setattr(H, "build", fake_build)
+    W.process(cfg, job, log=lambda *_: None)
+    assert seen["site"] is None
+    assert q.get(job["id"])["status"] == J.NEEDS_CALIBRATION
