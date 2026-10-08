@@ -1,55 +1,28 @@
 """
 perceive.py
 ===========
-The perception passes anya2's detectors read, cached beside the video.
+The two pose passes every detector reads.  This is most of a run's cost.
 
-TWO ROIs, BECAUSE ONE DOES NOT WORK
------------------------------------
-The obvious design is one all-persons pose pass over a downscaled proxy, and it
-is the design the current pipeline nominally has: `anya_end_telemetry` runs pose
-full-frame over a 540p proxy at 15 Hz, with no crop.  Measured on Data/21,
-ZERO of 192 sampled detections from that pass project past mid-court.  The far
-player is simply not there.
+One pass cannot see both ends of the court: at 540p a far-baseline player is
+20-40 px tall and the pose model does not find them.  So:
 
-The cause is scale, not the projection: at 540p a player standing on the far
-baseline is 20-40 px tall in the 960x540 analysis frame, and yolov8n-pose at
-imgsz 960 does not find them.  `walking/extract_pose.py` already documents the
-same effect for the near player walking to the ball carts, and works around it
-with a `--rescue` pass at 1920 px.
+    near()   540p whole-frame proxy          all persons, 15 Hz
+    far()    native-resolution crop of a     all persons, 15 Hz
+             band around the far baseline
 
-So the far side gets its own ROI: a NATIVE-RESOLUTION CROP of the band around
-the far baseline, which keeps source pixels on the subject while paying to
-decode only the part of the frame it occupies.  This is the same conclusion
-`anya_far_telemetry` reached independently, and it is recorded here as a
-property of the perception layer rather than rediscovered by each detector.
+Both passes MUST run at the same rate.  tracks.py merges them sample for
+sample and refuses if they disagree.
 
-    near   540p whole-frame proxy   15 Hz pose   near players, point ends
-    far    native-res band crop     15 Hz pose   far players
+Frames that are not sampled are dropped, not repeated.  Each npz records the
+effective `fps` and the `stride` back to source frames.
 
-RATES ARE INPUTS, NOT DECISIONS
--------------------------------
-15 Hz is where `anya_end_telemetry` landed and the reasoning holds here: the
-walking classifier scores at 15 Hz, and 15 Hz is above Nyquist for the 0.7-4.0
-Hz gait cadence band, while 7.5 Hz is not.
+Output `<stem>_anya2_near_dets.npz` / `<stem>_anya2_far_dets.npz`:
+    kp    [N, MAX_PERSONS, 17, 3]  keypoints (x, y, conf), ANALYSIS_SIZE px
+    box   [N, MAX_PERSONS, 4]      xyxy, ANALYSIS_SIZE px
+    conf  [N, MAX_PERSONS]         person confidence; NaN = empty slot
+    fps, src_fps, stride, n_src_frames, crop (far pass only; else zeros)
 
-THE TWO ROIs ARE LOCKED TO ONE RATE, and that is a real constraint rather than
-an oversight.  `tracks._stack` requires both passes on one timeline, because
-side membership is decided by the COURT and not by which pass found a person,
-so the two candidate lists have to be interleaved sample for sample.  Dropping
-the far pass to 10 Hz therefore cannot be done alone -- attempted, it makes
-`tracks` refuse outright, which is the guard working.  (It also produced a
-tempting false result: with tracks refusing, the far detector scored the STALE
-15 Hz tracks and reported identical accuracy for 30% less time.  The number was
-real and measured the wrong thing.)
-Decoupling the rates means resampling the far stream onto the near timeline --
-possible, but a change to the substrate rather than a parameter, and not worth
-making speculatively while the far pass is the cheaper of the two.
-
-Unsampled frames are DROPPED, never held.  A zero-order hold turns a
-differentiated feature into spurious events; the npz is written decimated with
-`fps` set to the effective rate and `stride` alongside, so every consumer sees
-one consistent, slower clip and only the mapping back to source frames needs
-the stride.
+Evidence and history: docs/anya2/NOTES.md, "perceive.py".
 """
 
 import argparse
@@ -64,304 +37,98 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from pipeline import cancel
-from pipeline.videoio import open_video
+from pipeline import proxy
+from pipeline import workdir
+from pipeline.anya2 import court
 from pipeline.utilities import assert_decode_complete
-from pipeline import proxy as P
-from pipeline.anya2 import court as C
-from pipeline import workdir as WD
+from pipeline.videoio import open_video
 
-N_KP = 17
-MAX_PERSONS = 8
-POSE_CONF = 0.20
-BATCH = 16
-POSE_FPS = 15.0
+N_KEYPOINTS = 17
+MAX_PERSONS = 8            # people kept per frame, highest confidence first
+POSE_CONF = 0.20           # pose model's detection threshold
+BATCH = 16                 # frames per model call
+POSE_FPS = 15.0            # default sample rate for both passes
 
-_W = Path(__file__).resolve().parents[1] / "models" / "yolov8n-pose.pt"
-POSE_MODEL = str(_W) if _W.is_file() else "yolov8n-pose.pt"
+_bundled_weights = Path(__file__).resolve().parents[1] / "models" / "yolov8n-pose.pt"
+POSE_MODEL = str(_bundled_weights) if _bundled_weights.is_file() else "yolov8n-pose.pt"
 
-# FAR_IMGSZ stays at 960, and the attempt to lower it is recorded because the
-# micro-benchmark was persuasive and WRONG.  Timed on 64 band frames, imgsz 768
-# looked free -- 35.2 ms/frame against 52.6, at 1.00 persons/frame against 1.02.
-# Run over the whole clip it is not: detections fall from 0.94 to 0.86 per
-# sample, empty frames rise 21.1% to 25.1%, and the far detector goes from
-# 100% recall / 83.3% precision to 86.7% / 72.2% on Data/23.  An 8% detection
-# loss lands squarely on the serves.
-#
-# The lesson generalises: the far player sits AT the model's detection size, so
-# persons-per-frame over a short sample cannot see the cost -- the frames that
-# break are the ones where the player is smallest, which is not most frames but
-# is disproportionately the ones a serve happens in.  Do not re-tune this on a
-# throughput benchmark; only an end-to-end recall number can price it.
-FAR_IMGSZ = 960
-# 640, not 960.  The near frame is a 960x540 proxy, so 960 is native -- but the
-# near players are 72-275 px tall and survive the downscale, unlike the far
-# player.  Validated end to end rather than on throughput (see FAR_IMGSZ for why
-# that distinction matters):
-#
-#     clip 35   near serve 100%/100% -> 100%/100%   pass 140s -> 57s
-#     clip 58   near serve 79.5%/61.4% -> 81.8%/62.1%   pass 784s -> 484s
-#     clip 58   point end  38.3%/25.0% -> 37.0%/26.1%, truncations 0 either way
-#
-# Accuracy is unchanged to slightly better and the pass is 38-59% cheaper.  The
-# asymmetry with the far pass is the whole story of this pipeline: near players
-# are far above the detection size and have headroom, far players have none.
-NEAR_IMGSZ = 640
+# Model input sizes.  Do NOT tune these on a throughput benchmark: only an
+# end-to-end recall number can price them (see NOTES).
+FAR_IMGSZ = 960            # the far player is at the model's limit; 768 lost recall
+NEAR_IMGSZ = 640           # near players are large; 640 is as accurate and cheaper
+
+# The far band, in court metres around the far baseline.
+FAR_BAND_UP_M = 2.8        # how high above the ground: a raised racket at the trophy
+FAR_BAND_PAD_M = 4.0       # along the court, each side of the far baseline
+FAR_BAND_EDGE_PX = 2.0     # a box this close to the crop's bottom edge is cut off
 
 NEAR_SUFFIX = "_anya2_near_dets.npz"
 FAR_SUFFIX = "_anya2_far_dets.npz"
 
 
 def dets_path(video, suffix=NEAR_SUFFIX):
-    d = WD.artifact_dir(video)
     stem = os.path.splitext(os.path.basename(video))[0]
-    return os.path.join(d, f"{stem}{suffix}")
+    return os.path.join(workdir.artifact_dir(video), f"{stem}{suffix}")
 
 
-def _stride_for(src_fps, pose_fps):
-    """Integer stride, never below 1. Returns (stride, effective_fps)."""
-    s = max(1, int(round(src_fps / float(pose_fps))))
-    return s, src_fps / s
-
-
-def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
-               offset=(0.0, 0.0), scale=(1.0, 1.0), label="POSE", limit=None,
-               drop_bottom_edge=False, edge_px=2.0, crop=None):
-    """All-persons pose over every `stride`-th frame, written decimated.
-
-    `offset`/`scale` map detections back into the 960x540 ANALYSIS frame, which
-    is the one frame every consumer and the homography agree on.  A crop proxy
-    produces coordinates in the crop; without this they would silently be a
-    different coordinate system wearing the same field names.
-
-    `drop_bottom_edge` discards detections whose box bottom sits ON the crop's
-    lower edge.  THIS IS NOT A QUALITY FILTER -- it is a refusal to invent a
-    ground point.  A person who straddles the bottom of the far band is cut off
-    by the crop, so their box bottom is the CROP BOUNDARY and not their feet,
-    and projecting it through a ground-plane homography puts them somewhere they
-    have never stood.
-
-    It matters far more than it sounds.  Measured across six clips, 23-61% of
-    far-band detections are truncated this way, and because they are the people
-    standing closest to the camera they carry SYSTEMATICALLY HIGHER confidence
-    than the real far player (0.82 vs 0.54 on Data/40).  So they won every
-    confidence-weighted competition for the two far slots and pushed the actual
-    server out of the tracks entirely -- which is why Data/40's serve trophy was
-    present at full strength in the band for all 13 labelled serves while the
-    tracked slots caught six.
-    """
-    from ultralytics import YOLO
-    model = YOLO(POSE_MODEL)
-
-    cap = open_video(video, label)
-    src_fps = cap.get(cv2.CAP_PROP_FPS)
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if limit:
-        total = min(total, limit)
-    idx = list(range(0, total, stride))
-    n = len(idx)
-
-    kp = np.full((n, MAX_PERSONS, N_KP, 3), np.nan, dtype=np.float32)
-    bx = np.full((n, MAX_PERSONS, 4), np.nan, dtype=np.float32)
-    cf = np.full((n, MAX_PERSONS), np.nan, dtype=np.float32)
-
-    ox, oy = offset
-    sx, sy = scale
-    t0, empty, done = time.time(), 0, 0
-    buf, slots = [], []
-
-    def flush():
-        nonlocal empty, done
-        if not buf:
-            return
-        res = model.predict(buf if len(buf) > 1 else buf[0], imgsz=imgsz,
-                            conf=POSE_CONF, device=device, classes=[0],
-                            verbose=False)
-        for j, r in zip(slots, res):
-            done += 1
-            if r.keypoints is None or len(r.boxes) == 0:
-                empty += 1
-                continue
-            b = r.boxes.xyxy.cpu().numpy()
-            c = r.boxes.conf.cpu().numpy()
-            k = r.keypoints.data.cpu().numpy()
-            o = np.argsort(c)[::-1][:MAX_PERSONS]
-            m = len(o)
-            b, k = b[o].copy(), k[o].copy()
-            cc = c[o]
-            if drop_bottom_edge and crop is not None:
-                keep = b[:, 3] < (crop[3] - crop[1]) - edge_px
-                b, k, cc = b[keep], k[keep], cc[keep]
-                m = len(b)
-                if m == 0:
-                    empty += 1
-                    continue
-            b[:, [0, 2]] = b[:, [0, 2]] * sx + ox
-            b[:, [1, 3]] = b[:, [1, 3]] * sy + oy
-            k[:, :, 0] = k[:, :, 0] * sx + ox
-            k[:, :, 1] = k[:, :, 1] * sy + oy
-            m = min(m, MAX_PERSONS)
-            kp[j, :m], bx[j, :m], cf[j, :m] = k[:m], b[:m], cc[:m]
-        buf.clear()
-        slots.clear()
-
-    want = set(idx)
-    pos = {f: j for j, f in enumerate(idx)}
-    f = 0
-    while f < total:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if f in want:
-            if to_analysis is not None:
-                frame = cv2.resize(frame, to_analysis, interpolation=cv2.INTER_AREA)
-            buf.append(frame)
-            slots.append(pos[f])
-            if len(buf) >= BATCH:
-                # The pose passes are most of a run's wall time, so this is
-                # where Cancel has to be able to land. Once per batch is a
-                # sub-second check-in and costs an already-predicted branch.
-                cancel.check()
-                flush()
-                if done % 2000 < BATCH:
-                    el = time.time() - t0
-                    print(f"  [{label}] {done}/{n}  {done / max(el, 1e-9):.1f} sps"
-                          f"  empty {empty / max(done, 1):.1%}", flush=True)
-        f += 1
-    flush()
-    cap.release()
-
-    # A mid-file decode failure and a clean EOF are the same `ok=False` to the
-    # loop above, so without this a pass that saw the first two minutes of a
-    # forty-minute match returns a perfectly well-formed npz and every stage
-    # downstream reads the silence as "the player was never there".  Every
-    # legacy telemetry pass has this check; this one did not, and a joined
-    # multi-chapter file is exactly the shape of input that provokes it (see
-    # pipeline/videoio.py for the GoPro case that shipped).  `limit` truncates
-    # `total` on purpose, so the expectation is already the right one.
-    assert_decode_complete(label, video, f - 1, total - 1, src_fps)
-
-    stride_src = stride * (1 if to_analysis is None else 1)
-    # The crop travels WITH the detections.  It is the coordinate frame they
-    # were produced in, and `far()` needs it to tell a cached pass that still
-    # covers the right pixels from one aimed at a band the camera has since
-    # left -- a distinction the file's existence alone cannot make.
-    np.savez_compressed(out_path, kp=kp, box=bx, conf=cf,
-                        fps=np.float64(src_fps / stride),
-                        src_fps=np.float64(src_fps),
-                        stride=np.float64(stride_src),
-                        n_src_frames=np.float64(total),
-                        crop=np.asarray(crop if crop is not None else (0, 0, 0, 0),
-                                        dtype=np.int32))
-    per = np.mean(np.sum(np.isfinite(cf), axis=1))
-    print(f"[{label}] {out_path}: {n} samples @ {src_fps / stride:.2f} fps, "
-          f"{per:.2f} persons/sample, {empty / max(n, 1):.1%} empty, "
-          f"{time.time() - t0:.0f}s")
-    return out_path
-
+# ═════════════════════════════════════════════════════════════════════════
+# The two passes
+# ═════════════════════════════════════════════════════════════════════════
 
 def near(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
-    """540p whole-frame proxy, all-persons pose at `pose_fps`."""
+    """All-persons pose over the 540p whole-frame proxy.  Returns the npz path."""
     out = dets_path(video, NEAR_SUFFIX)
     if os.path.isfile(out) and not force:
         print(f"[near-dets] cached: {out}")
         return out
-    # CRF 14, not the default 20: the proxy is shared, and a detector that
-    # wants the ball off it needs the ball to have survived the re-encode.
-    prox = P.ensure_proxy(video, size=C.ANALYSIS_SIZE, crf=14, label="PROXY540")
-    src = cv2.VideoCapture(prox)
-    fps = src.get(cv2.CAP_PROP_FPS)
-    src.release()
-    stride, eff = _stride_for(fps, pose_fps)
-    print(f"[near-dets] {fps:.2f} fps source, stride {stride} -> {eff:.2f} fps")
-    return _pose_pass(prox, out, stride, imgsz=NEAR_IMGSZ, device=device,
+    # crf 14 (not 20): the proxy is shared and must keep small details intact.
+    proxy_path = proxy.ensure_proxy(video, size=court.ANALYSIS_SIZE, crf=14, label="PROXY540")
+    proxy_fps = _video_fps(proxy_path)
+    stride, effective_fps = _stride_for(proxy_fps, pose_fps)
+    print(f"[near-dets] {proxy_fps:.2f} fps source, stride {stride} -> {effective_fps:.2f} fps")
+    return _pose_pass(proxy_path, out, stride, imgsz=NEAR_IMGSZ, device=device,
                       label="NEAR-DETS", limit=limit)
 
 
-def _band_union(video, ref_pts):
-    """Where the reference band's points land in EVERY sampled frame.
+def far(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
+    """All-persons pose over a native-resolution crop of the far baseline band."""
+    out = dets_path(video, FAR_SUFFIX)
+    crop, (scale_x, scale_y) = far_band(video)
+    if os.path.isfile(out) and not force and _cached_far_pass_still_valid(video, out, crop):
+        print(f"[far-dets] cached: {out}")
+        return out
+    print(f"[far-dets] band {crop} in source pixels")
+    band_path = proxy.ensure_crop_proxy(video, crop, crf=14, label="FARBAND")
+    band_fps = _video_fps(band_path)
+    stride, effective_fps = _stride_for(band_fps, pose_fps)
+    print(f"[far-dets] {band_fps:.2f} fps source, stride {stride} -> {effective_fps:.2f} fps")
+    # The crop is in SOURCE pixels; detections are mapped back to the analysis frame.
+    return _pose_pass(band_path, out, stride, imgsz=FAR_IMGSZ, device=device,
+                      offset=(crop[0] / scale_x, crop[1] / scale_y),
+                      scale=(1.0 / scale_x, 1.0 / scale_y),
+                      label="FAR-DETS", limit=limit,
+                      drop_bottom_edge=True, crop=crop)
 
-    Returns a [M, 2] stack in analysis pixels: the reference points themselves
-    plus their position under each camera-track warp.  The caller takes one
-    bounding box around the lot.  With no cached track there is one warp, the
-    identity, and this returns `ref_pts` unchanged.
+
+def _cached_far_pass_still_valid(video, dets_npz, crop):
+    """Was the cached far pass run over the band we would use now?
+
+    The band widens when the camera track finds a jostle, and a pass over the
+    old band silently misses the far player.  A file too old to record its
+    crop is trusted only when the camera never moved (then the band cannot
+    have changed).
     """
-    from pipeline.anya2 import camera as CAM
-    tr = CAM.load(video)
-    if tr.is_identity:
-        return ref_pts
-    inv = np.linalg.inv(tr.W)
-    # Only the EXTREMES of the track can widen a bounding box, but which sample
-    # is extreme differs per corner, so all of them are transformed.  It is 18
-    # points against a few thousand 3x3s -- milliseconds, once per video.
-    outs = [ref_pts]
-    p = ref_pts.reshape(-1, 1, 2)
-    for i in range(len(inv)):
-        outs.append(cv2.perspectiveTransform(p, inv[i]).reshape(-1, 2))
-    return np.concatenate(outs, axis=0)
-
-
-# How far above the ground the far band must reach, in metres.  A standing
-# player is ~1.8 m; a server at the trophy has the racket tip near 2.6 m, and
-# THAT is the far-serve signal -- a band that clips the raised arm deletes the
-# thing it exists to capture.
-FAR_BAND_UP_M = 2.8
-FAR_BAND_PAD_M = 4.0      # along the court, either side of the far baseline
-
-
-def far_band(video, pad_m=FAR_BAND_PAD_M, up_m=FAR_BAND_UP_M):
-    """Native-res crop rectangle around the far baseline, in SOURCE pixels.
-
-    Derived from the court homography rather than clicked: the far baseline is
-    a known line in court metres, so its image position is already known, and
-    asking the user for a second rectangle would be asking for something the
-    calibration already contains.
-
-    HEIGHT IS NOT FORESHORTENING.  The homography is a GROUND-plane map, so it
-    can place the baseline but cannot project a standing player's head -- there
-    is no height in it.  Taking the band from the ground strip alone gives ~55
-    px on a 4K clip, which is a third of a far player and none of a raised arm.
-    So the vertical extent is derived instead from the image SCALE at that
-    depth: the band's own width spans a known number of court metres, giving
-    px-per-metre there, and the band grows upward by `up_m` of them.  That
-    scales with the camera instead of being a pixel constant tuned on one clip.
-
-    THE BAND IS THE UNION OVER THE WHOLE CAMERA TRACK, not the band at
-    calibration time.  This crop becomes a fixed ffmpeg rectangle, and ffmpeg
-    cannot be asked for a rectangle that moves; a far player who leaves it is
-    not mis-projected, they are absent, and no amount of correct geometry
-    downstream brings them back.  So every sampled warp is applied to the
-    reference band and the crop is taken around all of them at once.  Paying for
-    a slightly larger decode is the cheap side of that trade -- and on a camera
-    that never moved the union is the reference band exactly.
-    """
-    H = C.load_homography(video)
-    Hi = np.linalg.inv(H)
-    xs = np.linspace(C.X_LO, C.X_HI, 9)
-    ys = [C.COURT_L - pad_m, C.COURT_L + pad_m]
-    pts = np.array([[x, y] for y in ys for x in xs], dtype=np.float64)
-    img = cv2.perspectiveTransform(pts.reshape(-1, 1, 2), Hi).reshape(-1, 2)
-    ref_img = img
-    img = _band_union(video, img)
-
-    probe = P.probe_video(video)
-    W, Hh = int(probe["width"]), int(probe["height"])
-    ax, ay = C.ANALYSIS_SIZE
-    sx, sy = W / ax, Hh / ay
-    x1 = max(0, int(np.floor(img[:, 0].min() * sx)))
-    x2 = min(W, int(np.ceil(img[:, 0].max() * sx)))
-    y1 = max(0, int(np.floor(img[:, 1].min() * sy)))
-    y2 = min(Hh, int(np.ceil(img[:, 1].max() * sy)))
-
-    # px-per-metre comes from the REFERENCE band's width, not the union's: the
-    # union is wider than the court by however far the camera moved, and using
-    # it here would inflate the upward growth by that same error.
-    px_per_m = ((ref_img[:, 0].max() - ref_img[:, 0].min()) * sx) / (C.X_HI - C.X_LO)
-    y1 = max(0, int(y1 - round(up_m * px_per_m)))
-    return (x1, y1, x2, y2), (sx, sy)
+    from pipeline.anya2 import camera
+    cached_crop = _crop_of(dets_npz)
+    if cached_crop == tuple(crop) or (cached_crop is None and camera.load(video).is_identity):
+        return True
+    print(f"[far-dets] cached pass covers {cached_crop}, band is now "
+          f"{tuple(crop)} -- re-running")
+    return False
 
 
 def _crop_of(dets_npz):
-    """The crop a cached pose pass was run over, or None for an old file."""
+    """The crop a cached pose pass recorded, or None for an older file."""
     try:
         with np.load(dets_npz, allow_pickle=False) as z:
             if "crop" not in z:
@@ -371,55 +138,206 @@ def _crop_of(dets_npz):
         return None
 
 
-def far(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
-    """Native-resolution far-baseline band, all-persons pose at `pose_fps`."""
-    out = dets_path(video, FAR_SUFFIX)
-    crop, (sx, sy) = far_band(video)
-    if os.path.isfile(out) and not force:
-        # Existence is not freshness.  The band widens the first time a camera
-        # track finds a jostle, and a cached pass over the OLD band is missing
-        # exactly the frames the widening exists to recover -- silently, since
-        # a missing far player looks the same as a far player who is not there.
-        cached_crop = _crop_of(out)
-        # A file written before the crop was recorded reports None.  That is
-        # only ambiguous when the band could have MOVED: with a static camera
-        # track the band is the calibration band, which is what any older file
-        # was cut from, so the cache is kept rather than charging every existing
-        # video a fresh far pose pass for a camera that never moved.
-        from pipeline.anya2 import camera as CAM
-        if cached_crop == tuple(crop) or (cached_crop is None and CAM.load(video).is_identity):
-            print(f"[far-dets] cached: {out}")
-            return out
-        print(f"[far-dets] cached pass covers {cached_crop}, band is now "
-              f"{tuple(crop)} -- re-running")
-    print(f"[far-dets] band {crop} in source pixels")
-    prox = P.ensure_crop_proxy(video, crop, crf=14, label="FARBAND")
-    src = cv2.VideoCapture(prox)
-    fps = src.get(cv2.CAP_PROP_FPS)
-    src.release()
-    stride, eff = _stride_for(fps, pose_fps)
-    print(f"[far-dets] {fps:.2f} fps source, stride {stride} -> {eff:.2f} fps")
-    # imgsz 768, not 960.  The far band is ~730 px wide, so 768 is essentially
-    # native and 960 only pays to letterbox padding.  Measured on Data/23's band:
-    #
-    #     imgsz 960   52.6 ms/frame   1.02 persons/frame
-    #     imgsz 768   35.2 ms/frame   1.00 persons/frame   <-- here
-    #     imgsz 640   26.3 ms/frame   0.06 persons/frame   <-- collapses
-    #
-    # A third off the cost for no lost detections, and a hard cliff immediately
-    # below: at 640 the band is downscaled and the far player falls under the
-    # model's detection size, which is the same scale limit that made a
-    # whole-frame 540p pass useless for the far side in the first place.
-    # Crop pixels are SOURCE pixels; map them back to the analysis frame.
-    return _pose_pass(prox, out, stride, imgsz=FAR_IMGSZ, device=device,
-                      offset=(crop[0] / sx, crop[1] / sy),
-                      scale=(1.0 / sx, 1.0 / sy),
-                      label="FAR-DETS", limit=limit,
-                      drop_bottom_edge=True, crop=crop)
+def _video_fps(path):
+    cap = cv2.VideoCapture(path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    return fps
+
+
+def _stride_for(src_fps, pose_fps):
+    """(integer stride >= 1, the effective rate it gives)."""
+    stride = max(1, int(round(src_fps / float(pose_fps))))
+    return stride, src_fps / stride
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# The far band
+# ═════════════════════════════════════════════════════════════════════════
+
+def far_band(video, pad_m=FAR_BAND_PAD_M, up_m=FAR_BAND_UP_M):
+    """Crop rectangle (x1, y1, x2, y2) around the far baseline, in SOURCE px,
+    plus (scale_x, scale_y) = source px per analysis px.
+
+      1. Take a grid of court points along the far baseline +/- `pad_m`, and
+         project them into the image with the clicked homography.
+      2. Add where those points land under every camera-track warp, so the
+         fixed crop covers everywhere the camera went (`_band_union`).
+      3. Grow the top edge by `up_m` metres, using px-per-metre measured across
+         the band's width (the ground homography carries no height).
+    """
+    H = court.load_homography(video)
+    H_inv = np.linalg.inv(H)
+    xs = np.linspace(court.X_LO, court.X_HI, 9)
+    ys = [court.COURT_L - pad_m, court.COURT_L + pad_m]
+    court_points = np.array([[x, y] for y in ys for x in xs], dtype=np.float64)
+    ref_image_points = cv2.perspectiveTransform(court_points.reshape(-1, 1, 2), H_inv).reshape(-1, 2)
+    all_image_points = _band_union(video, ref_image_points)
+
+    probe = proxy.probe_video(video)
+    src_w, src_h = int(probe["width"]), int(probe["height"])
+    analysis_w, analysis_h = court.ANALYSIS_SIZE
+    scale_x, scale_y = src_w / analysis_w, src_h / analysis_h
+    x1 = max(0, int(np.floor(all_image_points[:, 0].min() * scale_x)))
+    x2 = min(src_w, int(np.ceil(all_image_points[:, 0].max() * scale_x)))
+    y1 = max(0, int(np.floor(all_image_points[:, 1].min() * scale_y)))
+    y2 = min(src_h, int(np.ceil(all_image_points[:, 1].max() * scale_y)))
+
+    # From the REFERENCE band's width, not the union's (which camera motion inflates).
+    px_per_m = (((ref_image_points[:, 0].max() - ref_image_points[:, 0].min()) * scale_x)
+                / (court.X_HI - court.X_LO))
+    y1 = max(0, int(y1 - round(up_m * px_per_m)))
+    return (x1, y1, x2, y2), (scale_x, scale_y)
+
+
+def _band_union(video, ref_points):
+    """`ref_points` plus where they land under every camera-track warp. [M, 2]."""
+    from pipeline.anya2 import camera
+    track = camera.load(video)
+    if track.is_identity:
+        return ref_points
+    W_inv = np.linalg.inv(track.W)
+    stacked = [ref_points]
+    as_cv = ref_points.reshape(-1, 1, 2)
+    for i in range(len(W_inv)):
+        stacked.append(cv2.perspectiveTransform(as_cv, W_inv[i]).reshape(-1, 2))
+    return np.concatenate(stacked, axis=0)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# One pose pass
+# ═════════════════════════════════════════════════════════════════════════
+
+def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
+               offset=(0.0, 0.0), scale=(1.0, 1.0), label="POSE", limit=None,
+               drop_bottom_edge=False, edge_px=FAR_BAND_EDGE_PX, crop=None):
+    """All-persons pose on every `stride`-th frame of `video`, written decimated.
+
+    offset/scale  map detections from this video's pixels into the 960x540
+                  analysis frame (needed for the far crop).
+    drop_bottom_edge  discard people whose box bottom touches the crop's lower
+                  edge: they are cut off by the crop, so the box bottom is not
+                  their feet and would project somewhere they never stood.
+    """
+    from ultralytics import YOLO
+    model = YOLO(POSE_MODEL)
+
+    cap = open_video(video, label)
+    src_fps = cap.get(cv2.CAP_PROP_FPS)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if limit:
+        total = min(total, limit)
+    sampled_frames = list(range(0, total, stride))
+    n_samples = len(sampled_frames)
+    row_of_frame = {f: row for row, f in enumerate(sampled_frames)}
+
+    keypoints = np.full((n_samples, MAX_PERSONS, N_KEYPOINTS, 3), np.nan, dtype=np.float32)
+    boxes = np.full((n_samples, MAX_PERSONS, 4), np.nan, dtype=np.float32)
+    confidences = np.full((n_samples, MAX_PERSONS), np.nan, dtype=np.float32)
+    crop_height = (crop[3] - crop[1]) if crop is not None else None
+
+    started = time.time()
+    progress = {"done": 0, "empty": 0}
+    batch_frames, batch_rows = [], []
+
+    def run_batch():
+        if not batch_frames:
+            return
+        results = model.predict(batch_frames if len(batch_frames) > 1 else batch_frames[0],
+                                imgsz=imgsz, conf=POSE_CONF, device=device,
+                                classes=[0], verbose=False)
+        for row, result in zip(batch_rows, results):
+            progress["done"] += 1
+            people = _people_in_result(result, drop_bottom_edge, crop_height, edge_px)
+            if people is None:
+                progress["empty"] += 1
+                continue
+            frame_boxes, frame_kps, frame_confs = _to_analysis_frame(*people, offset, scale)
+            m = min(len(frame_boxes), MAX_PERSONS)
+            keypoints[row, :m] = frame_kps[:m]
+            boxes[row, :m] = frame_boxes[:m]
+            confidences[row, :m] = frame_confs[:m]
+        batch_frames.clear()
+        batch_rows.clear()
+
+    wanted = set(sampled_frames)
+    frame = 0
+    while frame < total:
+        ok, image = cap.read()
+        if not ok:
+            break
+        if frame in wanted:
+            if to_analysis is not None:
+                image = cv2.resize(image, to_analysis, interpolation=cv2.INTER_AREA)
+            batch_frames.append(image)
+            batch_rows.append(row_of_frame[frame])
+            if len(batch_frames) >= BATCH:
+                cancel.check()      # where a Cancel lands during the long passes
+                run_batch()
+                done = progress["done"]
+                if done % 2000 < BATCH:
+                    elapsed = time.time() - started
+                    print(f"  [{label}] {done}/{n_samples}  {done / max(elapsed, 1e-9):.1f} sps"
+                          f"  empty {progress['empty'] / max(done, 1):.1%}", flush=True)
+        frame += 1
+    run_batch()
+    cap.release()
+
+    # A decode failure mid-file looks like a clean end of file to the loop
+    # above; without this check the rest of the match would silently read as
+    # "nobody there".
+    assert_decode_complete(label, video, frame - 1, total - 1, src_fps)
+
+    np.savez_compressed(out_path, kp=keypoints, box=boxes, conf=confidences,
+                        fps=np.float64(src_fps / stride),
+                        src_fps=np.float64(src_fps),
+                        stride=np.float64(stride),
+                        n_src_frames=np.float64(total),
+                        # The crop travels with the detections so far() can tell
+                        # whether a cached pass still covers the right band.
+                        crop=np.asarray(crop if crop is not None else (0, 0, 0, 0),
+                                        dtype=np.int32))
+    persons_per_sample = np.mean(np.sum(np.isfinite(confidences), axis=1))
+    print(f"[{label}] {out_path}: {n_samples} samples @ {src_fps / stride:.2f} fps, "
+          f"{persons_per_sample:.2f} persons/sample, "
+          f"{progress['empty'] / max(n_samples, 1):.1%} empty, "
+          f"{time.time() - started:.0f}s")
+    return out_path
+
+
+def _people_in_result(result, drop_bottom_edge, crop_height, edge_px):
+    """(boxes, keypoints, confidences) of one frame's people, most confident
+    first, or None if there is nobody (left)."""
+    if result.keypoints is None or len(result.boxes) == 0:
+        return None
+    frame_boxes = result.boxes.xyxy.cpu().numpy()
+    frame_confs = result.boxes.conf.cpu().numpy()
+    frame_kps = result.keypoints.data.cpu().numpy()
+    order = np.argsort(frame_confs)[::-1][:MAX_PERSONS]
+    frame_boxes, frame_kps = frame_boxes[order].copy(), frame_kps[order].copy()
+    frame_confs = frame_confs[order]
+    if drop_bottom_edge and crop_height is not None:
+        keep = frame_boxes[:, 3] < crop_height - edge_px
+        frame_boxes, frame_kps, frame_confs = frame_boxes[keep], frame_kps[keep], frame_confs[keep]
+        if len(frame_boxes) == 0:
+            return None
+    return frame_boxes, frame_kps, frame_confs
+
+
+def _to_analysis_frame(frame_boxes, frame_kps, frame_confs, offset, scale):
+    """Map one frame's detections from this video's pixels to analysis pixels."""
+    offset_x, offset_y = offset
+    scale_x, scale_y = scale
+    frame_boxes[:, [0, 2]] = frame_boxes[:, [0, 2]] * scale_x + offset_x
+    frame_boxes[:, [1, 3]] = frame_boxes[:, [1, 3]] * scale_y + offset_y
+    frame_kps[:, :, 0] = frame_kps[:, :, 0] * scale_x + offset_x
+    frame_kps[:, :, 1] = frame_kps[:, :, 1] * scale_y + offset_y
+    return frame_boxes, frame_kps, frame_confs
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[3])
+    ap = argparse.ArgumentParser(description="The perception passes anya2's "
+                                 "detectors read, cached beside the video.")
     ap.add_argument("video")
     ap.add_argument("--roi", choices=["near", "far", "both"], default="near")
     ap.add_argument("--device", default="mps")
