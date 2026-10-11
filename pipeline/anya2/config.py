@@ -44,8 +44,8 @@ class PerceiveConfig:
 class NearServeConfig:
     """Near-side serve detector (near_serve.py)."""
     threshold: Optional[float] = None      # default 0.70
-    lead_s: Optional[float] = None         # default 1.63, time from serve
-                                           # motion back to the labelled start
+    lead_s: Optional[float] = None         # default 1.75, time from the trophy
+                                           # peak back to the labelled start
     refract_s: Optional[float] = None      # default 3.0, min gap between serves
     require_court: bool = True             # server must stand in the serve
                                            # zone; off lets smashes through
