@@ -77,7 +77,7 @@ class ReelConfig:
     next_start_guard_s: float = 4.0  # a segment's end stays this far before the next serve
 
     # ── 10: smoothing (pre/post roll is the biggest lever on what survives) ──
-    pre_roll_s: float = 1.0          # footage kept before the serve
+    pre_roll_s: float = 1.5          # footage kept before the serve (QUIRKS #5)
     post_roll_s: float = 1.0         # ...and after the end
     merge_gap_s: float = 6.0         # segments closer than this are joined
     min_segment_s: float = 4.0       # shorter segments are dropped (or padded)
