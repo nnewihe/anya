@@ -27,8 +27,8 @@ reported when p >= THRESHOLD (0.75).
 A separate TOSS score (the tossing arm's own motion) is attached to each serve
 but never folded into p; the orchestrator uses it (rule 1).
 
-Reported time: trophy-run START minus SERVE_LEAD_S (0.90 s).  Note this is the
-run start, not the peak (QUIRKS.md #5).
+Reported time: trophy-run START minus SERVE_LEAD_S (0.90 s).  (The near side
+uses the trophy PEAK; each lead was fitted to its own anchor.)
 
 Pose helpers: anya2's own (fill_interior_gaps / keypoint_xy / midpoint_both_required).
 Evidence and history: docs/anya2/NOTES.md, "far_serve.py".
@@ -236,10 +236,9 @@ def serve_features(kp, bbox, fps: float,
     still = 1.0 - signals.ramp(fastest_wrist, READY_STILL_BH_S * 0.5, READY_STILL_BH_S * 1.6)
     carried_low = 1.0 - signals.ramp(hi_elev, READY_HI_MAX_BH, READY_HI_MAX_BH + 0.14)
     ready_raw = carried_low * still
-    window = max(1, int(round(READY_WIN_S * fps)))
-    # Plain moving mean with NaN counted as 0, unlike the near side (QUIRKS.md #9).
-    ready = ready_raw if window <= 1 else np.convolve(
-        np.nan_to_num(ready_raw, nan=0.0), np.ones(window) / window, mode="same")
+    # Missing samples are skipped, not counted as 0: a tracking dropout is not
+    # evidence that the player was out of the ready stance.
+    ready = signals.nan_skipping_moving_mean(ready_raw, max(1, int(round(READY_WIN_S * fps))))
 
     # ── trophy: (higher wrist over head) * (lower wrist near shoulders) ──
     dilate = max(1, int(round(TROPHY_DILATE_S * fps)) * 2 + 1)
