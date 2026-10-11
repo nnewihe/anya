@@ -48,13 +48,15 @@ enum ReelExporter {
             throw ExportError.failed("could not make a video track")
         }
         let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-        var sources: [Int: (video: AVAssetTrack, audio: AVAssetTrack?)] = [:]
+        // The assets themselves must stay referenced: a track does not keep
+        // its asset alive, and inserting from a freed asset's track fails (-12780).
+        var sources: [Int: (asset: AVURLAsset, video: AVAssetTrack, audio: AVAssetTrack?)] = [:]
         var cursor = CMTime.zero
         for cut in cuts {
             if sources[cut.part] == nil {
                 let asset = AVURLAsset(url: MatchStore.file(manifest.parts[cut.part].file, of: manifest.id))
                 guard let video = try await asset.loadTracks(withMediaType: .video).first else { throw ExportError.noVideo }
-                sources[cut.part] = (video, try await asset.loadTracks(withMediaType: .audio).first)
+                sources[cut.part] = (asset, video, try await asset.loadTracks(withMediaType: .audio).first)
             }
             let source = sources[cut.part]!
             let range = CMTimeRange(start: CMTime(seconds: cut.start, preferredTimescale: 600),

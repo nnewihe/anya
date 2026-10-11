@@ -41,7 +41,7 @@ BINARY = os.path.join(PACKAGE, ".build", "release", "anya2-perceive")
 MODEL = os.path.join(HERE, "..", "AnyaTennis", "Resources", "PoseModel.mlpackage")
 
 
-def swift_detections(video, work, stem, compute, model=MODEL):
+def swift_detections(video, work, stem, compute, model=MODEL, extra=()):
     """Run anya2-perceive and write its people as the two dets npz files."""
     with np.load(os.path.join(work, stem + perceive.FAR_SUFFIX)) as z:
         crop = [int(v) for v in z["crop"]]
@@ -52,7 +52,7 @@ def swift_detections(video, work, stem, compute, model=MODEL):
     far_video = os.path.join(work, stem + "_farband.mp4")
     out = os.path.join(work, "swift")
     subprocess.run([BINARY, model, near_video, far_video, ",".join(map(str, crop)),
-                    f"{probe['width']},{probe['height']}", out, compute], check=True,
+                    f"{probe['width']},{probe['height']}", out, compute, *extra], check=True,
                    stdout=subprocess.DEVNULL)
     for name, suffix, extra in (("near", perceive.NEAR_SUFFIX, (0, 0, 0, 0)), ("far", perceive.FAR_SUFFIX, crop)):
         raw = open(os.path.join(out, name + ".bin"), "rb").read()
@@ -93,6 +93,8 @@ def main():
     parser.add_argument("out")
     parser.add_argument("clips", nargs="*", default=CLIPS)
     parser.add_argument("--cpu", action="store_true", help="Core ML on the CPU only (default: Neural Engine allowed)")
+    parser.add_argument("--bt601", action="store_true",
+                        help="decode with the BT.601 matrix, as ffmpeg/OpenCV do for perceive.py")
     parser.add_argument("--model", default=MODEL, help="an .mlpackage (default: the shipped fp16 model)")
     args = parser.parse_args()
     with open(args.out, "a") as results:
@@ -107,7 +109,8 @@ def main():
                     shutil.copy(os.path.join(clip_dir, stem + suffix), work)
             workdir.set_work_dir(work)
             row = {"clip": clip, "python": score(work, stem, stages_5_to_8(video, work, stem), clip_dir)}
-            swift_detections(video, work, stem, "cpu" if args.cpu else "all", args.model)
+            swift_detections(video, work, stem, "cpu" if args.cpu else "all", args.model,
+                             ("bt601",) if args.bt601 else ())
             row["swift"] = score(work, stem, stages_5_to_8(video, work, stem), clip_dir)
             print(json.dumps(row), flush=True)
             results.write(json.dumps(row) + "\n")

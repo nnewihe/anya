@@ -193,6 +193,9 @@ final class MatchController {
         } catch {
             manifest.state = .failed
             manifest.lastError = error.localizedDescription
+            #if DEBUG
+            print("[finish] failed: \(String(reflecting: error))")
+            #endif
             self.error = error.localizedDescription
         }
         finishingStep = ""

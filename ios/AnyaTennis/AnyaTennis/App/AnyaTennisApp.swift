@@ -77,6 +77,14 @@ final class AppModel {
         matches = MatchStore.all()
         #if DEBUG
         if let replay = ReplayRequest.fromLaunchArguments() { await runReplay(replay) }
+        if UserDefaults.standard.bool(forKey: "AnyaFinishFailed") {
+            for match in matches where match.state == .failed || match.state == .paused {
+                print("[replay] finishing \(match.id) (\(match.state.rawValue))")
+                await finish(match)
+                print("[replay] state \(current?.manifest.state.rawValue ?? "?"); reel \(String(describing: current?.manifest.reel)); "
+                      + "error \(current?.manifest.lastError ?? "none")")
+            }
+        }
         #endif
         NotificationCenter.default.addObserver(forName: AVCaptureSession.wasInterruptedNotification,
                                                object: camera.session, queue: .main) { [weak self] _ in
