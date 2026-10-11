@@ -9,6 +9,7 @@
 // them off, so the box bottom is not their feet). The order matters and is
 // main's: keep the top 8 FIRST, then drop.
 import Anya2Engine
+import CoreML
 import CoreVideo
 import Foundation
 
@@ -79,15 +80,26 @@ public struct PerceivedSample {
 }
 
 /// Runs the two passes on frames from the camera (or a file).
+///
+/// One model INSTANCE per pass: Core ML re-plans whenever an instance's input
+/// shape changes, and alternating 640x384 / 960xH on one instance cost 60 ms
+/// a sample on the Neural Engine instead of 6.6 ms (M-series Mac, measured).
 public final class Perceiver {
-    public let model: PoseModel
+    public let nearModel: PoseModel
+    public let farModel: PoseModel
     public let band: FarBand
     private let nearGeometry: LetterboxGeometry
     private let farGeometry: LetterboxGeometry
     private let farToAnalysis: (scaleX: Float, offsetX: Float, scaleY: Float, offsetY: Float)
 
-    public init(model: PoseModel, band: FarBand) {
-        self.model = model
+    /// `compiledModelURL`: PoseModel.mlmodelc.
+    public convenience init(compiledModelURL: URL, computeUnits: MLComputeUnits = .all, band: FarBand) throws {
+        self.init(nearModel: try PoseModel(compiledModelURL: compiledModelURL, computeUnits: computeUnits),
+                  farModel: try PoseModel(compiledModelURL: compiledModelURL, computeUnits: computeUnits), band: band)
+    }
+
+    public init(nearModel: PoseModel, farModel: PoseModel, band: FarBand) {
+        self.nearModel = nearModel; self.farModel = farModel
         self.band = band
         nearGeometry = LetterboxGeometry(sourceWidth: Court.ANALYSIS_WIDTH, sourceHeight: Court.ANALYSIS_HEIGHT,
                                          imageSize: PerceiveRules.NEAR_IMGSZ)
@@ -105,8 +117,8 @@ public final class Perceiver {
         guard let nearInput = letterbox(nearFrame, geometry: nearGeometry),
               let farInput = letterbox(farBandFrame, geometry: farGeometry)
         else { throw PerceiveError.couldNotAllocateBuffer }
-        let near = try model.people(in: nearInput, geometry: nearGeometry)
-        let far = try model.people(in: farInput, geometry: farGeometry)
+        let near = try nearModel.people(in: nearInput, geometry: nearGeometry)
+        let far = try farModel.people(in: farInput, geometry: farGeometry)
         return PerceivedSample(near: PassRow(near),
                                far: PassRow(far, bottomEdge: Double(band.height), toAnalysis: farToAnalysis))
     }

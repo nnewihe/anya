@@ -20,7 +20,18 @@ python3 opencv/platforms/apple/build_xcframework.py --out build \
     --without=dnn --without=ml --without=objdetect --without=photo --without=stitching --without=video \
     --without=videoio --without=highgui --without=imgcodecs --without=gapi --without=objc --without=python \
     --without=java --without=js --without=ts --disable-bitcode -- -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+# Repackage as static libraries + headers: the build's xcframework holds
+# static .frameworks, which Xcode would wrongly embed in the app (the
+# simulator then refuses to install it).
+rm -rf static && args=()
+for slice in ios-arm64 ios-arm64-simulator macos-arm64; do
+    framework="build/opencv2.xcframework/$slice/opencv2.framework"
+    mkdir -p "static/$slice/include"
+    cp -RL "$framework/Headers" "static/$slice/include/opencv2"
+    cp "$framework/opencv2" "static/$slice/libopencv2.a"
+    args+=(-library "static/$slice/libopencv2.a" -headers "static/$slice/include")
+done
 mkdir -p "$DEST"
 rm -rf "$DEST/opencv2.xcframework"
-cp -R build/opencv2.xcframework "$DEST/"
+xcodebuild -create-xcframework "${args[@]}" -output "$DEST/opencv2.xcframework"
 echo "installed $DEST/opencv2.xcframework"

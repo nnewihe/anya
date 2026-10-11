@@ -20,6 +20,10 @@ public struct LoggedSample {
     /// nil = not a camera sample; .some(nil) = registration failed.
     public let cameraWarp: Homography??
     public let perceived: PerceivedSample
+
+    public init(sourceFrame: Int, cameraWarp: Homography??, perceived: PerceivedSample) {
+        self.sourceFrame = sourceFrame; self.cameraWarp = cameraWarp; self.perceived = perceived
+    }
 }
 
 public final class PerceptionLog {
@@ -91,7 +95,7 @@ public final class PerceptionLog {
             let size = MemoryLayout<T>.size
             guard offset + size <= data.count else { return nil }
             var value: T = 0
-            withUnsafeMutableBytes(of: &value) { data.copyBytes(to: $0, from: (data.startIndex + offset)..<(data.startIndex + offset + size)) }
+            _ = withUnsafeMutableBytes(of: &value) { data.copyBytes(to: $0, from: (data.startIndex + offset)..<(data.startIndex + offset + size)) }
             offset += size
             return T(littleEndian: value)
         }

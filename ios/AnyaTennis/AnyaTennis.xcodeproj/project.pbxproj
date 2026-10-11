@@ -1,0 +1,498 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		024005EDDF50F6FF4F3072C0 /* ReelExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12209BF467475B042C9D8C60 /* ReelExporter.swift */; };
+		2DEDEDD4F3FAEC37E565437C /* PoseModel.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = 9324D25332D16E7994081A9A /* PoseModel.mlpackage */; };
+		3A1078796CEDB12BD0D07516 /* Anya2Perception in Frameworks */ = {isa = PBXBuildFile; productRef = E2C825D4C82EEBD281EAECB0 /* Anya2Perception */; };
+		3C8C4932796133C8F9ED6937 /* RecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69624E5C1D3AB1F9FA50B97B /* RecordView.swift */; };
+		42C732D86FA87D82F1C89D33 /* CameraSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B734F05EAD8E557E2E660E28 /* CameraSession.swift */; };
+		4F254144801E0794B762C7A4 /* ProxyRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56AE5F75FD39ECF287EDCD6 /* ProxyRecorder.swift */; };
+		583FBD1876F1ECF500ACE5F0 /* CameraPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E77552294D4540A182C382 /* CameraPreview.swift */; };
+		61A8E74F4F0F1F3CEB7CC831 /* MatchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1FABC764EF7BFAB27FF4B72 /* MatchStore.swift */; };
+		80416AE2F1B182DDD028C3C3 /* Anya2Engine in Frameworks */ = {isa = PBXBuildFile; productRef = FEB7C6CD54AA582B5A2D0B32 /* Anya2Engine */; };
+		99609078DB8BF5EDFB1822EC /* CalibrationFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB12216385564D1316AFE2D1 /* CalibrationFrame.swift */; };
+		9D380A1688F4D86680C39BA3 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 46B8C811E9BEFEFCBBDA85F0 /* GoogleSignIn */; };
+		9EF4F2494A628AB069B66588 /* MatchDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D6A34AC2FAF3330F5128784 /* MatchDetailView.swift */; };
+		AA94398728B561A823CA6A73 /* AnalysisScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1DD78041645BB10B534FD12 /* AnalysisScheduler.swift */; };
+		ACBF1FBFE06B2B040C91B7EC /* YouTubeUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EBAD796CBCA3626B10CA416 /* YouTubeUploader.swift */; };
+		B1D618BAB6E1B9827C656A4E /* MasterRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2A47F3F1A782C2D1DBEE5BD /* MasterRecorder.swift */; };
+		B9CEC581BCD840184F9B4313 /* CalibrateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9176C026AB92BC938CBD2E62 /* CalibrateView.swift */; };
+		BF47B72131D133381AF9C405 /* MatchManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DB2B5251C6026ECF2832646 /* MatchManifest.swift */; };
+		C2EFFFF1E3C83B2EC5F3E49C /* MatchController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09BD757128CDEBFD41F4E855 /* MatchController.swift */; };
+		C8F13C0A8D752651444E9BDA /* FileReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21CA2E6846830BF1BFB7D36 /* FileReplay.swift */; };
+		DA0C9971906ED704372B10E0 /* AnyaTennisApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AD5F216CA6C96C013532FB7 /* AnyaTennisApp.swift */; };
+		DBB51E99CF236268B844DC26 /* MatchListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62DA2E3C788CE8B56189F421 /* MatchListView.swift */; };
+		F3185DFA386E733CF51ABA6A /* FrameScaler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0BC5FED53429D6BE5851B57 /* FrameScaler.swift */; };
+		F57D474AD261648640FFD44B /* PhotosSaver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 791471E97A7CAB9788E5F42E /* PhotosSaver.swift */; };
+		FB61B332DDA7F1A54D62E0A6 /* FinishView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D157928254279C3D463D68C6 /* FinishView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		09BD757128CDEBFD41F4E855 /* MatchController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MatchController.swift; sourceTree = "<group>"; };
+		0DB2B5251C6026ECF2832646 /* MatchManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MatchManifest.swift; sourceTree = "<group>"; };
+		0EBE873FFB297A967D66DA8A /* Anya2Engine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Anya2Engine; path = Packages/Anya2Engine; sourceTree = SOURCE_ROOT; };
+		12209BF467475B042C9D8C60 /* ReelExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelExporter.swift; sourceTree = "<group>"; };
+		167C76EC496D4A58C97487B0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		2B8BE258F71D968A78551B90 /* AnyaTennis.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AnyaTennis.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4AD5F216CA6C96C013532FB7 /* AnyaTennisApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnyaTennisApp.swift; sourceTree = "<group>"; };
+		62DA2E3C788CE8B56189F421 /* MatchListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MatchListView.swift; sourceTree = "<group>"; };
+		69624E5C1D3AB1F9FA50B97B /* RecordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordView.swift; sourceTree = "<group>"; };
+		6D6A34AC2FAF3330F5128784 /* MatchDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MatchDetailView.swift; sourceTree = "<group>"; };
+		6EBAD796CBCA3626B10CA416 /* YouTubeUploader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeUploader.swift; sourceTree = "<group>"; };
+		791471E97A7CAB9788E5F42E /* PhotosSaver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosSaver.swift; sourceTree = "<group>"; };
+		9176C026AB92BC938CBD2E62 /* CalibrateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrateView.swift; sourceTree = "<group>"; };
+		9324D25332D16E7994081A9A /* PoseModel.mlpackage */ = {isa = PBXFileReference; path = PoseModel.mlpackage; sourceTree = "<group>"; };
+		A1DD78041645BB10B534FD12 /* AnalysisScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisScheduler.swift; sourceTree = "<group>"; };
+		A21CA2E6846830BF1BFB7D36 /* FileReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileReplay.swift; sourceTree = "<group>"; };
+		A2A47F3F1A782C2D1DBEE5BD /* MasterRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterRecorder.swift; sourceTree = "<group>"; };
+		B0E77552294D4540A182C382 /* CameraPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPreview.swift; sourceTree = "<group>"; };
+		B734F05EAD8E557E2E660E28 /* CameraSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSession.swift; sourceTree = "<group>"; };
+		BB12216385564D1316AFE2D1 /* CalibrationFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationFrame.swift; sourceTree = "<group>"; };
+		C1FABC764EF7BFAB27FF4B72 /* MatchStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MatchStore.swift; sourceTree = "<group>"; };
+		C56AE5F75FD39ECF287EDCD6 /* ProxyRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyRecorder.swift; sourceTree = "<group>"; };
+		D157928254279C3D463D68C6 /* FinishView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinishView.swift; sourceTree = "<group>"; };
+		F0BC5FED53429D6BE5851B57 /* FrameScaler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FrameScaler.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		225D86AC9EAF04AB10460EFF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				80416AE2F1B182DDD028C3C3 /* Anya2Engine in Frameworks */,
+				3A1078796CEDB12BD0D07516 /* Anya2Perception in Frameworks */,
+				9D380A1688F4D86680C39BA3 /* GoogleSignIn in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		01BD6D13B54E47A6B1CA2C60 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				4AD5F216CA6C96C013532FB7 /* AnyaTennisApp.swift */,
+				09BD757128CDEBFD41F4E855 /* MatchController.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		08732DF2BAEE01D6865786AA /* Analysis */ = {
+			isa = PBXGroup;
+			children = (
+				A1DD78041645BB10B534FD12 /* AnalysisScheduler.swift */,
+			);
+			path = Analysis;
+			sourceTree = "<group>";
+		};
+		096440692E81DD8AE1634A13 /* Screens */ = {
+			isa = PBXGroup;
+			children = (
+				9176C026AB92BC938CBD2E62 /* CalibrateView.swift */,
+				B0E77552294D4540A182C382 /* CameraPreview.swift */,
+				D157928254279C3D463D68C6 /* FinishView.swift */,
+				6D6A34AC2FAF3330F5128784 /* MatchDetailView.swift */,
+				62DA2E3C788CE8B56189F421 /* MatchListView.swift */,
+				69624E5C1D3AB1F9FA50B97B /* RecordView.swift */,
+			);
+			path = Screens;
+			sourceTree = "<group>";
+		};
+		6FFBFE3D81D3920821E4BB2F /* Output */ = {
+			isa = PBXGroup;
+			children = (
+				791471E97A7CAB9788E5F42E /* PhotosSaver.swift */,
+				12209BF467475B042C9D8C60 /* ReelExporter.swift */,
+				6EBAD796CBCA3626B10CA416 /* YouTubeUploader.swift */,
+			);
+			path = Output;
+			sourceTree = "<group>";
+		};
+		75CC928B00B44E488667C576 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				0EBE873FFB297A967D66DA8A /* Anya2Engine */,
+			);
+			path = Packages;
+			sourceTree = "<group>";
+		};
+		7C75D65AB714E87FF5D532D6 /* Storage */ = {
+			isa = PBXGroup;
+			children = (
+				BB12216385564D1316AFE2D1 /* CalibrationFrame.swift */,
+				0DB2B5251C6026ECF2832646 /* MatchManifest.swift */,
+				C1FABC764EF7BFAB27FF4B72 /* MatchStore.swift */,
+			);
+			path = Storage;
+			sourceTree = "<group>";
+		};
+		7E55D8B4D6D3E6E21A45135A = {
+			isa = PBXGroup;
+			children = (
+				C17A9C35191A3780BC88DE63 /* AnyaTennis */,
+				75CC928B00B44E488667C576 /* Packages */,
+				D1387FA9B64B4C474987739D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A4D9085753FF4EF123499820 /* Capture */ = {
+			isa = PBXGroup;
+			children = (
+				B734F05EAD8E557E2E660E28 /* CameraSession.swift */,
+				A21CA2E6846830BF1BFB7D36 /* FileReplay.swift */,
+				F0BC5FED53429D6BE5851B57 /* FrameScaler.swift */,
+				A2A47F3F1A782C2D1DBEE5BD /* MasterRecorder.swift */,
+				C56AE5F75FD39ECF287EDCD6 /* ProxyRecorder.swift */,
+			);
+			path = Capture;
+			sourceTree = "<group>";
+		};
+		C17A9C35191A3780BC88DE63 /* AnyaTennis */ = {
+			isa = PBXGroup;
+			children = (
+				167C76EC496D4A58C97487B0 /* Info.plist */,
+				08732DF2BAEE01D6865786AA /* Analysis */,
+				01BD6D13B54E47A6B1CA2C60 /* App */,
+				A4D9085753FF4EF123499820 /* Capture */,
+				6FFBFE3D81D3920821E4BB2F /* Output */,
+				EA5630EC37FE9EE8011765C4 /* Resources */,
+				096440692E81DD8AE1634A13 /* Screens */,
+				7C75D65AB714E87FF5D532D6 /* Storage */,
+			);
+			path = AnyaTennis;
+			sourceTree = "<group>";
+		};
+		D1387FA9B64B4C474987739D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2B8BE258F71D968A78551B90 /* AnyaTennis.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		EA5630EC37FE9EE8011765C4 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				9324D25332D16E7994081A9A /* PoseModel.mlpackage */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		996F4F30673BF3A31F1D06BC /* AnyaTennis */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 32AAEA6478B9EC4D7CBAB5C0 /* Build configuration list for PBXNativeTarget "AnyaTennis" */;
+			buildPhases = (
+				6B2073B209B4E2BAB488300E /* Sources */,
+				225D86AC9EAF04AB10460EFF /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AnyaTennis;
+			packageProductDependencies = (
+				FEB7C6CD54AA582B5A2D0B32 /* Anya2Engine */,
+				E2C825D4C82EEBD281EAECB0 /* Anya2Perception */,
+				46B8C811E9BEFEFCBBDA85F0 /* GoogleSignIn */,
+			);
+			productName = AnyaTennis;
+			productReference = 2B8BE258F71D968A78551B90 /* AnyaTennis.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		49C6E771194DE3BDAE4331AD /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					996F4F30673BF3A31F1D06BC = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = A758D3B6076EFFDB66B61468 /* Build configuration list for PBXProject "AnyaTennis" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 7E55D8B4D6D3E6E21A45135A;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				866DDBC728558C32F3AE6E2E /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+				256CB2D29A3CAD1747617F12 /* XCLocalSwiftPackageReference "Packages/Anya2Engine" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D1387FA9B64B4C474987739D /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				996F4F30673BF3A31F1D06BC /* AnyaTennis */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6B2073B209B4E2BAB488300E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA94398728B561A823CA6A73 /* AnalysisScheduler.swift in Sources */,
+				DA0C9971906ED704372B10E0 /* AnyaTennisApp.swift in Sources */,
+				B9CEC581BCD840184F9B4313 /* CalibrateView.swift in Sources */,
+				99609078DB8BF5EDFB1822EC /* CalibrationFrame.swift in Sources */,
+				583FBD1876F1ECF500ACE5F0 /* CameraPreview.swift in Sources */,
+				42C732D86FA87D82F1C89D33 /* CameraSession.swift in Sources */,
+				C8F13C0A8D752651444E9BDA /* FileReplay.swift in Sources */,
+				FB61B332DDA7F1A54D62E0A6 /* FinishView.swift in Sources */,
+				F3185DFA386E733CF51ABA6A /* FrameScaler.swift in Sources */,
+				B1D618BAB6E1B9827C656A4E /* MasterRecorder.swift in Sources */,
+				C2EFFFF1E3C83B2EC5F3E49C /* MatchController.swift in Sources */,
+				9EF4F2494A628AB069B66588 /* MatchDetailView.swift in Sources */,
+				DBB51E99CF236268B844DC26 /* MatchListView.swift in Sources */,
+				BF47B72131D133381AF9C405 /* MatchManifest.swift in Sources */,
+				61A8E74F4F0F1F3CEB7CC831 /* MatchStore.swift in Sources */,
+				F57D474AD261648640FFD44B /* PhotosSaver.swift in Sources */,
+				2DEDEDD4F3FAEC37E565437C /* PoseModel.mlpackage in Sources */,
+				4F254144801E0794B762C7A4 /* ProxyRecorder.swift in Sources */,
+				3C8C4932796133C8F9ED6937 /* RecordView.swift in Sources */,
+				024005EDDF50F6FF4F3072C0 /* ReelExporter.swift in Sources */,
+				ACBF1FBFE06B2B040C91B7EC /* YouTubeUploader.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		2F887E24A2578391B06600FE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				INFOPLIST_FILE = AnyaTennis/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.build2launch.anyatennis;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		540DFD44ABBC5B339CA4BBDF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		62B13BA6177ED153FFB08F4A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D0484F7B3B7B0A9ECC617DDE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				INFOPLIST_FILE = AnyaTennis/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.build2launch.anyatennis;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.10;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		32AAEA6478B9EC4D7CBAB5C0 /* Build configuration list for PBXNativeTarget "AnyaTennis" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0484F7B3B7B0A9ECC617DDE /* Debug */,
+				2F887E24A2578391B06600FE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A758D3B6076EFFDB66B61468 /* Build configuration list for PBXProject "AnyaTennis" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				62B13BA6177ED153FFB08F4A /* Debug */,
+				540DFD44ABBC5B339CA4BBDF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		256CB2D29A3CAD1747617F12 /* XCLocalSwiftPackageReference "Packages/Anya2Engine" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/Anya2Engine;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		866DDBC728558C32F3AE6E2E /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		46B8C811E9BEFEFCBBDA85F0 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 866DDBC728558C32F3AE6E2E /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		E2C825D4C82EEBD281EAECB0 /* Anya2Perception */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Anya2Perception;
+		};
+		FEB7C6CD54AA582B5A2D0B32 /* Anya2Engine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Anya2Engine;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 49C6E771194DE3BDAE4331AD /* Project object */;
+}

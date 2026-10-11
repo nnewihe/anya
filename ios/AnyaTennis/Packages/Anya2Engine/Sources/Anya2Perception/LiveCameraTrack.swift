@@ -34,6 +34,10 @@ public final class LiveCameraTrack {
     /// The source frame of the latest committed sample, or nil.
     public var committedThroughFrame: Int? { committed.isEmpty ? nil : frames[committed.count - 1] }
 
+    /// The most recent sample's own registration (nil = it failed), before
+    /// fill and smoothing: what the perception log records.
+    public var lastRegisteredWarp: Homography? { registered.last ?? nil }
+
     /// The committed part of the track, for Geometry.
     public var committedTrack: CameraTrack? {
         committed.isEmpty ? nil : CameraTrack(frames: Array(frames.prefix(committed.count)), warps: committed)
