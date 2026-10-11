@@ -1,97 +1,46 @@
 """
 near_end.py
 ===========
-Four near-player point-end signals, alongside the walking classifier that
-already ships.
+Four "the point is over" signals for the NEAR player, from pose alone.  Each is
+per pose sample, in [0, 1]:
 
-The walking classifier answers one question — "is this person going somewhere"
-— and it is the only near-player evidence the energy policy reads.  It misses
-the whole family of end-of-point behaviour that happens WITHOUT translation: the
-player who wins the point standing still, turns to the back fence, drops the
-racket hand, reaches into a pocket for the second ball, or stands with hands on
-hips getting their breath back.  None of that moves the feet, so `walk_prob`
-stays at zero through all of it.
+    settle        feet and limbs go quiet and STAY quiet
+    turn_away     the player turns round to face the camera (they play with
+                  their back to it)
+    stance_drop   hands drop below the hips AND the knees straighten
+    idle_hands    a hand goes to the pocket (reaching for the second ball)
 
-This module computes four such signals, each per pose sample, each in [0, 1]:
+Each one also fires sometimes during live play, so none is a rule on its own.
+Consumers combine them:
+  * anya2's point_end.py takes the max of these and the walking probability.
+  * rally_reel's energy bar weights them against the ball trace.
 
-    settle        court speed and limb energy both collapse and STAY collapsed.
-                  Rally motion is bursty and never quiet for long; the settle
-                  after the last ball is.
+Model-free and measured in body heights / court metres, so it can be ported
+to the phone.
 
-    turn_away     the shoulder line rotates so the player faces the CAMERA
-                  rather than the net.  The near player plays with their back to
-                  this camera, so turning toward it is turning away from the
-                  point.
-
-    stance_drop   loss of the ready stance: the wrists fall to or below the hip
-                  line, the two-handed grip opens, and the knees straighten out
-                  of the athletic crouch.  A player who has stopped expecting a
-                  ball stands up.
-
-    idle_hands    the between-point rituals, as alternatives under a max():
-                  hand to the pocket for a second ball, hand to face / cap /
-                  hair, or both hands on the hips with the elbows flared.
-
-The design rule behind all four is the one the user's framing states outright:
-INDIVIDUALLY NOISY, COLLECTIVELY NEAR-CERTAIN.  Each of these fires during live
-tennis too — a player is briefly still between shots, turns their back chasing a
-lob, straightens up after a short ball, wipes their face during a long point.
-So none of them is a rule here.  Each is a graded score, and the arbitration
-between them is `rally_reel/energy.py`'s: they enter the bar as weighted terms
-on the ball-silence drain, which means that WITH THE BALL VISIBLY IN PLAY THEY
-DRAIN NOTHING, however confident they are.  That is the same construction (and
-the same reason) as `energy_walk_boost` — see that config comment for the
-mid-rally-walking failure an additive term reintroduces.
-
-Two things the user's list asked for are deliberately NOT here:
-
-  * BALL BOUNCING (the player bouncing a ball before serving) needs ball
-    evidence, not pose, and the energy bar already reads a ball stream —
-    `ball_trace` in-court intervals.  A bounce is in-court ball motion, so it
-    would read as rally activity and CHARGE the bar.  Separating a serve bounce
-    from a rally requires the ball's position relative to the near player, which
-    is a change to `ball_trace`, not a fifth pose signal.
-
-  * SERVE-PREP RITUAL AS RETROACTIVE CONFIRMATION ("the next serve proves the
-    last point ended") is already structural in the pipeline and does not want
-    to be a signal: `points.find_point_end` carries `next_serve_guard_s`, and
-    the serve detectors are what produce the next start.  Adding a backwards
-    confirmation here would be a second, weaker copy of that guard.
-
-Everything is MODEL-FREE and measured in body-height units or court metres —
-no classifier, no weights fit off this corpus.  That is deliberate: stage 2 of
-the dead-time cutter has to port to Dart on-device, and a trained sklearn model
-would not.  The thresholds below are anatomical constants, not tuned
-parameters; the tuning happens once, downstream, on the four weights in
-ReelConfig.
-
-Input is the near-player pose the walking classifier already selected
-(`walking.select_near`, cached as `<stem>_end_walk_pose.npz`), so this costs one
-pass over an array and no perception at all.
+Input: one near-player pose track, the same one the walking classifier reads
+(`walking.select_near` output, or anya2's shim npz).  The pose helpers are
+the walking classifier's own (see anya2/signals.py, "two families").
 
 Run standalone to inspect the signals on a clip:
     python -m pipeline.near_end /Volumes/Anya/Data/21/snippet.mp4
     python -m pipeline.near_end /Volumes/Anya/Data/21/snippet.mp4 --profile
+
+Evidence and history: docs/anya2/NOTES.md, "near_end.py".
 """
 
 import argparse
 import json
 import os
-import sys
-from pathlib import Path
 from typing import Dict, Optional, Sequence
 
 import numpy as np
 
+# What consumers read.  Defined first and cheaply: rally_reel imports it at
+# module scope.
 SIGNAL_NAMES = ("settle", "turn_away", "stance_drop", "idle_hands")
 
-# COCO indices, mirroring walking/features.py.  The geometry helpers are shared
-# with that module (see `_kin`) but the indices are named here so that importing
-# SIGNAL_NAMES — which `rally_reel/energy.py` does, at module scope — costs
-# nothing.  The shared helpers arrive lazily instead: `walking` is a sibling
-# top-level package that is not on the path until the repo root is, and paying
-# for that at import time would put a second package's import graph behind
-# every `from .energy import ...` in the reel.
+# COCO keypoint indices.
 NOSE = 0
 L_EAR, R_EAR = 3, 4
 L_SHO, R_SHO = 5, 6
@@ -101,312 +50,201 @@ L_HIP, R_HIP = 11, 12
 L_KNE, R_KNE = 13, 14
 L_ANK, R_ANK = 15, 16
 
-MAX_GAP_S = 0.5        # matches walking.features: fill single-frame occlusions
-                       # only.  A longer hole stays NaN and surfaces as `valid`
-                       # False, which the energy bar HOLDS on rather than
-                       # draining — absence of a player is not evidence that the
-                       # point ended.
+MAX_GAP_S = 0.5            # fill occlusions up to this long; longer holes stay NaN
 
 # ── settle ───────────────────────────────────────────────────────────────
-# A rally is bursty: even the quiet beat while the opponent swings carries a
-# split-step.  These are the levels below which the near player is doing
-# nothing, not merely between things.
-SETTLE_SPEED_MPS = 0.55     # court speed that scores 0; a walk sits at 1.0-1.5
-                            # and walking.features' own "slow" band is < 0.4
-SETTLE_LIMB_BH_S = 0.75     # wrist/ankle speed RELATIVE TO THE HIP, in body
-                            # heights per second.  Relative, so a player being
-                            # carried across court by a run does not read as
-                            # limb activity, and a racket take-back while
-                            # standing still does.
-SETTLE_WIN_S = 1.2          # the sustain window.  Shorter than this and every
-                            # between-shot pause scores; much longer and the
-                            # signal arrives after the reel has already cut.
+SETTLE_SPEED_MPS = 0.55    # court speed scoring 0 (a walk is 1.0-1.5 m/s)
+SETTLE_LIMB_BH_S = 0.75    # wrist/ankle speed relative to the hip, body heights/s,
+                           # scoring 0
+SETTLE_WIN_S = 1.2         # smoothing window
 
 # ── turn_away ────────────────────────────────────────────────────────────
-# The camera sits behind the near baseline, so the near player faces AWAY from
-# it while the point is live.  Facing is read from the image-x order of the two
-# shoulders: with the back to the camera the anatomical right shoulder falls to
-# the image right of the left one, and the sign flips when they turn round.
-TURN_MIN_SHO_BH = 0.055     # shoulder separation below this is a player seen
-                            # edge-on; the facing sign is then pure noise and
-                            # the sample contributes nothing
-TURN_FULL_BH = 0.14         # separation at which the facing read is at full
-                            # confidence
-TURN_WIN_S = 0.8            # a rally turn (chasing a lob) is a fast pivot back;
-                            # an end-of-point turn is held
+TURN_MIN_SHO_BH = 0.055    # shoulders closer than this (edge-on): no read
+TURN_FULL_BH = 0.14        # shoulder separation for a fully confident read
+TURN_WIN_S = 0.8
 
 # ── stance_drop ──────────────────────────────────────────────────────────
-# Ready: wrists carried at or above the hip line, hands together on the racket,
-# knees bent.  Dropped: hands by the sides, legs straight.
-READY_WRIST_BH = 0.06       # highest wrist ABOVE the hip line, body heights.
-                            # Above this is a ready carry, below DROP is a hand
-                            # hanging by the side.
-DROP_WRIST_BH = -0.06
-READY_KNEE_DEG = 152.0      # mean knee interior angle: an athletic ready
-                            # position, against ~172 for standing upright
-STRAIGHT_KNEE_DEG = 172.0
+READY_WRIST_BH = 0.06      # highest wrist this far ABOVE the hip line = ready
+DROP_WRIST_BH = -0.06      # ...this far below = hands dropped
+READY_KNEE_DEG = 152.0     # mean knee angle of an athletic crouch
+STRAIGHT_KNEE_DEG = 172.0  # ...and of standing upright
 STANCE_WIN_S = 0.8
 
-# ── idle_hands ───────────────────────────────────────────────────────────
-# Radii are body-height fractions of the distance from the wrist to the target
-# landmark, so they hold at any depth in frame.
-POCKET_R_BH = 0.13          # wrist within this of the same-side hip, and below
-                            # the hip line: reaching for the second ball
-HEAD_R_BH = 0.22            # wrist within this of the head centre: cap, hair,
-                            # wiping the face
-HIP_R_BH = 0.11             # both wrists this close to their hips …
-FLARE_BH = 0.10             # … with both elbows this far LATERAL of the
-                            # shoulders is the hands-on-hips akimbo shape, which
-                            # the flare is what distinguishes from arms hanging
-IDLE_WIN_S = 0.6            # rituals are held for a beat; a single frame of a
-                            # wrist passing a hip is not one
-
-
-def _kin():
-    """The pose helpers `walking.features` already defines, imported lazily.
-
-    Shared rather than re-derived on purpose: gap interpolation, the
-    confidence-gated keypoint read, the midpoint fallback and the NaN-tolerant
-    moving mean all have to behave here EXACTLY as they do under the walking
-    classifier, or the two near-player signals disagree about what a tracked
-    frame even is.  A second copy would drift on the first bug fix.
-    """
-    _REPO_ROOT = str(Path(__file__).resolve().parents[1])
-    if _REPO_ROOT not in sys.path:
-        sys.path.insert(0, _REPO_ROOT)
-    from walking.features import (_angle, _interp_gaps, _kp_xy, _mid, _movmean)
-    return _angle, _interp_gaps, _kp_xy, _mid, _movmean
+# ── idle_hands (radii in body heights) ───────────────────────────────────
+POCKET_R_BH = 0.13         # wrist this close to the same-side hip, and below it
+HEAD_R_BH = 0.22           # wrist this close to the head (cue_to_head only)
+HIP_R_BH = 0.11            # both wrists this close to the hips (cue_akimbo only)
+FLARE_BH = 0.10            # ...with elbows this far out (cue_akimbo only)
+IDLE_WIN_S = 0.6
 
 
 def _ramp(x, lo, hi):
-    """Soft 0->1 ramp from lo to hi (either order); NaN in, NaN out."""
+    """Linear 0 -> 1 from lo to hi (either order), clipped; NaN stays NaN."""
     with np.errstate(invalid="ignore"):
         return np.clip((x - lo) / (hi - lo), 0.0, 1.0)
 
 
-def _dist_bh(a, b, h):
-    """Distance between two [N,2] keypoint tracks, in body heights."""
-    return np.linalg.norm(a - b, axis=1) / h
-
-
-def _smooth(x, fps, win_s, movmean):
-    """Centred moving mean over `win_s`, NaN-tolerant.
-
-    Centred rather than causal because this is an offline cutter: the reel is
-    built after the clip exists, and a causal filter would lag every signal by
-    half a window into the dead time it is trying to time.  A future on-device
-    port that must run live gets a causal variant here and re-measures — the
-    lag is a real change to the timing, not an implementation detail.
-    """
-    return movmean(x, max(1, int(round(win_s * fps))))
-
-
-def _nan_to_zero(x):
-    """Score arrays leave here as evidence, and missing evidence is 0."""
-    return np.where(np.isfinite(x), x, 0.0)
+def _distance_bh(a, b, body_height):
+    """Distance between two [N, 2] tracks, in body heights."""
+    return np.linalg.norm(a - b, axis=1) / body_height
 
 
 def near_signals(kp, bbox, fps: float,
                  speed: Optional[Sequence[float]] = None) -> Dict[str, np.ndarray]:
     """The four signals for one near-player pose track.
 
-    `kp` [N, 17, 3] and `bbox` [N, 4] are `walking.select_near`'s output — the
-    near player only, NaN where they were not tracked.  `speed` is the court
-    speed in m/s that `walking.features.frame_signals` already computed off the
-    same track; passing it keeps this module from re-deriving a homography and
-    guarantees the settle signal and the walking classifier disagree about
-    nothing.  Without it, settle falls back to limb energy alone.
+    kp [N, 17, 3], bbox [N, 4]: the near player only, NaN where untracked.
+    speed [N]: court speed in m/s from `walking.features.frame_signals` (the
+    same number the walking classifier uses).  Without it, `settle` uses limb
+    motion alone.
 
-    Returns each signal as [N] in [0, 1], plus `valid` [N] bool.
+    Returns each SIGNAL_NAMES entry and the three `cue_*` sub-signals as [N]
+    in [0, 1] (0 wherever the player is untracked), plus `valid` [N] bool and
+    `fps`.
     """
-    _angle, _interp_gaps, _kp_xy, _mid, _movmean = _kin()
-    kp = np.asarray(kp, dtype=np.float64)
-    bbox = np.asarray(bbox, dtype=np.float64)
-    n = len(kp)
+    from pipeline.anya2.signals import walking_pose_helpers
+    walk = walking_pose_helpers()
+
     gap = int(MAX_GAP_S * fps)
-    kp = _interp_gaps(kp, gap)
-    bbox = _interp_gaps(bbox, gap)
+    kp = walk.fill_gaps_between_seen(np.asarray(kp, dtype=np.float64), gap)
+    bbox = walk.fill_gaps_between_seen(np.asarray(bbox, dtype=np.float64), gap)
 
-    h = bbox[:, 3] - bbox[:, 1]
-    h = np.where(h > 1.0, h, np.nan)
-    valid = np.isfinite(h)
+    body_height = bbox[:, 3] - bbox[:, 1]
+    body_height = np.where(body_height > 1.0, body_height, np.nan)
+    valid = np.isfinite(body_height)
 
-    l_sho, r_sho = _kp_xy(kp, L_SHO), _kp_xy(kp, R_SHO)
-    l_elb, r_elb = _kp_xy(kp, L_ELB), _kp_xy(kp, R_ELB)
-    l_wri, r_wri = _kp_xy(kp, L_WRI), _kp_xy(kp, R_WRI)
-    l_hip, r_hip = _kp_xy(kp, L_HIP), _kp_xy(kp, R_HIP)
-    l_kne, r_kne = _kp_xy(kp, L_KNE), _kp_xy(kp, R_KNE)
-    l_ank, r_ank = _kp_xy(kp, L_ANK), _kp_xy(kp, R_ANK)
-    nose = _kp_xy(kp, NOSE)
-    l_ear, r_ear = _kp_xy(kp, L_EAR), _kp_xy(kp, R_EAR)
+    joints = _Joints(kp, walk)
 
-    hip = _mid(l_hip, r_hip)
-    sho = _mid(l_sho, r_sho)
-    head = _mid(_mid(l_ear, r_ear), nose)
+    def smooth(x, window_s):
+        """Centred NaN-aware moving mean (offline, so no lag)."""
+        return walk.nan_moving_mean(x, max(1, int(round(window_s * fps))))
 
-    # ── settle ───────────────────────────────────────────────────────────
-    def rel_speed(pt):
-        rel = (pt - hip) / h[:, None]
-        d = np.full(n, np.nan)
-        d[1:] = np.linalg.norm(np.diff(rel, axis=0), axis=1) * fps
-        return d
+    pocket, to_head, akimbo = _idle_hand_cues(joints, body_height)
+    signals = {
+        "settle": smooth(_settle_raw(joints, body_height, fps, speed), SETTLE_WIN_S),
+        "turn_away": smooth(_turn_away_raw(joints, body_height), TURN_WIN_S),
+        "stance_drop": smooth(_stance_drop_raw(joints, body_height, walk), STANCE_WIN_S),
+        "idle_hands": smooth(pocket, IDLE_WIN_S),
+        # Measured and NOT part of idle_hands (to_head is anti-correlated,
+        # akimbo is unreachable at 540p); returned for re-measurement only.
+        "cue_pocket": pocket, "cue_to_head": to_head, "cue_akimbo": akimbo,
+    }
+    # Missing evidence is 0, and nothing is claimed where there is no player.
+    signals = {name: np.clip(np.where(np.isfinite(x), x, 0.0), 0.0, 1.0)
+               for name, x in signals.items()}
+    for name in signals:
+        signals[name] = np.where(valid, signals[name], 0.0)
+    signals["valid"] = valid
+    signals["fps"] = float(fps)
+    return signals
 
-    limb = np.fmax(np.fmax(rel_speed(l_wri), rel_speed(r_wri)),
-                   np.fmax(rel_speed(l_ank), rel_speed(r_ank)))
-    quiet_limb = _ramp(limb, SETTLE_LIMB_BH_S, 0.0)
-    if speed is not None:
-        sp = np.asarray(speed, dtype=np.float64)
-        quiet_foot = _ramp(sp, SETTLE_SPEED_MPS, 0.0)
-        # MEAN, not min — measured, against the opposite prior.  The argument
-        # for min() is that a settle ought to be BOTH feet and hands quiet, and
-        # it scores worse on every clip: post/live separation over
-        # Data/21,22,23,24,43 is
-        #
-        #     min   1.27  1.38  1.82  0.94  1.56     (negative on 24)
-        #     mean  2.16  1.40  1.51  1.24  1.63     (positive on all five)
-        #
-        # because at 15 Hz off a 540p proxy the two channels fail
-        # independently: a lost ankle keypoint zeroes the foot term while the
-        # hands are perfectly still, and min() then throws away the half of the
-        # evidence that survived.  Averaging degrades toward whichever channel
-        # is readable, which is the behaviour this input actually needs.
-        quiet = np.nanmean(np.stack([quiet_foot, quiet_limb], axis=1), axis=1)
-    else:
-        quiet = quiet_limb
-    settle = _smooth(quiet, fps, SETTLE_WIN_S, _movmean)
 
-    # ── turn_away ────────────────────────────────────────────────────────
-    # Signed shoulder order.  Positive = anatomical right shoulder to the image
-    # right = back to the camera = facing the net = playing.  Negative = turned
-    # round.  Normalised by body height so it is a shape, not a pixel count.
-    sho_dx = (r_sho[:, 0] - l_sho[:, 0]) / h
-    sep = np.abs(sho_dx)
-    # Confidence in the SIGN, which is the only part being read.  Edge-on, the
-    # two shoulders project on top of each other and the order is a coin flip.
-    conf = _ramp(sep, TURN_MIN_SHO_BH, TURN_FULL_BH)
-    facing_cam = _ramp(-sho_dx, 0.0, TURN_FULL_BH)
-    # SHOULDER ORDER ALONE.  Nose visibility looks like free corroboration — the
-    # model finds a face far more readily from the front than from behind — and
-    # it is the single most damaging term measured in this module.  Blending it
-    # in at weight w costs separation monotonically over Data/21,22,23,24,43:
-    #
-    #     w = 0.00   11.83  4.62  1.48  3.49  88.67
-    #     w = 0.25    4.56  2.61  1.49  2.57   4.73
-    #     w = 0.50    3.11  2.00  1.50  2.17   2.79
-    #
-    # The nose is found on a large share of frames from BEHIND as well (the
-    # model hallucinates a plausible face onto the back of a head at this
-    # resolution), so the term is close to a constant, and a constant added to a
-    # discriminative signal can only dilute it.  Left out rather than
-    # down-weighted: there is no weight at which it pays.
-    turn_raw = np.clip(conf * facing_cam, 0.0, 1.0)
-    turn_away = _smooth(turn_raw, fps, TURN_WIN_S, _movmean)
+class _Joints:
+    """The keypoints this module reads, as [N, 2] image positions."""
 
-    # ── stance_drop ──────────────────────────────────────────────────────
-    # Image y grows downward, so hip_y - wrist_y is positive above the hip.
-    wri_above_hip = (hip[:, 1] - np.fmin(l_wri[:, 1], r_wri[:, 1])) / h
-    hands_low = _ramp(wri_above_hip, READY_WRIST_BH, DROP_WRIST_BH)
-    knee = np.nanmean(np.stack([_angle(l_hip, l_kne, l_ank),
-                                _angle(r_hip, r_kne, r_ank)], axis=1), axis=1)
-    legs_straight = _ramp(knee, READY_KNEE_DEG, STRAIGHT_KNEE_DEG)
-    # MIN, not mean — the opposite of the choice `settle` makes ten lines up,
-    # and for the opposite reason.  Straight legs on their own are not evidence
-    # of anything (a player stands upright constantly while the ball is at the
-    # far end), and it shows: as a lone cue the knee term is negative on one
-    # clip and flat on the rest.  Conjunction is what makes it mean something.
-    # Over Data/21,22,23,24,43:
-    #
-    #     knees only  1.56  1.16  0.93  1.21  1.38
-    #     hands only  1.96  1.34  2.42  6.44  2.36
-    #     mean        1.65  1.20  1.27  1.69  1.59
-    #     min         2.80  1.53  2.24  7.08  3.32
-    #
-    # min() beats hands-alone on four clips of five, so the knee term is real —
-    # it just has to VETO rather than vote.  Averaging it in makes the pair
-    # worse than the better half of it, which is the signature of a weak cue
-    # being given independent authority it has not earned.
-    stance_drop = _smooth(np.fmin(hands_low, legs_straight),
-                          fps, STANCE_WIN_S, _movmean)
+    def __init__(self, kp, walk):
+        xy = walk.keypoint_xy_walking
+        mid = walk.midpoint_with_fallback
+        self.l_sho, self.r_sho = xy(kp, L_SHO), xy(kp, R_SHO)
+        self.l_elb, self.r_elb = xy(kp, L_ELB), xy(kp, R_ELB)
+        self.l_wri, self.r_wri = xy(kp, L_WRI), xy(kp, R_WRI)
+        self.l_hip, self.r_hip = xy(kp, L_HIP), xy(kp, R_HIP)
+        self.l_kne, self.r_kne = xy(kp, L_KNE), xy(kp, R_KNE)
+        self.l_ank, self.r_ank = xy(kp, L_ANK), xy(kp, R_ANK)
+        nose = xy(kp, NOSE)
+        l_ear, r_ear = xy(kp, L_EAR), xy(kp, R_EAR)
+        self.hip = mid(self.l_hip, self.r_hip)
+        self.sho = mid(self.l_sho, self.r_sho)
+        self.head = mid(mid(l_ear, r_ear), nose)
 
-    # ── idle_hands ───────────────────────────────────────────────────────
-    l_hip_d, r_hip_d = _dist_bh(l_wri, l_hip, h), _dist_bh(r_wri, r_hip, h)
-    l_below = (l_wri[:, 1] - l_hip[:, 1]) / h      # positive = wrist below hip
-    r_below = (r_wri[:, 1] - r_hip[:, 1]) / h
 
-    # (a) hand to pocket: at the hip AND dropped to it, which is what separates
-    # a reach into a pocket from a hand resting on the hip bone.
+def _settle_raw(j, body_height, fps, speed):
+    """How quiet the player is right now (before smoothing).
+
+    Mean of "feet quiet" (court speed) and "limbs quiet" (wrist/ankle speed
+    relative to the hip).  Mean, not min: the two channels drop out
+    independently at 15 Hz, and the mean keeps whichever is readable.
+    """
+    def limb_speed(point):
+        relative = (point - j.hip) / body_height[:, None]
+        speed_bh_s = np.full(len(point), np.nan)
+        speed_bh_s[1:] = np.linalg.norm(np.diff(relative, axis=0), axis=1) * fps
+        return speed_bh_s
+
+    fastest_limb = np.fmax(np.fmax(limb_speed(j.l_wri), limb_speed(j.r_wri)),
+                           np.fmax(limb_speed(j.l_ank), limb_speed(j.r_ank)))
+    limbs_quiet = _ramp(fastest_limb, SETTLE_LIMB_BH_S, 0.0)
+    if speed is None:
+        return limbs_quiet
+    feet_quiet = _ramp(np.asarray(speed, dtype=np.float64), SETTLE_SPEED_MPS, 0.0)
+    return np.nanmean(np.stack([feet_quiet, limbs_quiet], axis=1), axis=1)
+
+
+def _turn_away_raw(j, body_height):
+    """How confidently the player faces the camera, from shoulder order alone.
+
+    Back to the camera (playing): right shoulder is image-right of the left.
+    Turned round: the order flips.  Edge-on shoulders give no read.  (Nose
+    visibility was tried as extra evidence and only hurt -- see NOTES.)
+    """
+    shoulder_dx = (j.r_sho[:, 0] - j.l_sho[:, 0]) / body_height
+    read_confidence = _ramp(np.abs(shoulder_dx), TURN_MIN_SHO_BH, TURN_FULL_BH)
+    facing_camera = _ramp(-shoulder_dx, 0.0, TURN_FULL_BH)
+    return np.clip(read_confidence * facing_camera, 0.0, 1.0)
+
+
+def _stance_drop_raw(j, body_height, walk):
+    """Hands dropped AND legs straight (min: straight legs alone mean nothing)."""
+    # Image y grows downward, so hip_y - wrist_y > 0 means above the hip.
+    highest_wrist_above_hip = (j.hip[:, 1] - np.fmin(j.l_wri[:, 1], j.r_wri[:, 1])) / body_height
+    hands_low = _ramp(highest_wrist_above_hip, READY_WRIST_BH, DROP_WRIST_BH)
+    knee_angle = np.nanmean(np.stack([walk.joint_angle_deg(j.l_hip, j.l_kne, j.l_ank),
+                                      walk.joint_angle_deg(j.r_hip, j.r_kne, j.r_ank)],
+                                     axis=1), axis=1)
+    legs_straight = _ramp(knee_angle, READY_KNEE_DEG, STRAIGHT_KNEE_DEG)
+    return np.fmin(hands_low, legs_straight)
+
+
+def _idle_hand_cues(j, body_height):
+    """(pocket, to_head, akimbo), each [N] before smoothing.  Only pocket is used."""
+    l_hip_dist = _distance_bh(j.l_wri, j.l_hip, body_height)
+    r_hip_dist = _distance_bh(j.r_wri, j.r_hip, body_height)
+    l_below_hip = (j.l_wri[:, 1] - j.l_hip[:, 1]) / body_height   # > 0: wrist below hip
+    r_below_hip = (j.r_wri[:, 1] - j.r_hip[:, 1]) / body_height
+
+    # Hand to pocket: at the hip AND dropped below it.
     pocket = np.fmax(
-        _ramp(l_hip_d, POCKET_R_BH, 0.0) * _ramp(l_below, 0.0, 0.05),
-        _ramp(r_hip_d, POCKET_R_BH, 0.0) * _ramp(r_below, 0.0, 0.05))
+        _ramp(l_hip_dist, POCKET_R_BH, 0.0) * _ramp(l_below_hip, 0.0, 0.05),
+        _ramp(r_hip_dist, POCKET_R_BH, 0.0) * _ramp(r_below_hip, 0.0, 0.05))
 
-    # (b) hand to face / cap / hair: wrist at the head and raised above the
-    # shoulder line, so a racket held up in front of the chest does not count.
-    l_head_d, r_head_d = _dist_bh(l_wri, head, h), _dist_bh(r_wri, head, h)
-    l_up = _ramp((sho[:, 1] - l_wri[:, 1]) / h, 0.0, 0.06)
-    r_up = _ramp((sho[:, 1] - r_wri[:, 1]) / h, 0.0, 0.06)
-    to_head = np.fmax(_ramp(l_head_d, HEAD_R_BH, 0.0) * l_up,
-                      _ramp(r_head_d, HEAD_R_BH, 0.0) * r_up)
+    # Hand to face/cap: wrist at the head and above the shoulder line.
+    l_head_dist = _distance_bh(j.l_wri, j.head, body_height)
+    r_head_dist = _distance_bh(j.r_wri, j.head, body_height)
+    l_up = _ramp((j.sho[:, 1] - j.l_wri[:, 1]) / body_height, 0.0, 0.06)
+    r_up = _ramp((j.sho[:, 1] - j.r_wri[:, 1]) / body_height, 0.0, 0.06)
+    to_head = np.fmax(_ramp(l_head_dist, HEAD_R_BH, 0.0) * l_up,
+                      _ramp(r_head_dist, HEAD_R_BH, 0.0) * r_up)
 
-    # (c) hands on hips, elbows flared.  Both sides, or it is one hand on a hip
-    # — which is (a) — and the flare is measured outward from each shoulder, so
-    # arms hanging straight down score zero however close the wrists sit.
-    l_flare = _ramp((l_sho[:, 0] - l_elb[:, 0]) / h, 0.0, FLARE_BH)
-    r_flare = _ramp((r_elb[:, 0] - r_sho[:, 0]) / h, 0.0, FLARE_BH)
-    # The shoulder order flips with the player, so take the flare either way
-    # round rather than trusting the sign of a single frame's left/right call.
-    l_flare = np.fmax(l_flare, _ramp((l_elb[:, 0] - l_sho[:, 0]) / h, 0.0, FLARE_BH))
-    r_flare = np.fmax(r_flare, _ramp((r_sho[:, 0] - r_elb[:, 0]) / h, 0.0, FLARE_BH))
-    akimbo = (np.fmin(_ramp(l_hip_d, HIP_R_BH, 0.0), _ramp(r_hip_d, HIP_R_BH, 0.0))
+    # Hands on hips with elbows flared out (either direction, since the
+    # left/right call can flip).
+    l_flare = _ramp((j.l_sho[:, 0] - j.l_elb[:, 0]) / body_height, 0.0, FLARE_BH)
+    r_flare = _ramp((j.r_elb[:, 0] - j.r_sho[:, 0]) / body_height, 0.0, FLARE_BH)
+    l_flare = np.fmax(l_flare, _ramp((j.l_elb[:, 0] - j.l_sho[:, 0]) / body_height, 0.0, FLARE_BH))
+    r_flare = np.fmax(r_flare, _ramp((j.r_sho[:, 0] - j.r_elb[:, 0]) / body_height, 0.0, FLARE_BH))
+    akimbo = (np.fmin(_ramp(l_hip_dist, HIP_R_BH, 0.0), _ramp(r_hip_dist, HIP_R_BH, 0.0))
               * np.fmin(l_flare, r_flare))
-
-    # POCKET ONLY.  The three rituals were built as alternatives under a max(),
-    # on the reasoning that a player does one of them and summing would reward
-    # only the rare player who does two at once.  The max() is right; the
-    # membership was not.  Measured separately over Data/21,22,23,24,43
-    # (post/live over tracked samples):
-    #
-    #     pocket    3.09  3.16  2.29  10.05   7.71     every clip, strongly
-    #     akimbo    1.76  0.77  2.83   5.74   1.00     negative on 22, flat on 43
-    #     to_head   0.26  0.00  0.07   0.00   0.00     ANTI-correlated everywhere
-    #
-    # to_head is not weak, it is backwards, and no radius fixes it (0.22 and
-    # 0.32 body heights score the same): at 540p the wrist that comes near the
-    # head is the racket arm at the top of a swing or a serve toss, which is
-    # live play, and a genuine cap adjust between points is a handful of frames
-    # per clip.  akimbo is closer to real but its flare term is unreachable at
-    # this resolution — loosening FLARE_BH to 0.05 raises its level 4x and moves
-    # separation the wrong way on two clips, which is a threshold buying noise.
-    #
-    # Both are still COMPUTED and returned under `cue_` keys.  They cost two
-    # array ops, the measurement above is five clips of one camera height, and a
-    # deleted cue cannot be re-measured on better footage.  They just do not
-    # enter the signal the energy bar reads.
-    idle_hands = _smooth(pocket, fps, IDLE_WIN_S, _movmean)
-
-    out = {"settle": settle, "turn_away": turn_away,
-           "stance_drop": stance_drop, "idle_hands": idle_hands,
-           # Measured and excluded from idle_hands; kept for re-measurement.
-           # `SIGNAL_NAMES` is what the energy bar reads, so nothing downstream
-           # picks these up by accident.
-           "cue_pocket": pocket, "cue_to_head": to_head, "cue_akimbo": akimbo}
-    out = {k: np.clip(_nan_to_zero(v), 0.0, 1.0) for k, v in out.items()}
-    # Zeroed wherever there is no player at all: a signal computed across a hole
-    # is a guess, and `valid` is what lets the energy bar hold instead.
-    for k in out:
-        out[k] = np.where(valid, out[k], 0.0)
-    out["valid"] = valid
-    out["fps"] = float(fps)
-    return out
+    return pocket, to_head, akimbo
 
 
 def signals_for_video(video: str, pose_npz: Optional[str] = None,
                       sig: Optional[Dict] = None) -> Dict[str, np.ndarray]:
-    """`near_signals` off the cached near-player pose for `video`.
+    """`near_signals` off a cached near-player pose npz for `video`.
 
-    `sig` is `walking.features.frame_signals`' output when the caller already
-    has it (the reel and the tuner both do, inside `walk_result`); otherwise the
-    court speed is recomputed here from the same npz.
+    `sig` is `walking.features.frame_signals` output if the caller already has
+    it; otherwise court speed is recomputed from the same npz.
     """
+    from pipeline.anya2.signals import walking_pose_helpers
+    walking_pose_helpers()          # puts the repo root on sys.path for `walking`
     from walking.court import load_homography
     from walking.features import frame_signals
     from walking.select_near import pose_path
@@ -423,20 +261,8 @@ def signals_for_video(video: str, pose_npz: Optional[str] = None,
 # ── CLI ──────────────────────────────────────────────────────────────────
 
 def _profile(video: str, sigs: Dict[str, np.ndarray]) -> None:
-    """Mean of each signal in bands around every labelled rally end.
-
-    The question this answers is the only one that matters before any weight is
-    fitted: does the signal RISE after the point ends, and by how much against
-    its own level during play.  A signal that reads the same either side of the
-    boundary cannot help the bar whatever weight it is given.
-
-    Means are taken over TRACKED SAMPLES ONLY, with the coverage printed
-    alongside.  Pooling the untracked ones — which the energy bar never sees,
-    because `near_held` makes it hold rather than drain — would deflate every
-    band by however much of it the player spent off camera, and the dead bands
-    are exactly where they leave.  On Data/23 that is 58% of the clip, so the
-    difference between the two readings is not a rounding detail.
-    """
+    """Mean of each signal in bands around every labelled rally end, over
+    TRACKED samples only.  A useful signal rises after the end."""
     from pipeline.parse_ground_truth import load_rallies
 
     fps = float(sigs["fps"])
