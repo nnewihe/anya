@@ -65,29 +65,59 @@ public struct Homography {
     /// in the order near-left, near-right, far-right, far-left
     /// (walking.court.load_homography, i.e. cv2.getPerspectiveTransform).
     public init(courtCorners corners: [(x: Double, y: Double)]) {
-        let court: [(Double, Double)] = [(0, 0), (Court.COURT_W, 0),
-                                         (Court.COURT_W, Court.COURT_L), (0, Court.COURT_L)]
-        self = Homography(from: corners.map { ($0.x, $0.y) }, to: court)
+        // Python builds both point sets as float32 arrays, so the court it
+        // maps onto is 8.22999954 x 23.77000046 m, not 8.23 x 23.77.
+        let w = Float(Court.COURT_W), l = Float(Court.COURT_L)
+        self = Homography(from: corners.map { (Float($0.x), Float($0.y)) },
+                          to: [(0, 0), (w, 0), (w, l), (0, l)])
     }
 
-    /// The exact homography taking 4 source points to 4 destination points.
-    public init(from source: [(Double, Double)], to destination: [(Double, Double)]) {
-        var a = [[Double]](repeating: [Double](repeating: 0, count: 9), count: 8)
+    /// The homography taking 4 source points to 4 destination points, computed
+    /// EXACTLY as cv2.getPerspectiveTransform does.
+    ///
+    /// Exactly, not just correctly: this 8x8 system is ill-conditioned (pixel
+    /// coordinates times court metres), so any two correct solvers disagree in
+    /// the 7th digit -- enough to tip a walking-classifier split now and then.
+    /// So OpenCV's own recipe is reproduced: u-equations in rows 0-3 and
+    /// v-equations in rows 4-7, the src*dst products taken in FLOAT32 (they are
+    /// Point2f products in C++), then OpenCV's LU with partial pivoting.
+    public init(from source: [(Float, Float)], to destination: [(Float, Float)]) {
+        var a = [Double](repeating: 0, count: 64)   // 8x8, row-major
+        var b = [Double](repeating: 0, count: 8)
         for i in 0..<4 {
             let (x, y) = source[i], (u, v) = destination[i]
-            a[2 * i] = [x, y, 1, 0, 0, 0, -x * u, -y * u, u]
-            a[2 * i + 1] = [0, 0, 0, x, y, 1, -x * v, -y * v, v]
+            a[i * 8 + 0] = Double(x); a[i * 8 + 1] = Double(y); a[i * 8 + 2] = 1
+            a[(i + 4) * 8 + 3] = Double(x); a[(i + 4) * 8 + 4] = Double(y); a[(i + 4) * 8 + 5] = 1
+            a[i * 8 + 6] = Double(-x * u); a[i * 8 + 7] = Double(-y * u)
+            a[(i + 4) * 8 + 6] = Double(-x * v); a[(i + 4) * 8 + 7] = Double(-y * v)
+            b[i] = Double(u); b[i + 4] = Double(v)
         }
-        // Gaussian elimination with partial pivoting on the 8x8 system.
-        for column in 0..<8 {
-            let pivot = (column..<8).max { abs(a[$0][column]) < abs(a[$1][column]) }!
-            a.swapAt(column, pivot)
-            for row in 0..<8 where row != column {
-                let factor = a[row][column] / a[column][column]
-                if factor != 0 { for k in column..<9 { a[row][k] -= factor * a[column][k] } }
+        Homography.solveLikeOpenCV(&a, &b, size: 8)
+        self.m = b + [1]
+    }
+
+    /// OpenCV's LUImpl (core/src/matrix_decomp.cpp): Gaussian elimination with
+    /// partial pivoting, then back substitution. Solves a x = b in place in `b`.
+    private static func solveLikeOpenCV(_ a: inout [Double], _ b: inout [Double], size m: Int) {
+        for i in 0..<m {
+            var k = i
+            for j in (i + 1)..<m where abs(a[j * m + i]) > abs(a[k * m + i]) { k = j }
+            if k != i {
+                for j in i..<m { a.swapAt(i * m + j, k * m + j) }
+                b.swapAt(i, k)
+            }
+            let d = -1 / a[i * m + i]
+            for j in (i + 1)..<m {
+                let alpha = a[j * m + i] * d
+                for k in (i + 1)..<m { a[j * m + k] += alpha * a[i * m + k] }
+                b[j] += alpha * b[i]
             }
         }
-        self.m = (0..<8).map { a[$0][8] / a[$0][$0] } + [1]
+        for i in stride(from: m - 1, through: 0, by: -1) {
+            var s = b[i]
+            for k in (i + 1)..<m { s -= a[i * m + k] * b[k] }
+            b[i] = s / a[i * m + i]
+        }
     }
 
     /// `cv2.perspectiveTransform` of one point.

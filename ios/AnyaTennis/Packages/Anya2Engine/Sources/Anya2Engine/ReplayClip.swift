@@ -23,6 +23,7 @@ public struct ReplayClip {
         public let clip: String
         public let stem: String
         public let corners: [[Double]]
+        public let homography: [Double]?   // what Python's cv2.getPerspectiveTransform returned
         public let fps: Double
         public let stride: Int
         public let camera: CameraJSON?

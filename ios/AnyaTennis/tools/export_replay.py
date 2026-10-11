@@ -128,8 +128,12 @@ def export_clip(clip, out_dir):
             track = load_camera(video, path=camera_path)
             camera = {"frames": [int(f) for f in track.frames],
                       "warps": [[float(v) for v in w.ravel()] for w in track.W]}
+        from walking.court import load_homography
         meta = {
             "clip": clip, "stem": stem, "corners": corners,
+            # The homography Python actually used (cv2.getPerspectiveTransform),
+            # so Swift's own solve can be checked against it entry by entry.
+            "homography": [float(v) for v in load_homography(video).ravel()],
             "fps": float(near["fps"]),
             "stride": int(near["stride"]) if "stride" in near else 1,
             "src_fps": float(near["src_fps"]) if "src_fps" in near else None,
