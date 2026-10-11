@@ -7,7 +7,6 @@
 //
 // Writes OUT_DIR/near.bin and far.bin: int32 samples, then float32
 // keypoints [samples, 8, 17, 3], boxes [samples, 8, 4], confidences [samples, 8].
-import Accelerate
 import Anya2Engine
 import Anya2Perception
 import AVFoundation
@@ -61,7 +60,7 @@ final class FrameReader {
     }
     func next() -> CVPixelBuffer? {
         guard let sample = output.copyNextSampleBuffer(), let pixels = CMSampleBufferGetImageBuffer(sample) else { return nil }
-        return bt601 ? toBGRA601(pixels) : pixels
+        return bt601 ? bgraBT601(fromVideoRangeYUV: pixels) : pixels
     }
 }
 
@@ -98,26 +97,3 @@ struct PassColumns {
     }
 }
 
-/// NV12 video range -> BGRA with the BT.601 matrix (vImage).
-func toBGRA601(_ yuv: CVPixelBuffer) -> CVPixelBuffer {
-    let width = CVPixelBufferGetWidth(yuv), height = CVPixelBufferGetHeight(yuv)
-    var out: CVPixelBuffer?
-    CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &out)
-    CVPixelBufferLockBaseAddress(yuv, .readOnly); CVPixelBufferLockBaseAddress(out!, [])
-    defer { CVPixelBufferUnlockBaseAddress(out!, []); CVPixelBufferUnlockBaseAddress(yuv, .readOnly) }
-    var y = vImage_Buffer(data: CVPixelBufferGetBaseAddressOfPlane(yuv, 0), height: vImagePixelCount(height),
-                          width: vImagePixelCount(width), rowBytes: CVPixelBufferGetBytesPerRowOfPlane(yuv, 0))
-    var cbcr = vImage_Buffer(data: CVPixelBufferGetBaseAddressOfPlane(yuv, 1), height: vImagePixelCount(height / 2),
-                             width: vImagePixelCount(width / 2), rowBytes: CVPixelBufferGetBytesPerRowOfPlane(yuv, 1))
-    var dst = vImage_Buffer(data: CVPixelBufferGetBaseAddress(out!), height: vImagePixelCount(height),
-                            width: vImagePixelCount(width), rowBytes: CVPixelBufferGetBytesPerRow(out!))
-    var range = vImage_YpCbCrPixelRange(Yp_bias: 16, CbCr_bias: 128, YpRangeMax: 235, CbCrRangeMax: 240,
-                                        YpMax: 235, YpMin: 16, CbCrMax: 240, CbCrMin: 16)
-    var info = vImage_YpCbCrToARGB()
-    vImageConvert_YpCbCrToARGB_GenerateConversion(kvImage_YpCbCrToARGBMatrix_ITU_R_601_4, &range, &info,
-                                                  kvImage420Yp8_CbCr8, kvImageARGB8888, vImage_Flags(kvImageNoFlags))
-    // ARGB order [3,2,1,0] -> B G R A in memory.
-    let permute: [UInt8] = [3, 2, 1, 0]
-    vImageConvert_420Yp8_CbCr8ToARGB8888(&y, &cbcr, &dst, &info, permute, 255, vImage_Flags(kvImageNoFlags))
-    return out!
-}

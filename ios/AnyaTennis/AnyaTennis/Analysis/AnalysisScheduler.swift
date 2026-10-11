@@ -211,7 +211,7 @@ actor AnalysisScheduler {
     }
 }
 
-/// Decodes one proxy segment to BGRA frames, each with the pose sample it
+/// Decodes one proxy segment to BGRA frames (BT.601, see YUVConversion), each with the pose sample it
 /// belongs to (from its timestamp: ProxyRecorder writes sample k at k/15 s).
 final class ProxySegmentReader {
     private let reader: AVAssetReader
@@ -223,8 +223,10 @@ final class ProxySegmentReader {
             throw CocoaError(.fileReadCorruptFile)
         }
         reader = try AVAssetReader(asset: asset)
+        // Raw YUV, converted below with BT.601 as Python's decoder does
+        // (bgraBT601), not with the file's tagged matrix.
         output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
         output.alwaysCopiesSampleData = false
         reader.add(output)
         guard reader.startReading() else { throw reader.error ?? CocoaError(.fileReadCorruptFile) }
@@ -235,7 +237,7 @@ final class ProxySegmentReader {
             guard let pixels = CMSampleBufferGetImageBuffer(sample) else { continue }
             let seconds = CMSampleBufferGetPresentationTimeStamp(sample).seconds
             guard seconds.isFinite else { continue }
-            return (Int((seconds * 15).rounded()), pixels)
+            return (Int((seconds * 15).rounded()), bgraBT601(fromVideoRangeYUV: pixels))
         }
         return nil
     }
