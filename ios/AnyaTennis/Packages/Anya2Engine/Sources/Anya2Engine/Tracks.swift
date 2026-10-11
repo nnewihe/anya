@@ -69,7 +69,7 @@ public struct PoseDetections {
 /// The four player slots over time (`<stem>_anya2_tracks.npz`). float32, as in
 /// Python: the detectors read these back and the rounding is part of the result.
 public struct PlayerTracks {
-    public let samples: Int
+    public private(set) var samples: Int
     public let fps: Double
     public let stride: Int
     public var keypoints: [Float]      // [samples, 4, 17, 3]
@@ -92,6 +92,24 @@ public struct PlayerTracks {
     }
 
     public var durationSeconds: Double { Double(samples) / fps }
+
+    /// Grow by one sample with all four slots empty.
+    mutating func appendEmptySample() {
+        samples += 1
+        keypoints += [Float](repeating: .nan, count: Slots.count * 51)
+        boxes += [Float](repeating: .nan, count: Slots.count * 4)
+        court += [Float](repeating: .nan, count: Slots.count * 2)
+        eligible += [Bool](repeating: false, count: Slots.count)
+    }
+
+    /// The samples in `range`, as a PlayerTracks of their own.
+    public func slice(_ range: Range<Int>) -> PlayerTracks {
+        PlayerTracks(samples: range.count, fps: fps, stride: stride,
+                     keypoints: Array(keypoints[(range.lowerBound * Slots.count * 51)..<(range.upperBound * Slots.count * 51)]),
+                     boxes: Array(boxes[(range.lowerBound * Slots.count * 4)..<(range.upperBound * Slots.count * 4)]),
+                     court: Array(court[(range.lowerBound * Slots.count * 2)..<(range.upperBound * Slots.count * 2)]),
+                     eligible: Array(eligible[(range.lowerBound * Slots.count)..<(range.upperBound * Slots.count)]))
+    }
 
     /// One slot's keypoints, 51 columns per sample, widened to Double.
     public func keypoints(slot: Int) -> SampleTable {
@@ -147,83 +165,113 @@ private struct Candidate {
     let homeness: Double
 }
 
-private enum Side { case near, far }
+enum Side { case near, far }
 
-/// Build the four player slots from the near and far pose passes (tracks.build).
-public func buildTracks(near: PoseDetections, far: PoseDetections?, geometry: Geometry) -> PlayerTracks {
-    let merged = mergePasses(near: near, far: far)
-    let samples = merged.samples, people = merged.people, fps = merged.fps
-    var out = PlayerTracks.empty(samples: samples, fps: fps, stride: merged.stride)
-    var slotsBySide: [Side: [PlayerSlot]] = [.near: [PlayerSlot(), PlayerSlot()],
-                                              .far: [PlayerSlot(), PlayerSlot()]]
-    let slotIDs: [Side: [Int]] = [.near: Slots.near, .far: Slots.far]
+/// Everyone both pose passes found in ONE pose sample, pooled: side is decided
+/// by the court, never by which pass found a person (the far band can catch a
+/// near player at the net, and vice versa).
+public struct PooledSample {
+    public let people: Int
+    public let keypoints: ArraySlice<Float>   // [people, 17, 3]
+    public let boxes: ArraySlice<Float>       // [people, 4]
+    public let confidences: ArraySlice<Float> // [people]
 
-    for sample in 0..<samples {
-        let sourceFrame = sample * merged.stride
-        let bySide = candidates(at: sample, in: merged,
+    public init(people: Int, keypoints: ArraySlice<Float>, boxes: ArraySlice<Float>, confidences: ArraySlice<Float>) {
+        self.people = people; self.keypoints = keypoints; self.boxes = boxes; self.confidences = confidences
+    }
+
+    /// The near pass's people first, then the far pass's, as Python concatenates them.
+    public init(near: PoseDetections, far: PoseDetections?, sample: Int) {
+        guard let far else {
+            self.init(people: near.people,
+                      keypoints: near.keypoints[(sample * near.people * 51)..<((sample + 1) * near.people * 51)],
+                      boxes: near.boxes[(sample * near.people * 4)..<((sample + 1) * near.people * 4)],
+                      confidences: near.confidences[(sample * near.people)..<((sample + 1) * near.people)])
+            return
+        }
+        func rows(_ a: [Float], _ pass: PoseDetections, _ width: Int) -> ArraySlice<Float> {
+            a[(sample * pass.people * width)..<((sample + 1) * pass.people * width)]
+        }
+        self.init(people: near.people + far.people,
+                  keypoints: ArraySlice(rows(near.keypoints, near, 51) + rows(far.keypoints, far, 51)),
+                  boxes: ArraySlice(rows(near.boxes, near, 4) + rows(far.boxes, far, 4)),
+                  confidences: ArraySlice(rows(near.confidences, near, 1) + rows(far.confidences, far, 1)))
+    }
+}
+
+/// Builds the four player slots one pose sample at a time (tracks.build's loop).
+/// The batch `buildTracks` and the live pipeline both use it, so they cannot
+/// drift apart.
+public struct TrackBuilder {
+    public private(set) var tracks: PlayerTracks
+    private var slotsBySide: [Side: [PlayerSlot]] = [.near: [PlayerSlot(), PlayerSlot()],
+                                                      .far: [PlayerSlot(), PlayerSlot()]]
+    private let geometry: Geometry
+
+    public init(fps: Double, stride: Int, geometry: Geometry) {
+        tracks = PlayerTracks.empty(samples: 0, fps: fps, stride: stride)
+        self.geometry = geometry
+    }
+
+    /// Assign the next pose sample's people to the slots.
+    public mutating func add(_ sample: PooledSample) {
+        let index = tracks.samples
+        tracks.appendEmptySample()
+        let sourceFrame = index * tracks.stride
+        let bySide = candidates(in: sample,
                                 homography: geometry.homography(atSourceFrame: sourceFrame),
                                 inverse: geometry.inverseHomography(atSourceFrame: sourceFrame))
+        let slotIDs: [Side: [Int]] = [.near: Slots.near, .far: Slots.far]
         for side in [Side.near, .far] {
             var slots = slotsBySide[side]!
-            let shortlisted = shortlist(bySide[side]!, slots: slots, fps: fps)
-            let chosen = shortlisted.isEmpty ? [:] : assignSide(shortlisted, slots: slots, fps: fps)
+            let shortlisted = shortlist(bySide[side]!, slots: slots, fps: tracks.fps)
+            let chosen = shortlisted.isEmpty ? [:] : assignSide(shortlisted, slots: slots, fps: tracks.fps)
             for localIndex in 0..<slots.count {
-                let slotID = slotIDs[side]![localIndex]
                 guard let candidateIndex = chosen[localIndex] else {
                     slots[localIndex].miss()
                     continue
                 }
                 let candidate = shortlisted[candidateIndex]
-                let source = sample * people + candidate.person
-                let target = sample * Slots.count + slotID
-                for c in 0..<51 { out.keypoints[target * 51 + c] = merged.keypoints[source * 51 + c] }
-                for c in 0..<4 { out.boxes[target * 4 + c] = merged.boxes[source * 4 + c] }
-                out.court[target * 2] = Float(candidate.court.x)
-                out.court[target * 2 + 1] = Float(candidate.court.y)
-                out.eligible[target] = Court.inBounds(courtX: candidate.court.x)
+                let target = index * Slots.count + slotIDs[side]![localIndex]
+                let keypointStart = sample.keypoints.startIndex + candidate.person * 51
+                let boxStart = sample.boxes.startIndex + candidate.person * 4
+                for c in 0..<51 { tracks.keypoints[target * 51 + c] = sample.keypoints[keypointStart + c] }
+                for c in 0..<4 { tracks.boxes[target * 4 + c] = sample.boxes[boxStart + c] }
+                tracks.court[target * 2] = Float(candidate.court.x)
+                tracks.court[target * 2 + 1] = Float(candidate.court.y)
+                tracks.eligible[target] = Court.inBounds(courtX: candidate.court.x)
                 slots[localIndex].hit(candidate.court)
             }
             slotsBySide[side] = slots
         }
     }
-    return out
 }
 
-/// Pool the near and far passes into one person list per sample. Side is
-/// decided by the COURT, not by which pass found a person, so both are pooled.
-/// They must be on one timeline; a mismatch means one is stale.
-private func mergePasses(near: PoseDetections, far: PoseDetections?) -> PoseDetections {
-    guard let far else { return near }
-    precondition(abs(near.samples - far.samples) <= 2 && abs(near.fps - far.fps) <= 0.01,
-                 "near and far pose passes are not on the same timeline")
-    let samples = min(near.samples, far.samples), people = near.people + far.people
-    var keypoints = [Float](), boxes = [Float](), confidences = [Float]()
-    keypoints.reserveCapacity(samples * people * 51)
-    for sample in 0..<samples {
-        for (pass, count) in [(near, near.people), (far, far.people)] {
-            let first = sample * count
-            keypoints += pass.keypoints[(first * 51)..<((first + count) * 51)]
-            boxes += pass.boxes[(first * 4)..<((first + count) * 4)]
-            confidences += pass.confidences[first..<(first + count)]
-        }
+/// Build the four player slots from the near and far pose passes (tracks.build).
+public func buildTracks(near: PoseDetections, far: PoseDetections?, geometry: Geometry) -> PlayerTracks {
+    if let far {
+        precondition(abs(near.samples - far.samples) <= 2 && abs(near.fps - far.fps) <= 0.01,
+                     "near and far pose passes are not on the same timeline")
     }
-    return PoseDetections(samples: samples, people: people, keypoints: keypoints, boxes: boxes,
-                          confidences: confidences, fps: near.fps, stride: near.stride)
+    var builder = TrackBuilder(fps: near.fps, stride: near.stride, geometry: geometry)
+    for sample in 0..<min(near.samples, far?.samples ?? near.samples) {
+        builder.add(PooledSample(near: near, far: far, sample: sample))
+    }
+    return builder.tracks
 }
 
 /// Every person in this sample who may be tracked, split by side.
-private func candidates(at sample: Int, in passes: PoseDetections,
+private func candidates(in sample: PooledSample,
                         homography: Homography, inverse: Homography) -> [Side: [Candidate]] {
     var bySide: [Side: [Candidate]] = [.near: [], .far: []]
-    for person in 0..<passes.people {
-        let index = sample * passes.people + person
-        let confidence = Double(passes.confidences[index])
+    for person in 0..<sample.people {
+        let confidence = Double(sample.confidences[sample.confidences.startIndex + person])
         guard confidence.isFinite else { continue }
-        let b = index * 4
-        let x1 = Double(passes.boxes[b]), y1 = Double(passes.boxes[b + 1])
-        let x2 = Double(passes.boxes[b + 2]), y2 = Double(passes.boxes[b + 3])
+        let b = sample.boxes.startIndex + person * 4
+        let x1 = Double(sample.boxes[b]), y1 = Double(sample.boxes[b + 1])
+        let x2 = Double(sample.boxes[b + 2]), y2 = Double(sample.boxes[b + 3])
         // float32 subtraction, as Python's `float(box[3] - box[1])` on a float32 row.
-        let heightPx = Double(passes.boxes[b + 3] - passes.boxes[b + 1])
+        let heightPx = Double(sample.boxes[b + 3] - sample.boxes[b + 1])
         guard heightPx.isFinite && heightPx >= TrackRules.MIN_H_PX else { continue }
         let position = Court.project(homography, box: (x1, y1, x2, y2))
         let side: Side = Court.isNear(courtY: position.y) ? .near : .far
