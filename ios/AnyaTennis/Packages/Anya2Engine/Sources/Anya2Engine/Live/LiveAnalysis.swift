@@ -71,6 +71,8 @@ public final class LiveAnalysis {
     public var samplesReceived: Int { trackBuilder.tracks.samples }
     /// Pose samples whose live score is final.
     public var samplesFinal: Int { liveCommitted }
+    /// The player tracks so far (for the live status screen).
+    public var tracks: PlayerTracks { trackBuilder.tracks }
 
     /// Add the next pose samples (the near and far passes for the same samples).
     public func append(_ samples: [PooledSample]) {
