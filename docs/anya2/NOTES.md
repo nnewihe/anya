@@ -5568,3 +5568,59 @@ a list of inputs.
 - **Slot flapping on clip 38** — 31 identity switches over 420 s on a singles
   clip. The doubles clips are stable (2 and 1), which is what the "who served"
   answer depends on, so this is not currently costing anything measurable.
+
+---
+
+## Near-serve trophy anchor (2026-09-05, merged 2026-10)
+
+The evidence behind `near_serve.SERVE_LEAD_S = 1.75` and `serve_onset`. This is
+the verbatim commit message of `faceeb7` from the branch
+`claude/near-serve-detector-conditions-a58148`, which was ported into the
+rewritten code (QUIRKS #5). Its README changes were not ported.
+
+```text
+Anchor the near serve on the trophy peak, not the hand split
+
+The near detector timed a point start by walking BACK from the trophy peak to
+the last sample where the hands were together on the grip, on the grounds that
+the hand split is the sharpest, best-sampled transition in the service action.
+That is true about the SHAPE and false about the TIME: where the split sits
+relative to the trophy is not fixed.  Over 58 detections paired to a labelled
+serve the interval ranges 0.07 s to 4.07 s, because a server who splits the
+hands and then pauses -- grip, line call, a second look at the returner -- puts
+seconds of unrelated delay into the timestamp.  The trophy peak has no such
+freedom; it is the instant the shape is maximal.
+
+    anchor            median    sd    within +/-2.0s after best constant
+    trophy peak       +1.67    0.67          100.0%
+    hands together    -0.36    0.75           98.3%
+
+Worth two misses AND two false positives on the twelve short clips -- a mistimed
+true positive is charged as both -- taking them 88.9%/86.2% -> 92.1%/89.2%, and
+clip 58 65.9% -> 84.1% recall.  Data/38's serve labelled at 159.5 s is the
+clearest case: trophy at 159.8 s, but the hands were last together 1.60 s
+earlier, so the event landed at 156.6 s and scored as a miss and a false
+positive at once.
+
+SERVE_LEAD_S is 1.75 and sits on a plateau, not at a fitted point: swept in
+0.05 s steps every value from 1.40 to 1.80 scores identically, and 1.75 is
+picked from inside it because the signed bias crosses zero there.
+TROPHY_LEAD_S and TOGETHER_BACK_S are gone; t_basis stays in the contract.
+
+The README's near table was regenerated from freshly run detections on all 13
+clips, because every clip's detection JSON was 8-10 days OLDER than the tracks
+npz it was nominally derived from.  eval.py warns when a run file is missing but
+not when it is stale, so the old table recorded a miss on clip 21 that does not
+exist and 100% recall on clips 36, 38 and 43 that also does not.  The tell was
+physical: three "false positives" carried ready scores of 0.60-0.73 while having
+zero track coverage in the ready lookback, where s_ready is 0.0 by construction.
+
+Also recorded, from user review of every false positive on the short clips: they
+are reverse / buggy-whip forehands, and no band separates them.  The unit turn
+puts both hands on the grip, the non-dominant arm goes up for balance, and the
+buggy-whip finish carries the racket wrist above the head, so all three terms
+score 1.00 honestly.  A ready >= 0.75 gate rejects six of seven but costs eight
+true serves; no W_READY/threshold pair does better.  Clip 58 is unchanged in
+kind -- 21 of its 22 false positives fall inside a labelled rally -- so the fix
+remains structural: honour windows="between_points" now that point_end exists.
+```
