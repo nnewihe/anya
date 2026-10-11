@@ -228,14 +228,8 @@ def _register_samples(video_path, reference, sample_step, n_src_frames,
         if W is None and last_good_W is not None:
             # Fallback: match against the last sample that DID register, and
             # compose with its warp.  One link only, so nothing accumulates.
-            # (Uses the approximate matcher -- see QUIRKS.md #6.)
-            src, dst = _match(reference.matcher, descriptors, last_good_features[1],
-                              points, last_good_features[0])
-            W_link, n_link = _fit(src, dst, lambda d: np.ones(len(d), dtype=bool))
-            if W_link is not None:
-                composed = last_good_W @ W_link
-                if _sane(composed):
-                    W, n_inliers = composed, n_link
+            W, n_inliers = _register_via_last_good(
+                reference.matcher, points, descriptors, last_good_W, last_good_features)
 
         samples.frames.append(frame)
         if W is not None:
@@ -257,6 +251,28 @@ def _register_samples(video_path, reference, sample_step, n_src_frames,
     if not samples.frames:
         raise RuntimeError("no frames sampled for the camera track")
     return samples
+
+
+def _register_via_last_good(matcher, points, descriptors, last_good_W, last_good_features):
+    """Warp to the reference by way of the last sample that registered:
+    (last_good_W @ link, n_inliers), or (None, 0).
+
+    Like `register`, the approximate match is retried with brute force if
+    it fails.
+    """
+    good_points, good_descriptors = last_good_features
+    everything = lambda d: np.ones(len(d), dtype=bool)
+    for each_matcher in (matcher, make_matcher(approximate=False)):
+        src, dst = _match(each_matcher, descriptors, good_descriptors, points, good_points)
+        W_link, n_link = _fit(src, dst, everything)
+        if W_link is not None:
+            composed = last_good_W @ W_link
+            if _sane(composed):
+                return composed, n_link
+            return None, 0
+        if isinstance(matcher, cv2.BFMatcher):
+            break
+    return None, 0
 
 
 def _fill_failed_samples(samples) -> np.ndarray:

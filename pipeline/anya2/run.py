@@ -31,6 +31,7 @@ Progress is reported as on_progress(stage, N_STAGES, label, fraction), with
 stages numbered from 1.  Each stage announcement is also a cancel point.
 """
 
+import dataclasses
 import json
 import os
 import tempfile
@@ -87,10 +88,12 @@ def build_reel(video_path, output_path: Optional[str] = None,
 
     _emit(on_progress, 4, "Detecting players (near)")
     near_dets = perceive.near(video, device=cfg.perceive.device,
-                              pose_fps=cfg.perceive.pose_fps, force=cfg.perceive.force)
+                              pose_fps=cfg.perceive.pose_fps, force=cfg.perceive.force,
+                              imgsz=cfg.perceive.near_imgsz)
     _emit(on_progress, 4, "Detecting players (far)", 0.5)
     far_dets = perceive.far(video, device=cfg.perceive.device,
-                            pose_fps=cfg.perceive.pose_fps, force=cfg.perceive.force)
+                            pose_fps=cfg.perceive.pose_fps, force=cfg.perceive.force,
+                            imgsz=cfg.perceive.far_imgsz)
 
     _emit(on_progress, 5, "Building player tracks")
     tracks.build(video, near_dets, far_dets, verbose=False)
@@ -102,12 +105,7 @@ def build_reel(video_path, output_path: Optional[str] = None,
     _run_detectors(video, cfg, artifacts, stem)
 
     _emit(on_progress, 8, "Assembling the reel")
-    # A disabled detector is disabled for the orchestrator too: its stale event
-    # file must not be read.  (This writes to the caller's cfg -- QUIRKS.md #2.)
-    cfg.reel.use_near = cfg.near.enabled
-    cfg.reel.use_far = cfg.far.enabled
-    cfg.reel.use_end = cfg.end.enabled
-    reel = orchestrate(video, cfg=cfg.reel, verbose=False)
+    reel = orchestrate(video, cfg=_reel_config(cfg), verbose=False)
     with open(os.path.join(artifacts, f"{stem}{SEGMENTS_SUFFIX}"), "w") as fh:
         json.dump(reel, fh, indent=1)
     segments = reel["segments"]
@@ -132,23 +130,38 @@ def ensure_court(video, on_progress=None) -> None:
     init_court(video, analysis_size=court.ANALYSIS_SIZE)
 
 
-def _run_detectors(video, cfg, artifacts, stem):
-    """Stage 7: each enabled detector writes its `<stem>_anya2_*.json`.
+def _reel_config(cfg):
+    """The orchestrator's config for this run, without modifying the caller's.
 
-    Note `x or DEFAULT` below: a threshold of 0.0 also means "default"
-    (QUIRKS.md #1).
+    A disabled detector is disabled for the orchestrator too (its event file
+    on disk may be stale), and the orchestrator's own live score uses the same
+    smoothing as the point-end detector.
     """
+    return dataclasses.replace(cfg.reel,
+                               use_near=cfg.near.enabled,
+                               use_far=cfg.far.enabled,
+                               use_end=cfg.end.enabled,
+                               live_smooth_s=cfg.end.smooth_s)
+
+
+def _or_default(value, default):
+    """`value` unless it is None.  (0.0 is a real value, not "unset".)"""
+    return default if value is None else value
+
+
+def _run_detectors(video, cfg, artifacts, stem):
+    """Stage 7: each enabled detector writes its `<stem>_anya2_*.json`."""
     if cfg.near.enabled:
         events = near_serve.detect_video(
             video, verbose=False,
-            threshold=cfg.near.threshold or near_serve.THRESHOLD,
+            threshold=_or_default(cfg.near.threshold, near_serve.THRESHOLD),
             require_court=cfg.near.require_court,
             lead_s=cfg.near.lead_s, refract_s=cfg.near.refract_s)
         dump_events(events, os.path.join(artifacts, f"{stem}{near_serve.EVENTS_SUFFIX}"))
     if cfg.far.enabled:
         events = far_serve.detect_video(
             video, verbose=False,
-            threshold=cfg.far.threshold or far_serve.THRESHOLD,
+            threshold=_or_default(cfg.far.threshold, far_serve.THRESHOLD),
             require_court=cfg.far.require_court,
             lead_s=cfg.far.lead_s, refract_s=cfg.far.refract_s,
             w_still=cfg.far.w_still)
@@ -156,7 +169,7 @@ def _run_detectors(video, cfg, artifacts, stem):
     if cfg.end.enabled:
         events = point_end.detect_video(
             video, verbose=False,
-            hi=cfg.end.live_hi or point_end.LIVE_HI,
+            hi=_or_default(cfg.end.live_hi, point_end.LIVE_HI),
             lo=cfg.end.live_lo, smooth_s=cfg.end.smooth_s,
             min_live_s=cfg.end.min_live_s)
         dump_events(events, os.path.join(artifacts, f"{stem}{point_end.EVENTS_SUFFIX}"))

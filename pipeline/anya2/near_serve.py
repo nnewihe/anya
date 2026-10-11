@@ -28,9 +28,9 @@ wrist".
 
 Reported time
 -------------
-`t` is the POINT START, not the trophy: walk back from the trophy peak to the
-last sample with the hands together, minus SERVE_LEAD_S.  The lead is a fitted
-labelling convention, not physics (see NOTES).
+`t` is the POINT START: the trophy peak minus SERVE_LEAD_S (1.75 s).  The lead
+is a fitted labelling convention, not physics (see NOTES, and the 2026-09-05
+note "Anchor the near serve on the trophy peak").
 
 Pose helpers: the walking classifier's (signals.walking_pose_helpers).
 Evidence and history: docs/anya2/NOTES.md, "near_serve.py".
@@ -107,10 +107,8 @@ THRESHOLD = 0.70           # report serves with p >= this
 REFRACT_S = 3.0            # at most one serve per this many seconds
 
 # ── point-start time ─────────────────────────────────────────────────────
-SERVE_LEAD_S = 1.63        # subtracted from the last hands-together sample
-TROPHY_LEAD_S = 2.13       # subtracted from the trophy peak if hands were
-                           # never seen together (same convention)
-TOGETHER_BACK_S = 6.00     # how far back from the trophy to look for "together"
+SERVE_LEAD_S = 1.75        # point start = trophy peak minus this.  A labelling
+                           # convention, fitted (1.40-1.80 score identically).
 
 # What this detector needs from perception (informational).
 REQUIREMENT = Requirement(roi=ROI_NEAR, pose_fps=15.0, needs_ball=False,
@@ -333,22 +331,15 @@ def detect_serves(features: NearServeFeatures,
 
 def serve_onset(features: NearServeFeatures, trophy_peak: int,
                 lead_s: Optional[float] = None) -> tuple:
-    """(point-start seconds, "together" | "trophy").
+    """(point-start seconds, "trophy"): the trophy peak minus the lead.
 
-    Preferred: the last sample within TOGETHER_BACK_S before the trophy peak
-    where the hands were still together, minus the lead.  If the hands were
-    never seen together, the trophy peak minus the (longer) trophy lead.
-    Overriding `lead_s` shifts both by the same amount.
+    The trophy peak, not the hand split: the split's distance before the
+    trophy varies 0.07-4.07 s (servers pause after splitting), while the
+    peak is where the shape is maximal.  `t_basis` is always "trophy" but
+    stays in the event so a future per-clip lead can label itself.
     """
-    fps = features.fps
-    wrist_gap = np.nan_to_num(features.gap_bh, nan=np.inf)
-    search_start = max(0, trophy_peak - int(round(TOGETHER_BACK_S * fps)))
-    together = np.flatnonzero(wrist_gap[search_start:trophy_peak] <= TOGETHER_BH)
     lead = SERVE_LEAD_S if lead_s is None else float(lead_s)
-    trophy_lead = lead + (TROPHY_LEAD_S - SERVE_LEAD_S)
-    if together.size:
-        return (search_start + int(together[-1])) / fps - lead, "together"
-    return trophy_peak / fps - trophy_lead, "trophy"
+    return trophy_peak / features.fps - lead, "trophy"
 
 
 def main() -> None:

@@ -114,6 +114,22 @@ def keep_one_per_window(events, gap_s, key="t", strongest=True):
     return kept
 
 
+def nan_skipping_moving_mean(x, width):
+    """Centred moving mean over `width` samples that ignores NaN.
+
+    NaN only where the whole window is NaN.  Same formula as the walking
+    classifier's `_movmean`.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    if width <= 1:
+        return x
+    seen = np.isfinite(x)
+    kernel = np.ones(width)
+    total = np.convolve(np.where(seen, x, 0.0), kernel, mode="same")
+    count = np.convolve(seen.astype(float), kernel, mode="same")
+    return np.where(count > 0, total / np.maximum(count, 1e-9), np.nan)
+
+
 def hysteresis(x, enter_at, leave_at):
     """Boolean state that turns on at x >= enter_at and off at x < leave_at."""
     out = np.zeros(len(x), dtype=bool)

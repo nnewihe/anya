@@ -77,7 +77,7 @@ class ReelConfig:
     next_start_guard_s: float = 4.0  # a segment's end stays this far before the next serve
 
     # ── 10: smoothing (pre/post roll is the biggest lever on what survives) ──
-    pre_roll_s: float = 1.0          # footage kept before the serve
+    pre_roll_s: float = 1.5          # footage kept before the serve (QUIRKS #5)
     post_roll_s: float = 1.0         # ...and after the end
     merge_gap_s: float = 6.0         # segments closer than this are joined
     min_segment_s: float = 4.0       # shorter segments are dropped (or padded)
@@ -96,6 +96,10 @@ class ReelConfig:
     live_gate_far: float = 0.8       # drop a far serve if the median live score
     live_gate_near: float = 0.0      #   over the previous 3 s exceeds this (0 = off)
     live_lookback_s: float = 3.0
+    live_smooth_s: Optional[float] = None   # live-score smoothing for steps 2 and
+                                            # 11; None = point_end.LIVE_SMOOTH_S.
+                                            # run.py sets it to the point-end
+                                            # detector's own value.
 
     # ── 11: recovering points with no serve ──────────────────────────────
     recover_live_thr: float = 0.75   # live score counted as "clearly playing"
@@ -162,7 +166,7 @@ def build_reel(video: str, cfg: Optional[ReelConfig] = None,
     cfg = cfg or ReelConfig()
     near, far, ends = _load_detector_events(video, cfg)
     duration = _clip_duration(video, tracks_npz)
-    live, live_fps = _live_score(video, tracks_npz)
+    live, live_fps = _live_score(video, tracks_npz, cfg.live_smooth_s)
 
     starts = merge_starts(near, far, cfg)                              # 1
     n_merged = len(starts)
@@ -218,16 +222,12 @@ def _clip_duration(video, tracks_npz):
         return None
 
 
-def _live_score(video, tracks_npz):
-    """(point_end's live score, its fps), or (None, None) if unavailable.
-
-    Always uses point_end's DEFAULT smoothing, whatever the run's config says
-    (QUIRKS.md #3).
-    """
+def _live_score(video, tracks_npz, smooth_s=None):
+    """(point_end's live score, its fps), or (None, None) if unavailable."""
     live = None
     try:
         parts = point_end.end_signal(video, tracks_npz)
-        live = point_end.live_score(parts, video, tracks_npz)
+        live = point_end.live_score(parts, video, tracks_npz, smooth_s=smooth_s)
         live_fps = float(parts["fps"])
     except Exception:
         live_fps = None
@@ -593,8 +593,7 @@ def recover_missed(segments: List[Segment], live, fps: float, cfg: ReelConfig,
 
 def _summary(video, duration, starts, segments, counts) -> Dict:
     """The reel JSON: diagnostics, the final starts, and the segments."""
-    # "next-serve" and "default" are always 0 -- see QUIRKS.md #4.
-    end_sources = {"detected": 0, "next-serve": 0, "default": 0}
+    end_sources = {"detected": 0, "estimated": 0, "recovered": 0}
     for s in segments:
         end_sources[s.end_source] = end_sources.get(s.end_source, 0) + 1
     reel_s = sum(s.duration for s in segments)

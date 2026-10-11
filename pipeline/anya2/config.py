@@ -10,9 +10,7 @@ default `Anya2Config()` reproduces the shipped behaviour exactly.  The
 module constant is the real default and lives next to its explanation (for
 example near_serve.THRESHOLD).
 
-Careful: run.py resolves `threshold` (near, far) and `live_hi` (end) with
-`value or MODULE_DEFAULT`, so setting them to 0.0 also falls back to the
-default.  See docs/anya2/QUIRKS.md #1.
+Only `None` means "use the default"; 0.0 is a real value.
 
 Anything not listed here is not meant to be tuned per run: change it in its
 module and re-verify against the corpus.
@@ -29,8 +27,11 @@ class PerceiveConfig:
     """The camera track and the two pose passes (perceive.py, camera.py)."""
     pose_fps: float = 15.0        # BOTH pose passes run at this one rate;
                                   # tracks.py interleaves them sample for sample
-    near_imgsz: Optional[int] = None   # NOT READ (QUIRKS.md #7); perceive.NEAR_IMGSZ applies
-    far_imgsz: Optional[int] = None    # NOT READ (QUIRKS.md #7); perceive.FAR_IMGSZ applies
+    near_imgsz: Optional[int] = None   # pose model input size; default
+                                       # perceive.NEAR_IMGSZ (640)
+    far_imgsz: Optional[int] = None    # default perceive.FAR_IMGSZ (960).
+                                       # The cached dets do not record the
+                                       # size: set force=True after changing.
     device: str = "mps"           # torch device for the pose model
     force: bool = False           # recompute cached camera/pose/end-signal files
     camera_sample_fps: Optional[float] = None
@@ -43,8 +44,8 @@ class PerceiveConfig:
 class NearServeConfig:
     """Near-side serve detector (near_serve.py)."""
     threshold: Optional[float] = None      # default 0.70
-    lead_s: Optional[float] = None         # default 1.63, time from serve
-                                           # motion back to the labelled start
+    lead_s: Optional[float] = None         # default 1.75, time from the trophy
+                                           # peak back to the labelled start
     refract_s: Optional[float] = None      # default 3.0, min gap between serves
     require_court: bool = True             # server must stand in the serve
                                            # zone; off lets smashes through
@@ -69,9 +70,9 @@ class PointEndConfig:
     """Point-end detector (point_end.py)."""
     live_hi: Optional[float] = None        # default 0.50, enter "live" above
     live_lo: Optional[float] = None        # default 0.35, leave "live" below
-    smooth_s: Optional[float] = None       # default 4.0 (detector only; the
-                                           # orchestrator always uses 4.0 --
-                                           # see QUIRKS.md #3)
+    smooth_s: Optional[float] = None       # default 4.0; also used by the
+                                           # orchestrator's in-rally gate and
+                                           # point recovery
     min_live_s: Optional[float] = None     # default 2.0, shortest live run
     enabled: bool = True
 
