@@ -75,8 +75,12 @@ def dets_path(video, suffix=NEAR_SUFFIX):
 # The two passes
 # ═════════════════════════════════════════════════════════════════════════
 
-def near(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
-    """All-persons pose over the 540p whole-frame proxy.  Returns the npz path."""
+def near(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None, imgsz=None):
+    """All-persons pose over the 540p whole-frame proxy.  Returns the npz path.
+
+    `imgsz` overrides NEAR_IMGSZ.  The cache does not record it: pass
+    force=True after changing it.
+    """
     out = dets_path(video, NEAR_SUFFIX)
     if os.path.isfile(out) and not force:
         print(f"[near-dets] cached: {out}")
@@ -86,12 +90,16 @@ def near(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
     proxy_fps = _video_fps(proxy_path)
     stride, effective_fps = _stride_for(proxy_fps, pose_fps)
     print(f"[near-dets] {proxy_fps:.2f} fps source, stride {stride} -> {effective_fps:.2f} fps")
-    return _pose_pass(proxy_path, out, stride, imgsz=NEAR_IMGSZ, device=device,
+    return _pose_pass(proxy_path, out, stride, imgsz=NEAR_IMGSZ if imgsz is None else imgsz, device=device,
                       label="NEAR-DETS", limit=limit)
 
 
-def far(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
-    """All-persons pose over a native-resolution crop of the far baseline band."""
+def far(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None, imgsz=None):
+    """All-persons pose over a native-resolution crop of the far baseline band.
+
+    `imgsz` overrides FAR_IMGSZ.  The cache does not record it: pass
+    force=True after changing it.
+    """
     out = dets_path(video, FAR_SUFFIX)
     crop, (scale_x, scale_y) = far_band(video)
     if os.path.isfile(out) and not force and _cached_far_pass_still_valid(video, out, crop):
@@ -103,7 +111,7 @@ def far(video, device="mps", pose_fps=POSE_FPS, force=False, limit=None):
     stride, effective_fps = _stride_for(band_fps, pose_fps)
     print(f"[far-dets] {band_fps:.2f} fps source, stride {stride} -> {effective_fps:.2f} fps")
     # The crop is in SOURCE pixels; detections are mapped back to the analysis frame.
-    return _pose_pass(band_path, out, stride, imgsz=FAR_IMGSZ, device=device,
+    return _pose_pass(band_path, out, stride, imgsz=FAR_IMGSZ if imgsz is None else imgsz, device=device,
                       offset=(crop[0] / scale_x, crop[1] / scale_y),
                       scale=(1.0 / scale_x, 1.0 / scale_y),
                       label="FAR-DETS", limit=limit,

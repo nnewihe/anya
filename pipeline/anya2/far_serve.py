@@ -98,9 +98,6 @@ TOSS_LAT_MIN_BH, TOSS_LAT_FULL_BH = 0.07, 0.17      # wrist sideways from its sh
 TOSS_HOLD_MIN_S, TOSS_HOLD_FULL_S = 0.13, 0.42      # time spent above the head
 TOSS_PEAK_MIN_BH, TOSS_PEAK_FULL_BH = 0.08, 0.17    # highest point above the head
 
-# ── ready lookback: defined but unused here (QUIRKS.md #8) ───────────────
-READY_BACK_MIN_S, READY_BACK_MAX_S = 0.20, 6.00
-
 # ── combination ──────────────────────────────────────────────────────────
 W_TROPHY, W_READY = 0.45, 0.20
 SWING_FLOOR = 0.45
