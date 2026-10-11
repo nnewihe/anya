@@ -31,6 +31,8 @@ final class MatchController {
     private var master: MasterRecorder?
     private var proxies: ProxyRecorder?
     private let frameCounter = FrameCounter()
+    private var endingPart = false
+    private var schedulerOpening: Task<AnalysisScheduler, Error>?
 
     init(manifest: MatchManifest, camera: CameraSession) {
         self.manifest = manifest
@@ -69,23 +71,24 @@ final class MatchController {
     }
 
     enum SetupError: LocalizedError {
-        case farBaselineOffScreen, lowStorage
+        case farBaselineOffScreen, lowStorage, recordingFailed(String)
         var errorDescription: String? {
             switch self {
             case .farBaselineOffScreen: "The far baseline isn't in the picture. Aim the camera so the whole court shows."
             case .lowStorage: "Less than 10 GB free. A match needs about 15 GB an hour."
+            case .recordingFailed(let why): "Recording stopped: \(why). What was recorded before is safe."
             }
         }
     }
 
     // ── recording ─────────────────────────────────────────────────────────
 
-    func startRecording() throws {
-        guard !isRecording else { return }
+    func startRecording() async throws {
+        guard !isRecording, !endingPart else { return }
         #if !targetEnvironment(simulator)
         guard MatchStore.freeBytes() > 10_000_000_000 else { throw SetupError.lowStorage }
         #endif
-        _ = try analysisScheduler()   // restores from the log before new segments arrive
+        _ = try await analysisScheduler()   // restores from the log before new segments arrive
         let stride = PerceiveRules.stride(sourceFPS: manifest.sourceFPS).stride
         let cameraStep = CameraRules.sampleStep(sourceFPS: manifest.sourceFPS)
         let firstFrame = Self.nextPartStart(after: manifest.parts, grid: cameraStep * stride / gcd(cameraStep, stride))
@@ -100,9 +103,7 @@ final class MatchController {
         let proxies = ProxyRecorder(folder: MatchStore.folder(manifest.id), scaler: scaler,
                                     sourceFPS: manifest.sourceFPS, poseStride: stride, firstSourceFrame: firstFrame,
                                     firstSegmentIndex: (manifest.segments.map(\.index).max() ?? 0) + 1)
-        proxies.onSegment = { [weak self] segment in
-            Task { @MainActor in self?.segmentFinished(segment) }
-        }
+        proxies.onSegment = { [weak self] segment in await self?.segmentFinished(segment) }
         self.master = master
         self.proxies = proxies
         manifest.parts.append(.init(file: file, firstSourceFrame: firstFrame, frameCount: 0, startedAt: Date()))
@@ -113,17 +114,38 @@ final class MatchController {
 
         let counter = frameCounter
         counter.set(-1)
-        camera.onVideo = { sample in
+        var reported = false
+        camera.setHandlers(video: { [weak self] sample in
             let frame = proxies.sourceFrame(of: sample)
             master.append(video: sample)
             proxies.append(sample, sourceFrame: frame)
             counter.set(frame - firstFrame)
-        }
-        camera.onAudio = { sample in master.append(audio: sample) }
+            // Watchdog: a failed writer or a nearly full disk ends the part
+            // (with a message) instead of recording nothing while the clock runs.
+            guard !reported, frame % 30 == 0 else { return }
+            let problem: String? = !master.isHealthy || !proxies.isHealthy
+                ? (master.error?.localizedDescription ?? "the video writer failed")
+                : MatchStore.freeBytes() < 1_500_000_000 ? "the phone is out of storage" : nil
+            if let problem {
+                reported = true
+                Task { @MainActor in await self?.recordingFailed(problem) }
+            }
+        }, audio: { sample in master.append(audio: sample) })
+    }
+
+    /// Called by the watchdog: the part so far is kept, the match pauses.
+    var onRecordingFailed: ((String) -> Void)?
+
+    private func recordingFailed(_ why: String) async {
+        await pauseRecording()
+        error = SetupError.recordingFailed(why).localizedDescription
+        onRecordingFailed?(why)
     }
 
     /// End the current part. The match stays open: recording can resume.
     func pauseRecording() async {
+        let background = UIApplication.shared.beginBackgroundTask(withName: "pause recording")
+        defer { UIApplication.shared.endBackgroundTask(background) }
         await endPart()
         if manifest.state == .recording { manifest.state = .paused }
         save()
@@ -143,10 +165,19 @@ final class MatchController {
     func finish() async {
         do {
             finishingStep = "Analysing the last of the recording…"
-            let scheduler = try analysisScheduler()
-            let result = await scheduler.finish()
+            let scheduler = try await analysisScheduler()
+            let result = await scheduler.finish(segments: manifest.segments)
             finishingStep = "Cutting the reel…"
             let segments = result.reel.segments.map { (start: $0.start, end: $0.stop) }
+            guard !segments.isEmpty else {
+                // Not an error to retry: nothing in the recording looked like a point.
+                manifest.reel = nil
+                manifest.state = .finished
+                manifest.lastError = "No points were found in this recording."
+                finishingStep = ""
+                save()
+                return
+            }
             let reelFile = "reel.mov"
             try await ReelExporter.export(manifest: manifest, segments: segments,
                                           to: MatchStore.file(reelFile, of: manifest.id))
@@ -181,11 +212,12 @@ final class MatchController {
     // ── internals ─────────────────────────────────────────────────────────
 
     private func endPart() async {
-        guard isRecording else { return }
-        camera.onVideo = nil
-        camera.onAudio = nil
-        // Let the capture queue finish the frame it is on.
-        await withCheckedContinuation { continuation in camera.queue.async { continuation.resume() } }
+        // Once only: Stop and an interruption can both arrive while the
+        // writers are finishing.
+        guard isRecording, !endingPart else { return }
+        endingPart = true
+        defer { endingPart = false }
+        camera.setHandlers(video: nil, audio: nil)   // returns after any frame in flight
         await master?.finish()
         await proxies?.finish()
         let frames = frameCounter.value + 1
@@ -197,27 +229,31 @@ final class MatchController {
         save()
     }
 
-    private func segmentFinished(_ segment: MatchManifest.Segment) {
+    private func segmentFinished(_ segment: MatchManifest.Segment) async {
         manifest.segments.append(segment)
         manifest.segments.sort { $0.index < $1.index }
         save()
-        Task { await scheduler?.enqueue(segment) }
+        await scheduler?.enqueue(segment)
     }
 
-    private func analysisScheduler() throws -> AnalysisScheduler {
+    /// The match's analysis, restored from its log the first time (off the
+    /// main thread; concurrent callers share one restore).
+    private func analysisScheduler() async throws -> AnalysisScheduler {
         if let scheduler { return scheduler }
-        let made = try AnalysisScheduler(manifest: manifest)
-        scheduler = made
-        Task {
+        let opening = schedulerOpening ?? Task { [manifest] in try await AnalysisScheduler.open(manifest: manifest) }
+        schedulerOpening = opening
+        let made = try await opening.value
+        if scheduler == nil {
+            scheduler = made
             await made.setStatusHandler { status in
                 Task { @MainActor [weak self] in
                     self?.analysisStatus = status
                     self?.manifest.samplesAnalysed = status.samplesAnalysed
                 }
             }
-            await made.drain(ignoreHeat: false)
+            Task { await made.drain() }
         }
-        return made
+        return scheduler!
     }
 
     private func save() {
@@ -241,7 +277,14 @@ final class MatchController {
         if manifest.state == .recording, var last = manifest.parts.last, last.frameCount == 0 {
             let asset = AVURLAsset(url: MatchStore.file(last.file, of: manifest.id))
             let seconds = (try? await asset.load(.duration).seconds) ?? 0
-            last.frameCount = seconds.isFinite ? Int((seconds * manifest.sourceFPS).rounded()) : 0
+            let frames = seconds * manifest.sourceFPS
+            let inMaster = frames.isFinite && frames >= 0 && frames < 1e9 ? Int(frames.rounded()) : 0
+            // A proxy segment can reach past the master's last fragment; the
+            // part must cover both, or the next part would overlap analysed frames.
+            let stride = PerceiveRules.stride(sourceFPS: manifest.sourceFPS).stride
+            let inProxies = manifest.segments.filter { $0.firstSourceFrame >= last.firstSourceFrame }
+                .map { $0.firstSourceFrame + $0.count * stride - last.firstSourceFrame }.max() ?? 0
+            last.frameCount = max(inMaster, inProxies)
             manifest.parts[manifest.parts.count - 1] = last
             manifest.state = .paused
         } else if manifest.state == .finishing {

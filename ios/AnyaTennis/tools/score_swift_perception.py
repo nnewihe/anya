@@ -10,7 +10,7 @@ clip's own proxies, store its people as perceive.py's npz files, run main's
 stages 5-8 on them, and score detectors and reel exactly as for main's own
 detections -- side by side.
 
-    python ios/AnyaTennis/tools/score_swift_perception.py OUT.jsonl [CLIP ...] [--cpu]
+    python ios/AnyaTennis/tools/score_swift_perception.py OUT.jsonl [CLIP ...] [--cpu] [--model M.mlpackage]
 
 Needs `swift build -c release` in Packages/Anya2Engine first, and the data drive.
 """
@@ -41,7 +41,7 @@ BINARY = os.path.join(PACKAGE, ".build", "release", "anya2-perceive")
 MODEL = os.path.join(HERE, "..", "AnyaTennis", "Resources", "PoseModel.mlpackage")
 
 
-def swift_detections(video, work, stem, compute):
+def swift_detections(video, work, stem, compute, model=MODEL):
     """Run anya2-perceive and write its people as the two dets npz files."""
     with np.load(os.path.join(work, stem + perceive.FAR_SUFFIX)) as z:
         crop = [int(v) for v in z["crop"]]
@@ -51,7 +51,7 @@ def swift_detections(video, work, stem, compute):
     near_video = os.path.join(work, stem + "_proxy540.mp4")
     far_video = os.path.join(work, stem + "_farband.mp4")
     out = os.path.join(work, "swift")
-    subprocess.run([BINARY, MODEL, near_video, far_video, ",".join(map(str, crop)),
+    subprocess.run([BINARY, model, near_video, far_video, ",".join(map(str, crop)),
                     f"{probe['width']},{probe['height']}", out, compute], check=True,
                    stdout=subprocess.DEVNULL)
     for name, suffix, extra in (("near", perceive.NEAR_SUFFIX, (0, 0, 0, 0)), ("far", perceive.FAR_SUFFIX, crop)):
@@ -93,6 +93,7 @@ def main():
     parser.add_argument("out")
     parser.add_argument("clips", nargs="*", default=CLIPS)
     parser.add_argument("--cpu", action="store_true", help="Core ML on the CPU only (default: Neural Engine allowed)")
+    parser.add_argument("--model", default=MODEL, help="an .mlpackage (default: the shipped fp16 model)")
     args = parser.parse_args()
     with open(args.out, "a") as results:
         for clip in args.clips:
@@ -106,7 +107,7 @@ def main():
                     shutil.copy(os.path.join(clip_dir, stem + suffix), work)
             workdir.set_work_dir(work)
             row = {"clip": clip, "python": score(work, stem, stages_5_to_8(video, work, stem), clip_dir)}
-            swift_detections(video, work, stem, "cpu" if args.cpu else "all")
+            swift_detections(video, work, stem, "cpu" if args.cpu else "all", args.model)
             row["swift"] = score(work, stem, stages_5_to_8(video, work, stem), clip_dir)
             print(json.dumps(row), flush=True)
             results.write(json.dumps(row) + "\n")

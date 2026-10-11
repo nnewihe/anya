@@ -29,6 +29,7 @@ public struct LoggedSample {
 public final class PerceptionLog {
     public let url: URL
     private var handle: FileHandle?
+    private var knownValidBytes: Int?    // from the last readAll, so append need not re-read
 
     public init(url: URL) { self.url = url }
 
@@ -36,23 +37,33 @@ public final class PerceptionLog {
 
     /// Every whole entry in the file, and the byte length they cover.
     public func readAll() -> (samples: [LoggedSample], validBytes: Int) {
-        guard let data = try? Data(contentsOf: url) else { return ([], 0) }
         var samples: [LoggedSample] = []
-        var offset = 0
-        while let (sample, length) = PerceptionLog.decode(data, at: offset) {
-            samples.append(sample)
-            offset += length
-        }
-        return (samples, offset)
+        let valid = readEach { samples.append($0) }
+        return (samples, valid)
     }
 
-    /// Append entries and flush them to disk.
-    public func append(_ samples: [LoggedSample]) throws {
+    /// Visit every whole entry in order without holding them all (a 2-hour
+    /// match logs ~100k samples). Returns the byte length they cover.
+    @discardableResult
+    public func readEach(_ body: (LoggedSample) -> Void) -> Int {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { knownValidBytes = 0; return 0 }
+        var offset = 0
+        while let (sample, length) = PerceptionLog.decode(data, at: offset) {
+            body(sample)
+            offset += length
+        }
+        knownValidBytes = offset
+        return offset
+    }
+
+    /// Append entries; `sync` also forces them to disk (do it once per
+    /// segment, not per sample).
+    public func append(_ samples: [LoggedSample], sync: Bool = true) throws {
         if handle == nil {
             if !FileManager.default.fileExists(atPath: url.path) {
                 FileManager.default.createFile(atPath: url.path, contents: nil)
             }
-            let valid = readAll().validBytes
+            let valid = knownValidBytes ?? readEach { _ in }
             let opened = try FileHandle(forWritingTo: url)
             try opened.truncate(atOffset: UInt64(valid))   // drop a torn tail
             try opened.seekToEnd()
@@ -61,7 +72,7 @@ public final class PerceptionLog {
         var data = Data()
         for sample in samples { PerceptionLog.encode(sample, into: &data) }
         try handle!.write(contentsOf: data)
-        try handle!.synchronize()
+        if sync { try handle!.synchronize() }
     }
 
     // ── encoding ──────────────────────────────────────────────────────────

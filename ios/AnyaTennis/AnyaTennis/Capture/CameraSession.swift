@@ -94,6 +94,15 @@ final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         configured = true
     }
 
+    /// Set the frame handlers on the capture queue, so a frame in flight
+    /// never sees them half-changed. Returns once the switch is done.
+    func setHandlers(video: ((CMSampleBuffer) -> Void)?, audio: ((CMSampleBuffer) -> Void)?) {
+        queue.sync {
+            onVideo = video
+            onAudio = audio
+        }
+    }
+
     func start() { queue.async { [session] in if !session.isRunning { session.startRunning() } } }
     func stop() { queue.async { [session] in if session.isRunning { session.stopRunning() } } }
 

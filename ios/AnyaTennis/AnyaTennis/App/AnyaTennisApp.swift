@@ -106,18 +106,24 @@ final class AppModel {
         }
     }
 
-    func calibrated(_ controller: MatchController) {
+    func calibrated(_ controller: MatchController) async {
         current = controller
-        record()
+        await record()
     }
 
-    func record() {
+    func record() async {
         guard let current else { return }
+        current.onRecordingFailed = { [weak self] _ in
+            self?.screen = .paused
+            self?.refresh()
+        }
         do {
-            try current.startRecording()
+            try await current.startRecording()
             screen = .record
         } catch {
             self.error = error.localizedDescription
+            refresh()
+            screen = .list   // the match stays listed (calibrated) and can be recorded later
         }
     }
 
@@ -128,7 +134,7 @@ final class AppModel {
         do {
             try camera.configure()
             camera.start()
-            record()
+            await record()
         } catch {
             self.error = error.localizedDescription
         }
@@ -180,7 +186,7 @@ final class AppModel {
                                                         sourceWidth: format.width, sourceHeight: format.height,
                                                         sourceFPS: format.fps)
             current = controller
-            try controller.startRecording()
+            try await controller.startRecording()
             screen = .record
             print("[replay] recording \(replay.url.lastPathComponent) at \(replay.speed)x")
             try await FileReplay.play(replay.url, into: camera, speed: replay.speed)
@@ -196,7 +202,8 @@ final class AppModel {
     #endif
 
     private func interrupted() async {
-        guard let current, current.isRecording else { return }
+        // Only while recording: during Stop the part is already ending.
+        guard let current, current.isRecording, screen == .record else { return }
         await current.pauseRecording()
         screen = .paused
         refresh()

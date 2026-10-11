@@ -29,6 +29,14 @@ struct FinishView: View {
     @ViewBuilder private var progress: some View {
         let controller = model.current
         switch controller?.manifest.state {
+        case .finished where controller?.manifest.reel == nil:
+            Image(systemName: "questionmark.circle").font(.system(size: 54)).foregroundStyle(.orange)
+            Text(controller?.manifest.lastError ?? "No points were found.").font(.title3)
+            Text("The full recording is kept; save it to Photos from the match.").foregroundStyle(.secondary)
+            Button("Open the match") {
+                if let controller { controller.updateInfo(info); model.showDetail(controller.manifest.id) }
+            }
+            .buttonStyle(.borderedProminent)
         case .finished:
             Image(systemName: "checkmark.circle.fill").font(.system(size: 54)).foregroundStyle(.green)
             Text("The reel is ready").font(.title2.bold())
@@ -42,10 +50,14 @@ struct FinishView: View {
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 54)).foregroundStyle(.orange)
             Text(controller?.manifest.lastError ?? "Something went wrong.").multilineTextAlignment(.center)
-            Button("Try again") {
-                if let manifest = controller?.manifest { Task { await model.finish(manifest) } }
+            HStack {
+                Button("Try again") {
+                    if let manifest = controller?.manifest { Task { await model.finish(manifest) } }
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Back to matches") { controller?.updateInfo(info); model.home() }
+                    .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
         default:
             ProgressView().controlSize(.large)
             Text(controller?.finishingStep.isEmpty == false ? controller!.finishingStep : "Finishing…").font(.headline)

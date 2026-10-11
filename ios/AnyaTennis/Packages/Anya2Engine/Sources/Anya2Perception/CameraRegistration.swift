@@ -77,6 +77,9 @@ public final class CameraReference {
     private let width: Int, height: Int
 
     public init(calibrationFrame: GrayFrame, courtCorners: [(x: Double, y: Double)]) throws {
+        guard courtCorners.count == 4,
+              courtCorners.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) < 1e5 && abs($0.y) < 1e5 })
+        else { throw CameraError.badCourtCorners }
         self.courtCorners = courtCorners
         width = calibrationFrame.width; height = calibrationFrame.height
         features = Features(of: calibrationFrame)
@@ -86,6 +89,7 @@ public final class CameraReference {
         let mask = A2OpenCV.courtMask(withCorners: Data(bytes: &corners, count: corners.count * 4),
                                       width: width, height: height, padPixels: CameraRules.COURT_MASK_PAD_PX)
         courtMask = [UInt8](mask)
+        guard courtMask.count == width * height else { throw CameraError.badCourtCorners }
     }
 
     /// Which calibration-frame points fall on the (dilated) court surface.
@@ -125,7 +129,7 @@ public final class CameraReference {
     }
 }
 
-public enum CameraError: Error { case noFeaturesInCalibrationFrame }
+public enum CameraError: Error { case noFeaturesInCalibrationFrame, badCourtCorners }
 
 /// camera._match: ratio-tested correspondences as float32 point pairs.
 func ratioMatches(_ current: Features, _ reference: Features, approximate: Bool) -> (source: [Float], destination: [Float]) {

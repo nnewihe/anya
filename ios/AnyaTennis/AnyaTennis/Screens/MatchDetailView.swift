@@ -27,6 +27,7 @@ struct MatchDetailView: View {
                 }
             }
             .frame(maxWidth: .infinity)
+            .overlay { if manifest?.reel == nil { Text("No reel: no points were found.").foregroundStyle(.secondary) } }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
@@ -84,10 +85,8 @@ struct MatchDetailView: View {
     }
 
     @ViewBuilder private var youtube: some View {
-        if let videoID = manifest?.upload.videoID {
-            Link(destination: URL(string: "https://youtu.be/\(videoID)")!) {
-                Label("On YouTube", systemImage: "play.rectangle.fill")
-            }
+        if let videoID = manifest?.upload.videoID, let url = URL(string: "https://youtu.be/\(videoID)") {
+            Link(destination: url) { Label("On YouTube", systemImage: "play.rectangle.fill") }
         } else if manifest?.upload.sessionURL != nil {
             Button {
                 Task { await run("Resuming the upload…") {
@@ -106,6 +105,8 @@ struct MatchDetailView: View {
                 Task { await run("Starting the upload…") { try await uploadReel() } }
             } label: { Label("Upload the reel to YouTube", systemImage: "play.rectangle") }
         }
+        Button("Disconnect Google account") { Task { await YouTubeUploader.signOut() } }
+            .font(.footnote)
     }
 
     private func uploadReel() async throws {

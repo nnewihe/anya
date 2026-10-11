@@ -109,18 +109,41 @@ final class YouTubeUploader: NSObject, URLSessionDataDelegate {
         let http = response as? HTTPURLResponse
         guard http?.statusCode == 200 else { throw YouTubeError.sessionRefused(http?.statusCode ?? -1) }
         guard let location = http?.value(forHTTPHeaderField: "Location"), let url = URL(string: location),
-              url.scheme == "https", url.host?.hasSuffix("googleapis.com") == true
+              Self.isSessionURL(url)
         else { throw YouTubeError.noSessionURL }
         return url
     }
 
+    /// A YouTube resumable-upload address, and nothing else: the file is
+    /// only ever sent to an address that passes this (also when the address
+    /// comes back from the manifest on resume).
+    static func isSessionURL(_ url: URL) -> Bool {
+        guard url.scheme == "https", url.host == "www.googleapis.com",
+              url.path.hasPrefix("/upload/youtube/v3/videos"),
+              let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        else { return false }
+        return query.contains { $0.name == "upload_id" && !($0.value ?? "").isEmpty }
+    }
+
+    @MainActor
+    static func signOut() async {
+        #if canImport(GoogleSignIn)
+        try? await GIDSignIn.sharedInstance.disconnect()
+        #endif
+    }
+
+    private static func remainderFile(_ matchID: String) -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("youtube-\(UUID(uuidString: matchID)?.uuidString ?? "x").part")
+    }
+
     /// Send `file` (from byte `offset`) to the session, in the background.
     func send(file: URL, from offset: Int64 = 0, sessionURL: URL, matchID: String) throws {
+        guard Self.isSessionURL(sessionURL) else { throw YouTubeError.noSessionURL }
         let size = Int64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
         var body = file
         if offset > 0 {
             // A background upload must come from a file: write the remainder out.
-            body = FileManager.default.temporaryDirectory.appendingPathComponent("youtube-\(matchID).part")
+            body = Self.remainderFile(matchID)
             let handle = try FileHandle(forReadingFrom: file)
             defer { try? handle.close() }
             try handle.seek(toOffset: UInt64(offset))
@@ -140,6 +163,7 @@ final class YouTubeUploader: NSObject, URLSessionDataDelegate {
 
     /// Continue an interrupted upload: ask how much YouTube has, send the rest.
     func resume(file: URL, sessionURL: URL, matchID: String) async throws {
+        guard Self.isSessionURL(sessionURL) else { throw YouTubeError.noSessionURL }
         let size = Int64(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
         var request = URLRequest(url: sessionURL)
         request.httpMethod = "PUT"
@@ -154,6 +178,7 @@ final class YouTubeUploader: NSObject, URLSessionDataDelegate {
         // "Range: bytes=0-12345" = received through byte 12345.
         let received = http?.value(forHTTPHeaderField: "Range")
             .flatMap { $0.split(separator: "-").last }.flatMap { Int64($0) }.map { $0 + 1 } ?? 0
+        guard (0..<size).contains(received) else { throw YouTubeError.sessionRefused(308) }
         try send(file: file, from: received, sessionURL: sessionURL, matchID: matchID)
     }
 
@@ -176,6 +201,7 @@ final class YouTubeUploader: NSObject, URLSessionDataDelegate {
     }
 
     private func finish(matchID: String, data: Data, error: Error?) {
+        try? FileManager.default.removeItem(at: Self.remainderFile(matchID))
         let videoID = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["id"] as? String
         onFinished?(matchID, videoID, videoID == nil ? (error ?? YouTubeError.noSessionURL) : nil)
     }

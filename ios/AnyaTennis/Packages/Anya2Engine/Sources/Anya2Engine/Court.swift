@@ -178,6 +178,14 @@ public final class Geometry {
         inverseBySample.removeAll(keepingCapacity: true)
     }
 
+    /// Append final samples to the track in place. Earlier warps never
+    /// change, so the per-sample caches stay valid.
+    public func extendCameraTrack(frames: ArraySlice<Int>, warps: ArraySlice<Homography>) {
+        precondition(frames.count == warps.count && (cameraTrack.frames.last ?? -1) < (frames.first ?? Int.max))
+        cameraTrack.frames += frames
+        cameraTrack.warps += warps
+    }
+
     public func homography(atSourceFrame frame: Int) -> Homography {
         let sample = cameraTrack.sampleIndex(nearestTo: frame)
         if let cached = homographyBySample[sample] { return cached }

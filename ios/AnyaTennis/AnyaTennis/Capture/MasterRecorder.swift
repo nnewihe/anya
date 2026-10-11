@@ -22,7 +22,8 @@ final class MasterRecorder {
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: width, AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 40_000_000,
+                // ~11 GB an hour; with the proxies ~15 GB (MatchController's check).
+                AVVideoAverageBitRateKey: 25_000_000,
                 // A key frame every second keeps passthrough cuts tight.
                 AVVideoMaxKeyFrameIntervalKey: 30,
                 AVVideoExpectedSourceFrameRateKey: 30,
@@ -67,7 +68,10 @@ final class MasterRecorder {
         video.markAsFinished()
         audio?.markAsFinished()
         await writer.finishWriting()
+        try? MatchStore.excludeFromBackup(url)   // ~15 GB an hour; Photos is the keeper
     }
 
     var error: Error? { writer.error }
+    /// False once the writer has failed (disk full, encoder error).
+    var isHealthy: Bool { writer.status != .failed }
 }

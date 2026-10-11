@@ -19,13 +19,25 @@ enum MatchStore {
         return url
     }
 
-    static func folder(_ id: String) -> URL { root.appendingPathComponent(id, isDirectory: true) }
+    static func folder(_ id: String) -> URL {
+        // Only ever a UUID (MatchManifest.validated): never "..", never a path.
+        precondition(UUID(uuidString: id) != nil, "match id must be a UUID")
+        return root.appendingPathComponent(id, isDirectory: true)
+    }
 
-    static func file(_ name: String, of id: String) -> URL { folder(id).appendingPathComponent(name) }
+    static func file(_ name: String, of id: String) -> URL {
+        let folder = folder(id).standardizedFileURL
+        let url = folder.appendingPathComponent(name).standardizedFileURL
+        precondition(url.path.hasPrefix(folder.path + "/"), "file outside its match folder")
+        return url
+    }
 
     static func create(_ manifest: MatchManifest) throws {
         let proxies = folder(manifest.id).appendingPathComponent("proxies", isDirectory: true)
         try FileManager.default.createDirectory(at: proxies, withIntermediateDirectories: true)
+        // Recordings run ~15 GB an hour: keep them out of iCloud/computer backups
+        // (Photos is how the user keeps them). The manifest stays backed up.
+        try? excludeFromBackup(proxies)
         try save(manifest)
     }
 
@@ -37,10 +49,21 @@ enum MatchStore {
         try encoder.encode(manifest).write(to: file("manifest.json", of: manifest.id), options: .atomic)
     }
 
+    /// The match in folder `id`, refused unless every field is one the app
+    /// could have written (MatchManifest.validated).
     static func load(_ id: String) throws -> MatchManifest {
+        guard UUID(uuidString: id) != nil else { throw MatchManifest.Invalid.field("folder") }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(MatchManifest.self, from: Data(contentsOf: file("manifest.json", of: id)))
+            .validated(folderName: id)
+    }
+
+    static func excludeFromBackup(_ url: URL) throws {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try url.setResourceValues(values)
     }
 
     /// Every match, newest first. Folders without a readable manifest are skipped.

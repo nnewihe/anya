@@ -87,3 +87,38 @@ struct MatchManifest: Codable, Identifiable {
         return createdAt.formatted(date: .abbreviated, time: .shortened)
     }
 }
+
+// ── what a manifest read from disk may contain ───────────────────────────
+//
+// A manifest is trusted input only after this: a match folder can come back
+// from an edited backup, and its fields name files, build file paths and
+// size buffers. Anything outside what the app itself writes is refused.
+extension MatchManifest {
+    enum Invalid: Error { case field(String) }
+
+    func validated(folderName: String) throws -> MatchManifest {
+        func require(_ ok: Bool, _ field: String) throws { if !ok { throw Invalid.field(field) } }
+        try require(UUID(uuidString: id) != nil && id == folderName, "id")
+        try require(sourceFPS.isFinite && sourceFPS > 1 && sourceFPS <= 240, "sourceFPS")
+        try require((16...8192).contains(sourceWidth) && (16...8192).contains(sourceHeight), "source size")
+        try require(courtCorners.count == 4 && courtCorners.allSatisfy {
+            $0.x.isFinite && $0.y.isFinite && (0...960).contains($0.x) && (0...540).contains($0.y)
+        }, "courtCorners")
+        try require(band.x1 >= 0 && band.y1 >= 0 && band.x2 <= sourceWidth && band.y2 <= sourceHeight
+                    && band.x2 - band.x1 >= 32 && band.y2 - band.y1 >= 32, "band")
+        try require(parts.allSatisfy { Self.matches($0.file, #"^part-\d{3}\.mov$"#)
+                                       && $0.firstSourceFrame >= 0 && $0.frameCount >= 0 }, "parts")
+        try require(segments.allSatisfy { Self.matches($0.nearFile, #"^proxies/near-\d{5}\.mp4$"#)
+                                          && Self.matches($0.farFile, #"^proxies/far-\d{5}\.mp4$"#)
+                                          && $0.firstSourceFrame >= 0 && (0...1000).contains($0.count) }, "segments")
+        try require(reel == nil || reel!.file == "reel.mov", "reel")
+        try require(upload.videoID == nil || Self.matches(upload.videoID!, #"^[A-Za-z0-9_-]{11}$"#), "videoID")
+        try require(upload.sessionURL == nil || YouTubeUploader.isSessionURL(upload.sessionURL!), "sessionURL")
+        try require(["private", "unlisted", "public"].contains(upload.privacy), "privacy")
+        return self
+    }
+
+    private static func matches(_ text: String, _ pattern: String) -> Bool {
+        text.range(of: pattern, options: .regularExpression) != nil
+    }
+}

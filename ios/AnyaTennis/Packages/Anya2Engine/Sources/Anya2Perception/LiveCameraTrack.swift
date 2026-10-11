@@ -38,6 +38,9 @@ public final class LiveCameraTrack {
     /// fill and smoothing: what the perception log records.
     public var lastRegisteredWarp: Homography? { registered.last ?? nil }
 
+    /// Source frames of the committed samples (a prefix of all samples).
+    public var committedFrames: ArraySlice<Int> { frames.prefix(committed.count) }
+
     /// The committed part of the track, for Geometry.
     public var committedTrack: CameraTrack? {
         committed.isEmpty ? nil : CameraTrack(frames: Array(frames.prefix(committed.count)), warps: committed)

@@ -14,7 +14,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 DEST="$HERE/../Packages/Anya2Engine/Vendor"
 WORK="${1:-$(mktemp -d)}"
 cd "$WORK"
+OPENCV_COMMIT=49486f61fb25722cbcf586b7f4320921d46fb38e   # the 4.12.0 tag; refuse anything else
 test -d opencv || git clone -q --depth 1 -b 4.12.0 https://github.com/opencv/opencv.git
+test "$(git -C opencv rev-parse HEAD)" = "$OPENCV_COMMIT" || { echo "opencv/ is not 4.12.0 ($OPENCV_COMMIT)"; exit 1; }
 python3 opencv/platforms/apple/build_xcframework.py --out build \
     --iphoneos_archs arm64 --iphonesimulator_archs arm64 --macos_archs arm64 --build_only_specified_archs \
     --without=dnn --without=ml --without=objdetect --without=photo --without=stitching --without=video \

@@ -41,19 +41,23 @@ struct MatchListView: View {
                 } footer: {
                     Text("Put the phone on a tripod behind the baseline, high enough to see the whole court.")
                 }
-                let unfinished = model.matches.filter { [.paused, .recording, .failed, .finishing].contains($0.state) }
+                let unfinished = model.matches.filter { [.calibrated, .paused, .recording, .failed, .finishing].contains($0.state) }
                 if !unfinished.isEmpty {
                     Section("Interrupted") {
                         ForEach(unfinished) { match in
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(match.displayTitle).font(.headline)
-                                Text(match.lastError ?? "Recording stopped unexpectedly. What's recorded is safe.")
+                                Text(match.lastError ?? (match.parts.isEmpty ? "Calibrated, not recorded yet."
+                                                         : "Recording stopped unexpectedly. What's recorded is safe."))
                                     .font(.footnote).foregroundStyle(.secondary)
                                 HStack {
-                                    if match.state == .paused {
-                                        Button("Resume recording") { Task { await model.resume(match) } }
+                                    if match.state == .paused || match.state == .calibrated {
+                                        Button(match.parts.isEmpty ? "Record" : "Resume recording") {
+                                            Task { await model.resume(match) }
+                                        }
                                     }
-                                    Button("Finish") { Task { await model.finish(match) } }
+                                    if !match.parts.isEmpty { Button("Finish") { Task { await model.finish(match) } } }
+                                    Button("Delete", role: .destructive) { model.delete(match.id) }
                                 }
                                 .buttonStyle(.bordered)
                             }

@@ -47,8 +47,8 @@ struct CalibrateView: View {
             }
             .padding()
         }
-        .onAppear { model.camera.onVideo = { [latestFrame] in latestFrame.keep($0) } }
-        .onDisappear { if model.current?.isRecording != true { model.camera.onVideo = nil } }
+        .onAppear { model.camera.setHandlers(video: { [latestFrame] in latestFrame.keep($0) }, audio: nil) }
+        .onDisappear { if model.current?.isRecording != true { model.camera.setHandlers(video: nil, audio: nil) } }
     }
 
     private var instruction: String {
@@ -101,7 +101,7 @@ struct CalibrateView: View {
         guard let frame = latestFrame.take(), let near = FrameScaler(band: .init(x: 0, y: 0, width: 2, height: 2)).near(frame)
         else { model.error = "No picture from the camera yet."; return }
         do {
-            model.calibrated(try MatchController.create(corners: corners, calibrationFrame: near, camera: model.camera))
+            await model.calibrated(try MatchController.create(corners: corners, calibrationFrame: near, camera: model.camera))
         } catch {
             model.error = error.localizedDescription
         }

@@ -22,6 +22,8 @@ public final class LiveMatchAnalysis {
     public let analysis: LiveAnalysis
     private var waiting: [(sourceFrame: Int, sample: PooledSample)] = []
     private var nextSourceFrame = 0
+    private var warpsInGeometry = 0      // committed camera samples already handed to Geometry
+    private var finished: BatchResult?
 
     /// `sourceFPS`: the recording's frame rate. Pose samples are every
     /// `poseStride`-th source frame, camera samples every `sampleStep`-th.
@@ -61,19 +63,33 @@ public final class LiveMatchAnalysis {
         release(finished: false)
     }
 
+    /// The whole match. Safe to call again (a retried export): the first
+    /// result is kept.
     public func finish() -> BatchResult {
+        if let finished { return finished }
         geometry.replaceCameraTrack(camera.finish())
         release(finished: true)
-        return analysis.finish()
+        let result = analysis.finish()
+        finished = result
+        return result
     }
 
     /// Hand the tracker every waiting sample the camera track now covers.
     private func release(finished: Bool) {
         if !finished {
-            guard let covered = camera.committedThroughFrame, let track = camera.committedTrack else { return }
+            guard let covered = camera.committedThroughFrame else { return }
             let ready = waiting.prefix { $0.sourceFrame <= covered }
             guard !ready.isEmpty else { return }
-            geometry.replaceCameraTrack(track)
+            // Hand Geometry only the newly final warps (copying the whole
+            // track each time would be quadratic over a 2-hour match).
+            let committed = camera.committed
+            if warpsInGeometry == 0 {
+                geometry.replaceCameraTrack(CameraTrack(frames: Array(camera.committedFrames), warps: committed))
+            } else if committed.count > warpsInGeometry {
+                geometry.extendCameraTrack(frames: camera.committedFrames[warpsInGeometry...],
+                                           warps: committed[warpsInGeometry...])
+            }
+            warpsInGeometry = committed.count
             analysis.append(ready.map(\.sample))
             waiting.removeFirst(ready.count)
         } else {

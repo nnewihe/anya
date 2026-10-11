@@ -19,8 +19,9 @@ final class ProxyRecorder {
 
     let poseStride: Int                          // source frames per pose sample
     let folder: URL
-    /// Called (on the capture queue) when a segment file pair is complete.
-    var onSegment: ((MatchManifest.Segment) -> Void)?
+    /// Awaited when a segment file pair is complete, so `finish()` returns
+    /// only after every segment has been handed on.
+    var onSegment: ((MatchManifest.Segment) async -> Void)?
 
     private let scaler: FrameScaler
     private let sourceFPS: Double
@@ -57,12 +58,16 @@ final class ProxyRecorder {
         }
     }
 
-    /// Close the open segment and wait for every segment to be on disk.
+    /// Close the open segment and wait for every segment to be on disk and
+    /// handed on, in order.
     func finish() async {
         closeSegment()
         for task in pendingFinishes { await task.value }
         pendingFinishes.removeAll()
     }
+
+    /// False once a segment writer has failed (e.g. the disk is full).
+    var isHealthy: Bool { current.map { $0.near.isHealthy && $0.far.isHealthy } ?? true }
 
     private func write(near: CVPixelBuffer, far: CVPixelBuffer, sampleFrame: Int) {
         if current == nil {
@@ -71,10 +76,10 @@ final class ProxyRecorder {
             let nearName = String(format: "proxies/near-%05d.mp4", index)
             let farName = String(format: "proxies/far-%05d.mp4", index)
             guard let nearWriter = try? SegmentWriter(url: folder.appendingPathComponent(nearName),
-                                                      width: 960, height: 540, bitRate: 8_000_000),
+                                                      width: 960, height: 540, bitRate: 4_000_000),
                   let farWriter = try? SegmentWriter(url: folder.appendingPathComponent(farName),
                                                      width: scaler.band.width, height: scaler.band.height,
-                                                     bitRate: 10_000_000)
+                                                     bitRate: 5_000_000)
             else { return }
             current = (index, sampleFrame, 0, nearWriter, farWriter)
         }
@@ -95,10 +100,12 @@ final class ProxyRecorder {
             nearFile: String(format: "proxies/near-%05d.mp4", segment.index),
             farFile: String(format: "proxies/far-%05d.mp4", segment.index))
         let callback = onSegment
+        let previous = pendingFinishes.last
         pendingFinishes.append(Task {
-            await segment.near.finish()
-            await segment.far.finish()
-            callback?(record)
+            await previous?.value      // hand segments on in timeline order
+            let wroteNear = await segment.near.finish()
+            let wroteFar = await segment.far.finish()
+            if wroteNear && wroteFar { await callback?(record) }
         })
     }
 }
@@ -119,20 +126,26 @@ final class SegmentWriter {
         input.expectsMediaDataInRealTime = true
         adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: nil)
         writer.add(input)
-        writer.startWriting()
+        guard writer.startWriting() else { throw writer.error ?? CocoaError(.fileWriteUnknown) }
         writer.startSession(atSourceTime: .zero)
     }
 
+    var isHealthy: Bool { writer.status != .failed }
+
     func append(_ frame: CVPixelBuffer, at time: CMTime) {
-        // Real-time input: if the encoder is momentarily busy, wait briefly
-        // rather than lose a pose sample.
+        // Real-time input on the capture queue: wait at most ~10 ms for a busy
+        // encoder, then drop the sample (the reader matches frames to samples
+        // by timestamp, so a drop leaves one sample empty, nothing shifts).
         var waited = 0
-        while !input.isReadyForMoreMediaData && waited < 50 { usleep(1000); waited += 1 }
-        adaptor.append(frame, withPresentationTime: time)
+        while !input.isReadyForMoreMediaData && waited < 10 { usleep(1000); waited += 1 }
+        if input.isReadyForMoreMediaData { adaptor.append(frame, withPresentationTime: time) }
     }
 
-    func finish() async {
+    /// Returns whether the file was written completely.
+    func finish() async -> Bool {
+        guard writer.status == .writing else { return false }
         input.markAsFinished()
         await writer.finishWriting()
+        return writer.status == .completed
     }
 }
