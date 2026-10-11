@@ -66,6 +66,48 @@ extension CorpusParityTests {
     }
 }
 
+extension CorpusParityTests {
+    /// Stages 5-8 end to end: every detector's events and the final reel.
+    func testBatchMatchesPython() throws {
+        let model = try WalkingModel.bundled()
+        for clip in try corpusClips() {
+            let result = runBatch(near: clip.poseDetections("near"), far: clip.poseDetections("far"),
+                                  geometry: clip.geometry, walkingModel: model)
+            let reference = try clip.referenceJSON()
+            let name = clip.meta.clip
+            assertSame(result.live, clip.referenceFloat64("orchestrator.live"), "\(name) live score", tolerance: 1e-9)
+            assertEvents(result.nearServes, reference["near_serve"] as! [[String: Any]], "\(name) near serves")
+            assertEvents(result.farServes, reference["far_serve"] as! [[String: Any]], "\(name) far serves")
+            assertEvents(result.pointEnds, reference["point_end"] as! [[String: Any]], "\(name) point ends")
+            let wantSegments = (reference["reel"] as! [String: Any])["segments"] as! [[String: Any]]
+            XCTAssertEqual(result.reel.segments.count, wantSegments.count, "\(name) segment count")
+            for (got, want) in zip(result.reel.segments, wantSegments) {
+                for (value, key) in [(got.start, "start"), (got.stop, "stop"), (got.serveT, "serve_t"), (got.endT, "end_t")] {
+                    XCTAssertEqual(value, want[key] as! Double, accuracy: 1e-9, "\(name) segment \(key)")
+                }
+                XCTAssertEqual(got.side, want["side"] as! String, "\(name) segment side")
+                XCTAssertEqual(got.endSource, want["end_source"] as! String, "\(name) segment end source")
+                XCTAssertEqual(got.notes, want["notes"] as! [String], "\(name) segment notes")
+            }
+        }
+    }
+
+    func assertEvents(_ got: [Event], _ want: [[String: Any]], _ label: String,
+                      file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(got.count, want.count, "\(label): count", file: file, line: line)
+        for (g, w) in zip(got, want) {
+            XCTAssertEqual(g.t, w["t"] as! Double, accuracy: 1e-9, "\(label) t", file: file, line: line)
+            XCTAssertEqual(g.p, w["p"] as! Double, accuracy: 1e-12, "\(label) p at \(g.t)", file: file, line: line)
+            XCTAssertEqual(g.track, w["track"] as? Int, "\(label) track at \(g.t)", file: file, line: line)
+            let detail = w["detail"] as! [String: Any]
+            if let toss = detail["toss"] as? Double {
+                XCTAssertEqual(g.detail["toss"] ?? .nan, toss, accuracy: 1e-12, "\(label) toss at \(g.t)",
+                               file: file, line: line)
+            }
+        }
+    }
+}
+
 /// Element-wise equality with NaN == NaN; reports the first few mismatches.
 func assertSame<T: BinaryFloatingPoint>(_ got: [T], _ want: [T], _ label: String,
                                         tolerance: Double = 0, file: StaticString = #filePath, line: UInt = #line) {
