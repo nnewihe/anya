@@ -54,6 +54,19 @@ YouTube needs one manual step. Create an iOS OAuth client for `com.build2launch.
 | `LiveCameraTrack` | `camera.py` run fresh on Data/78's frames | 0.000 px. Main's cached track is one random FLANN-LSH draw, 3–6 px from any re-run |
 | live camera bookkeeping | batch fill + smooth | identical under random failures |
 
+**Against ground truth** (`tools/score_swift_perception.py --bt601`, the shipped configuration: fp16, Neural Engine allowed, BT.601 decode), 12 corpus clips (58 not run):
+
+| | Near serves | Far serves (dets) | Point ends (dets) | Whole points |
+|---|---|---|---|---|
+| Python (main) | 58/63 | 83/91 (110) | 90/154 (178) | 116/154 |
+| Swift | 57/63 | 83/91 (113) | 88/154 (176) | 113/154 |
+
+For scale: just re-running Python's own pose on Data/21 moves its point-end recall from 10/12 to 7/12.
+
+**BT.601, not the file's tag.** AVFoundation decodes BT.709-tagged video with 709; perceive.py reads through ffmpeg/OpenCV, which use BT.601, and the detectors were tuned on those colours. With the tagged matrix, point-end recall on Data/21 was 7/12; with BT.601 it is 9/12 (Python 10/12).
+
+**Far band while recording.** The app sizes the far crop from the calibration frame alone (main uses the whole match's camera track). Over 13 clips: whole points 140 vs main's 137, far-serve recall 104 vs 100, point-end recall 113 vs 116 -- neutral within re-run noise.
+
 **One model instance per pass.** Core ML re-plans whenever an instance's input shape changes. Alternating 640×384 and 960×H on one instance cost 60 ms per sample on the Neural Engine; with two instances it's 6.6 ms (M-series Mac).
 
 **Why ±1 grey matters.** With a floating-point bilinear resize, far confidences moved by up to 0.02 and a far keypoint by 9.7 px, because the far player is small and borderline.
