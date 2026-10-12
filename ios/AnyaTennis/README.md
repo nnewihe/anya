@@ -7,13 +7,69 @@ OpenCV only for camera-bump registration.
 
 | Milestone | What | Status |
 |---|---|---|
-| M0 | Spikes (pose on the ANE, capture soak); Python changes on main (causal far band, reference still, proxy replay) | not started |
+| M0 | Spikes; Python changes on main (causal far band, …) | far-band comparison run (below); no PR to main yet |
 | **M1** | **Batch engine: anya2 stages 5–8 in Swift** | **done: matches main exactly on all 13 corpus clips** |
-| M2 | Incremental engine (live, about 7 s behind, finalise at Stop) | next |
-| M3 | Perception: letterbox, Core ML pose, camera track, far band | |
-| M4 | Capture shell: calibrate → record → stop, resume after a kill | |
-| M5 | Live analysis and the reel | |
-| M6 | Match info, Save/Share, YouTube | |
+| **M2** | **Live engine: about 7 s behind, finalised at Stop** | **done: identical to batch on all 13 clips, under random chunking** |
+| **M3** | **Perception: letterbox, Core ML pose, camera track, far band** | **done: see "Perception"** |
+| **M4** | **Capture: calibrate → record → stop, interruptions, recovery after a kill** | **built; simulator replay end to end; not yet run on a phone** |
+| **M5** | **Live analysis while recording, and the reel** | **built; simulator replay end to end** |
+| **M6** | **Match info, Photos, Share, YouTube** | **built; YouTube waits for the OAuth client** |
+
+## The app (`AnyaTennis/`)
+
+| Folder | What |
+|---|---|
+| `App/` | `AnyaTennisApp` (screens, app model), `MatchController` (one match from calibration to reel) |
+| `Screens/` | Calibrate (tap the 4 singles corners), Record (live status), Paused, Finish (match info while the reel is cut), match list, match detail |
+| `Capture/` | `CameraSession` (4K30, stabilisation off), `MasterRecorder` (fragmented HEVC .mov), `ProxyRecorder` (2 s near/far proxy segments at 15 Hz), `FrameScaler`, `FileReplay` (Debug: a file instead of the camera) |
+| `Analysis/` | `AnalysisScheduler`: segment → pose → camera track → live anya2 → perception log |
+| `Storage/` | `MatchStore` (one folder per match), `MatchManifest`, `CalibrationFrame` |
+| `Output/` | `ReelExporter` (passthrough cut across parts), `PhotosSaver`, `YouTubeUploader` (resumable, background) |
+
+How a match flows:
+1. **Calibrate.** Tap the 4 singles corners on the live preview. The far band (`FarBand`) comes from that frame alone.
+2. **Record.** The camera thread writes the master `.mov`, plus two 15 Hz proxies cut into 2 s segments. As each segment lands, `AnalysisScheduler` runs pose on it, then the camera track, then `LiveMatchAnalysis`, and appends to `perception.log`.
+3. **Interruption** (a call, or leaving the app). The part is closed and the match is *paused*; Resume starts a new part on the same timeline.
+4. **Kill.** On the next launch the master's last fragment gives the part's length and the match is paused. Analysis replays `perception.log` in seconds instead of re-running pose.
+5. **Stop.** The backlog drains, `finish()` runs the whole-match steps, and `ReelExporter` cuts the reel by passthrough.
+
+Build: `xcodegen` (spec in `project.yml`; the generated project is checked in), and `tools/build_opencv.sh` once (OpenCV is not checked in).
+
+To replay a corpus clip in the simulator through the real recording path:
+```bash
+xcrun simctl launch --console-pty booted com.build2launch.anyatennis \
+  -AnyaReplay /path/snippet.mp4 -AnyaCorners "82,384,877,378,579,250,419,245"
+```
+
+YouTube needs one manual step. Create an iOS OAuth client for `com.build2launch.anyatennis` in Google Cloud. Put its client ID in `project.yml` as `GIDClientID`, and add its reversed ID as a URL scheme. Until then the button is hidden.
+
+## Perception
+
+| Piece | Checked against | Result |
+|---|---|---|
+| `UltralyticsLetterbox` | `cv2.resize(INTER_LINEAR)` + Ultralytics padding, 30 real frames | bit-exact (fixed-point weights, NEON vertical pass) |
+| `PoseModel` decode + NMS, **fp32** | Ultralytics predict, same frames | same people; IoU 1.000, conf 0.0000, keypoints 0.55 px |
+| `PoseModel`, **fp16** (shipped) | same | CPU: IoU 0.988, conf 0.016, 2.7 px; judged on the corpus instead |
+| `CameraRegistration` | `camera.py` self-test scenes | jostles undone to < 0.3 px |
+| `LiveCameraTrack` | `camera.py` run fresh on Data/78's frames | 0.000 px. Main's cached track is one random FLANN-LSH draw, 3–6 px from any re-run |
+| live camera bookkeeping | batch fill + smooth | identical under random failures |
+
+**Against ground truth** (`tools/score_swift_perception.py --bt601`, the shipped configuration: fp16, Neural Engine allowed, BT.601 decode), 12 corpus clips (58 not run):
+
+| | Near serves | Far serves (dets) | Point ends (dets) | Whole points |
+|---|---|---|---|---|
+| Python (main) | 58/63 | 83/91 (110) | 90/154 (178) | 116/154 |
+| Swift | 57/63 | 83/91 (113) | 88/154 (176) | 113/154 |
+
+For scale: just re-running Python's own pose on Data/21 moves its point-end recall from 10/12 to 7/12.
+
+**BT.601, not the file's tag.** AVFoundation decodes BT.709-tagged video with 709; perceive.py reads through ffmpeg/OpenCV, which use BT.601, and the detectors were tuned on those colours. With the tagged matrix, point-end recall on Data/21 was 7/12; with BT.601 it is 9/12 (Python 10/12).
+
+**Far band while recording.** The app sizes the far crop from the calibration frame alone (main uses the whole match's camera track). Over 13 clips: whole points 140 vs main's 137, far-serve recall 104 vs 100, point-end recall 113 vs 116 -- neutral within re-run noise.
+
+**One model instance per pass.** Core ML re-plans whenever an instance's input shape changes. Alternating 640×384 and 960×H on one instance cost 60 ms per sample on the Neural Engine; with two instances it's 6.6 ms (M-series Mac).
+
+**Why ±1 grey matters.** With a floating-point bilinear resize, far confidences moved by up to 0.02 and a far keypoint by 9.7 px, because the far player is small and borderline.
 
 ## Anya2Engine (`Packages/Anya2Engine`)
 

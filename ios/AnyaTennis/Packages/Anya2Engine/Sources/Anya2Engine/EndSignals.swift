@@ -18,11 +18,20 @@ public struct EndSignals {
 /// in -- kept as Python has it.
 public func nearPlayerPoseForEndSignals(_ tracks: PlayerTracks)
     -> (keypoints: SampleTable, boxes: SampleTable, onCourt: [Double]) {
-    let coverage = Slots.near.map { slot in
-        Double((0..<tracks.samples).filter { tracks.boxes[($0 * Slots.count + slot) * 4].isFinite }.count)
-            / Double(tracks.samples)
-    }
-    let (lead, other) = coverage[0] >= coverage[1] ? (0, 1) : (1, 0)
+    nearPlayerPoseForEndSignals(tracks, lead: leadNearSlot(tracks))
+}
+
+/// The near slot with more coverage over the WHOLE clip (ties go to slot 0).
+/// Live capture cannot know this until Stop, so it computes both variants.
+public func leadNearSlot(_ tracks: PlayerTracks) -> Int {
+    let seen = Slots.near.map { slot in (0..<tracks.samples).filter { tracks.boxes[($0 * Slots.count + slot) * 4].isFinite }.count }
+    return seen[0] >= seen[1] ? 0 : 1
+}
+
+/// The near-player track with `lead` as the leading slot.
+public func nearPlayerPoseForEndSignals(_ tracks: PlayerTracks, lead: Int)
+    -> (keypoints: SampleTable, boxes: SampleTable, onCourt: [Double]) {
+    let other = 1 - lead
     var keypoints = tracks.keypoints(slot: lead), boxes = tracks.boxes(slot: lead)
     let otherKeypoints = tracks.keypoints(slot: other), otherBoxes = tracks.boxes(slot: other)
     for i in 0..<tracks.samples where !boxes[i, 0].isFinite && otherBoxes[i, 0].isFinite {

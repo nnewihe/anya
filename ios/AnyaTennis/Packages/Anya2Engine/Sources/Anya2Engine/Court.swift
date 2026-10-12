@@ -160,13 +160,30 @@ public struct Homography {
 /// Frame numbers are SOURCE frames: the one clock every decimated pass shares.
 public final class Geometry {
     public let referenceHomography: Homography
-    public let cameraTrack: CameraTrack
+    public private(set) var cameraTrack: CameraTrack
     private var homographyBySample: [Int: Homography] = [:]
     private var inverseBySample: [Int: Homography] = [:]
 
     public init(referenceHomography: Homography, cameraTrack: CameraTrack = .identity) {
         self.referenceHomography = referenceHomography
         self.cameraTrack = cameraTrack
+    }
+
+    /// While recording, the camera track grows as its samples become final.
+    /// The caller must only ask about frames the track already covers
+    /// (a later sample could be the nearer one); see AnalysisScheduler.
+    public func replaceCameraTrack(_ track: CameraTrack) {
+        cameraTrack = track
+        homographyBySample.removeAll(keepingCapacity: true)
+        inverseBySample.removeAll(keepingCapacity: true)
+    }
+
+    /// Append final samples to the track in place. Earlier warps never
+    /// change, so the per-sample caches stay valid.
+    public func extendCameraTrack(frames: ArraySlice<Int>, warps: ArraySlice<Homography>) {
+        precondition(frames.count == warps.count && (cameraTrack.frames.last ?? -1) < (frames.first ?? Int.max))
+        cameraTrack.frames += frames
+        cameraTrack.warps += warps
     }
 
     public func homography(atSourceFrame frame: Int) -> Homography {
