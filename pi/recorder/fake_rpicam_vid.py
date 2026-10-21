@@ -18,9 +18,12 @@ if os.environ.get("FAKE_CAMERA_FAIL"):
     print("ERROR: *** no cameras available ***", flush=True)
     sys.exit(1)
 limit = os.environ.get("FAKE_CAMERA_SECONDS")
+# .mkv: MJPEG, like the Osmo in webcam mode; .ts: H.264, like rpicam-vid.
+codec = (["-c:v", "mjpeg", "-pix_fmt", "yuvj422p", "-f", "matroska"]
+         if out.endswith(".mkv") else
+         ["-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-f", "mpegts"])
 os.execvp("ffmpeg", [
     "ffmpeg", "-v", "error", "-nostdin", "-re",
-    "-f", "lavfi", "-i", "testsrc=size=320x180:rate=60",
+    "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30",
     *(["-t", limit] if limit else []),
-    "-c:v", "libx264", "-preset", "ultrafast", "-g", "60",
-    "-f", "mpegts", "-y", out])
+    *codec, "-y", out])

@@ -7,15 +7,19 @@ Start/stop web page for recording tennis from a camera on the Raspberry Pi.
 Open http://<pi>.local:8080 on a phone on the same network.
 
 The camera is a USB webcam by default (ANYA_CAMERA=usb): a DJI Osmo Action 4
-in webcam mode, recorded with ffmpeg, its own H.264 stream copied as is.
-ANYA_CAMERA=picam uses a ribbon-cable Pi camera through rpicam-vid instead.
+in webcam mode, recorded with ffmpeg.  ANYA_CAMERA=picam uses a ribbon-cable
+Pi camera through rpicam-vid instead.
 
-Start records to <dir>/<YYYY-MM-DD_HHMMSS>.ts until Stop is pressed, or for at
-most 90 minutes.  If another program already has the camera, the page asks
-before closing it.  MPEG-TS survives a crash or power cut (an MP4 without its
-index does not).  On stop the file is rewrapped, without re-encoding, into an
-.mp4 next to it, and the .ts is deleted only after the .mp4 reads back with
-the same duration.
+Start records until Stop is pressed, for at most 90 minutes, or until the disk
+is nearly full.  If another program already has the camera, the page asks
+before closing it.  Recording only saves what the camera sends: the webcam's
+MJPEG into <dir>/<YYYY-MM-DD_HHMMSS>.mkv (the Pi encoding H.264 live made the
+video choppy), a Pi camera's H.264 into .ts.  Both stay readable after a crash
+or power cut, which an MP4 without its index does not.  After Stop the file
+becomes an .mp4 in the background: the MJPEG is encoded to H.264, a .ts is
+just rewrapped.  The original is deleted only once the .mp4 reads back with
+the same duration, and anything left unconverted by a crash is converted the
+next time the service starts.
 
 Each .mp4 is then queued for the anya Pi worker (pi/anya_pi), which uploads it
 to YouTube, cuts the dead time out, and uploads the highlights.  The page shows
@@ -56,28 +60,32 @@ USB_DEVICE = os.environ.get("ANYA_CAMERA_DEVICE", "")
 # The Osmo Action 4 lists 1920x1080 at 30 fps as MJPEG or H.264 (v4l2-ctl
 # --list-formats-ext), but on the Pi its H.264 will not stream: the driver
 # refuses the buffers (VIDIOC_REQBUFS: Invalid argument), under ffmpeg and
-# v4l2-ctl alike.  So it sends MJPEG and the Pi encodes H.264 in software as
-# it records.  "h264" (copied as is, no encode) is for a webcam where it works.
-# Exposure and focus are set on the camera, which exposes no controls to the Pi.
+# v4l2-ctl alike.  So it sends MJPEG, saved untouched while recording and
+# encoded to H.264 after Stop: encoding live made the video choppy.  "h264"
+# (copied as is) is for a webcam whose H.264 does stream.  The Osmo's webcam
+# mode offers 30 fps only, at 720p or 1080p.  Exposure and focus are set on
+# the camera, which exposes no controls to the Pi.
 USB_FORMAT = os.environ.get("ANYA_CAMERA_FORMAT", "mjpeg")
 USB_SIZE = os.environ.get("ANYA_CAMERA_SIZE", "1920x1080")
 USB_FPS = "30"
-# x264 speed: "veryfast" keeps 1080p30 real time on a Pi 5 with room to spare;
-# "ultrafast" if the log shows it falling behind.
-USB_PRESET = os.environ.get("ANYA_CAMERA_PRESET", "veryfast")
+# x264 speed for the conversion after Stop.  Nothing waits on it in real time,
+# so this trades only conversion time (and the CPU it shares with processing).
+CONVERT_PRESET = os.environ.get("ANYA_CONVERT_PRESET", "veryfast")
+
+
+def capture_suffix():
+    """What the camera's stream is saved as while recording."""
+    return ".mkv" if CAMERA == "usb" and USB_FORMAT == "mjpeg" else ".ts"
 
 
 def usb_args(device):
-    encode = (["-c:v", "copy"] if USB_FORMAT == "h264" else
-              ["-c:v", "libx264", "-preset", USB_PRESET, "-b:v", "16M",
-               "-maxrate", "20M", "-bufsize", "32M",
-               # MJPEG decodes to 4:2:2; 4:2:0 is what players and YouTube expect.
-               "-pix_fmt", "yuv420p",
-               "-g", USB_FPS])               # keyframe every second (see --intra)
+    # Copy only: whatever the camera sends goes to disk as is.  Matroska takes
+    # MJPEG and, like MPEG-TS, stays readable if the recording is cut off.
+    container = "matroska" if USB_FORMAT == "mjpeg" else "mpegts"
     return ["-hide_banner", "-nostdin", "-loglevel", "warning",
             "-f", "v4l2", "-input_format", USB_FORMAT, "-video_size", USB_SIZE,
             "-framerate", USB_FPS, "-thread_queue_size", "512", "-i", device,
-            "-map", "0:v", *encode, "-f", "mpegts", "-y"]
+            "-map", "0:v", "-c:v", "copy", "-f", container, "-y"]
 
 
 def find_usb_device():
@@ -115,6 +123,7 @@ CAMERA_ARGS = [
 ]
 
 MIN_FREE_GB = 5
+LOW_DISK_STOP_GB = 2     # a running recording stops itself below this
 MAX_RECORDING_S = 90 * 60
 STOP_GRACE_S = 10        # after SIGINT, before SIGTERM
 DURATION_TOLERANCE_S = 1.0
@@ -188,27 +197,56 @@ def probe_duration(path):
         return None
 
 
-def rewrap(ts):
-    """Copy .ts into .mp4 without re-encoding; delete the .ts once the .mp4
-    checks out.  Returns an error string, or None on success."""
-    ts = Path(ts)
-    mp4, tmp = ts.with_suffix(".mp4"), ts.with_suffix(".part.mp4")
-    src_dur = probe_duration(ts)
-    if src_dur is None:
-        return f"{ts.name}: unreadable, left as is"
-    r = subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", str(ts), "-map", "0",
-         "-c", "copy", "-movflags", "+faststart", str(tmp)],
-        capture_output=True, text=True)
-    if r.returncode != 0:
+def _encode_args():
+    """MJPEG -> the H.264 the rest of anya expects: 4:2:0 (MJPEG decodes to
+    4:2:2), a constant 30 fps, a keyframe every second (the highlights are cut
+    without re-encoding, so each point starts up to one keyframe early)."""
+    return ["-c:v", "libx264", "-preset", CONVERT_PRESET, "-b:v", "16M",
+            "-maxrate", "20M", "-bufsize", "32M", "-pix_fmt", "yuv420p",
+            "-r", USB_FPS, "-g", USB_FPS]
+
+
+def finish(src, progress=None, log_path=None):
+    """Turn a recording into <stem>.mp4 and delete `src` once the .mp4 checks
+    out.  .mkv (MJPEG) is encoded to H.264, .ts is rewrapped as is.
+    `progress(fraction)` is called as it goes.  Returns an error, or None."""
+    src = Path(src)
+    mp4, tmp = src.with_suffix(".mp4"), src.with_suffix(".part.mp4")
+    encode = src.suffix == ".mkv"
+    src_dur = probe_duration(src)
+    # A recording cut off by a crash may not know its own length; MJPEG in
+    # Matroska still converts, a .ts with no duration has nothing in it.
+    if src_dur is None and not encode:
+        return f"{src.name}: unreadable, left as is"
+    cmd = ["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", str(src), "-map", "0:v",
+           *(_encode_args() if encode else ["-map", "0:a?", "-c", "copy"]),
+           "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(tmp)]
+    if encode and shutil.which("nice"):
+        cmd = ["nice", "-n", "10", *cmd]        # behind the camera and the page
+    errf = open(log_path, "a") if log_path else subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf, text=True)
+        for line in proc.stdout:
+            key, _, val = line.strip().partition("=")
+            # out_time_us; older ffmpeg calls it out_time_ms (also microseconds)
+            if key in ("out_time_us", "out_time_ms") and progress and src_dur \
+                    and val.isdigit():
+                progress(min(int(val) / 1e6 / src_dur, 1.0))
+        rc = proc.wait()
+    finally:
+        if log_path:
+            errf.close()
+    if rc != 0:
         tmp.unlink(missing_ok=True)
-        return f"{ts.name}: rewrap failed: {r.stderr.strip()[-300:]}"
+        tail = log_tail(log_path) if log_path else ""
+        return f"{src.name}: converting to MP4 failed" + (f": {tail}" if tail else "")
     dur = probe_duration(tmp)
-    if dur is None or abs(dur - src_dur) > DURATION_TOLERANCE_S:
+    if not dur or (src_dur and abs(dur - src_dur) > DURATION_TOLERANCE_S):
         tmp.unlink(missing_ok=True)
-        return f"{ts.name}: rewrapped file is {dur}s, source {src_dur:.1f}s; kept the .ts"
+        return (f"{src.name}: the MP4 came out {dur}s long, the recording "
+                f"{src_dur}s; kept the original")
     os.replace(tmp, mp4)
-    ts.unlink()
+    src.unlink()
     log(f"saved {mp4.name} ({dur:.0f} s)")
     return None
 
@@ -343,7 +381,6 @@ class Recorder:
             cfg.ensure_dirs()
             # A flag left by a crash would pause the worker forever.
             cfg.recording_flag.unlink(missing_ok=True)
-        self.timer = None
         self.notice = None
         self.player = ""
         self.lock = threading.Lock()
@@ -353,6 +390,8 @@ class Recorder:
         self.started = None
         self.error = None
         self.pending_rewraps = 0
+        self.converting = {}             # stem -> fraction done (None: waiting)
+        self._convert_lock = threading.Lock()   # one conversion at a time
         self._durations = {}             # (name, mtime) -> seconds
 
     # -- recording -----------------------------------------------------
@@ -382,13 +421,13 @@ class Recorder:
             if self.free_gb() < MIN_FREE_GB:
                 return f"only {self.free_gb():.1f} GB free; need {MIN_FREE_GB} GB"
             name = f"{dt.datetime.now():%Y-%m-%d_%H%M%S}"
-            ts = self.dir / f"{name}.ts"
+            ts = self.dir / f"{name}{capture_suffix()}"
             cmd = camera_command(ts, self.camera)
             if isinstance(cmd, str):
                 self.error = cmd
                 return cmd
             logf = open(self.dir / f"{name}.log", "w")
-            # Beside the recording, so a crash-recovered .ts keeps its player.
+            # Beside the recording, so a crash-recovered one keeps its player.
             if player:
                 (self.dir / f"{name}.player").write_text(player + "\n")
             try:
@@ -410,21 +449,28 @@ class Recorder:
             self.state, self.error, self.notice = RECORDING, None, None
             if self.cfg:
                 self.cfg.recording_flag.write_text(ts.name + "\n")
-            self.timer = threading.Timer(MAX_RECORDING_S, self._limit, args=(proc,))
-            self.timer.daemon = True
-            self.timer.start()
             log(f"recording {ts.name}")
             threading.Thread(target=self._watch, args=(proc,), daemon=True).start()
+            threading.Thread(target=self._guard, args=(proc,), daemon=True).start()
             return None
 
-    def _limit(self, proc):
-        if self.proc is proc and self.state == RECORDING:
-            log(f"{MAX_RECORDING_S // 60}-minute limit reached")
-            self.stop(reason="limit")
+    def _guard(self, proc):
+        """Stops a recording at the time limit, or when the disk runs low:
+        MJPEG is large, and a full disk would cut it off mid-write."""
+        while self.proc is proc and self.state == RECORDING:
+            if time.time() - self.started >= MAX_RECORDING_S:
+                log(f"{MAX_RECORDING_S // 60}-minute limit reached")
+                self.stop(reason="limit")
+                return
+            if self.free_gb() < LOW_DISK_STOP_GB:
+                log(f"under {LOW_DISK_STOP_GB} GB free; stopping")
+                self.stop(reason="disk")
+                return
+            time.sleep(1)
 
     def stop(self, reason=None):
         """Returns an error string, or None.  Returns once the camera has
-        closed the file; the rewrap to .mp4 carries on in the background."""
+        closed the file; the conversion to .mp4 carries on in the background."""
         with self.lock:
             if self.state != RECORDING:
                 return "not recording"
@@ -433,6 +479,9 @@ class Recorder:
             if reason == "limit":
                 self.notice = (f"Stopped at the {MAX_RECORDING_S // 60}-minute limit. "
                                f"Press Start to keep recording.")
+            elif reason == "disk":
+                self.notice = ("Stopped: the Pi's disk is nearly full. The recording "
+                               "so far is kept.")
         log("stopping")
         for sig, wait in ((signal.SIGINT, STOP_GRACE_S), (signal.SIGTERM, 5),
                           (signal.SIGKILL, 5)):
@@ -444,17 +493,15 @@ class Recorder:
             except subprocess.TimeoutExpired:
                 log(f"camera ignored {sig.name}")
         # _watch sees the exit, returns the state to idle and starts the
-        # rewrap; wait for the first part so Start works as soon as we return.
+        # conversion; wait for the first part so Start works as soon as we return.
         while self.state == FINISHING:
             time.sleep(0.02)
         return None
 
     def _watch(self, proc):
         """Runs for each recording: waits for the camera to exit, for any
-        reason, and hands the file to the rewrap."""
+        reason, and hands the file to the conversion."""
         rc = proc.wait()
-        if self.timer:
-            self.timer.cancel()
         if self.cfg:
             self.cfg.recording_flag.unlink(missing_ok=True)
         with self.lock:
@@ -468,20 +515,36 @@ class Recorder:
                               + (f":\n{tail}" if tail else ""))
                 log(self.error)
             self.state, self.proc, self.file, self.started = IDLE, None, None, None
-            self.pending_rewraps += 1
+            has_video = ts.exists() and ts.stat().st_size > 0
+            if has_video:
+                self._claim(ts)          # in the same step as going idle
+        if has_video:
+            self._finish(ts)
+        elif stopped:
+            self._set_error(f"{ts.name}: the camera wrote nothing; "
+                            f"see {ts.with_suffix('.log').name}")
+
+    def _claim(self, src):
+        """Count `src` as converting (call with self.lock held)."""
+        self.pending_rewraps += 1
+        self.converting[src.stem] = None
+
+    def _finish(self, src):
+        """Convert one claimed recording (queued behind any other), then queue
+        it for the worker.  The page shows it as converting meanwhile."""
         try:
-            if ts.exists() and ts.stat().st_size > 0:
-                err = rewrap(ts)
-                if err:
-                    self._set_error(err)
-                else:
-                    self._enqueue(ts.with_suffix(".mp4"))
-            elif stopped:
-                self._set_error(f"{ts.name}: the camera wrote nothing; "
-                                f"see {ts.with_suffix('.log').name}")
+            with self._convert_lock:
+                self.converting[src.stem] = 0.0
+                err = finish(src, progress=lambda f: self.converting.__setitem__(src.stem, f),
+                             log_path=src.with_suffix(".log"))
+            if err:
+                self._set_error(err)
+            else:
+                self._enqueue(src.with_suffix(".mp4"))
         finally:
             with self.lock:
                 self.pending_rewraps -= 1
+                self.converting.pop(src.stem, None)
 
     def _set_error(self, msg):
         log(msg)
@@ -489,15 +552,14 @@ class Recorder:
             self.error = msg
 
     def recover(self):
-        """Rewrap .ts files left by a crash or reboot."""
-        for ts in sorted(self.dir.glob("*.ts")):
-            if not ts.with_suffix(".mp4").exists():
-                log(f"recovering {ts.name}")
-                err = rewrap(ts)
-                if err:
-                    self._set_error(err)
-                else:
-                    self._enqueue(ts.with_suffix(".mp4"))
+        """Convert recordings left by a crash or reboot (main() runs this in
+        the background: an MJPEG conversion can take as long as the match)."""
+        for src in sorted([*self.dir.glob("*.ts"), *self.dir.glob("*.mkv")]):
+            if not src.with_suffix(".mp4").exists():
+                log(f"recovering {src.name}")
+                with self.lock:
+                    self._claim(src)
+                self._finish(src)
 
     def _enqueue(self, mp4):
         """Hand a finished recording to the anya worker (once)."""
@@ -528,6 +590,12 @@ class Recorder:
     def recordings(self, limit=10):
         """The newest recordings, with how far the worker has got."""
         out = []
+        for stem, frac in sorted(dict(self.converting).items(), reverse=True):
+            text = ("Waiting to convert to MP4" if frac is None
+                    else f"Converting to MP4 {frac:.0%}")
+            out.append({"name": f"{stem}.mp4", "duration_s": None,
+                        "player": self._player_of(self.dir / f"{stem}.mp4"),
+                        "chips": [{"text": text, "kind": "busy"}]})
         files = [p for p in self.dir.glob("*.mp4") if not p.name.endswith(".part.mp4")]
         for p in sorted(files, reverse=True)[:limit]:
             job = self.queue.get(p.stem) if self.queue else None
@@ -688,7 +756,7 @@ function render(s) {
   $("app").classList.toggle("rec", rec);
   $("state").textContent = rec ? "Recording" + (s.player ? " · " + s.player : "")
     : state === "finishing" ? "Stopping…"
-    : s.saving ? "Saving…" : "Ready";
+    : "Ready";
   $("btn").textContent = rec ? "Stop" : "Start";
   $("btn").disabled = busy || state === "finishing";
   $("player").disabled = rec || state === "finishing";
@@ -821,15 +889,17 @@ def main(argv=None):
 
     cfg = CFG.load(a.config)
     rec = Recorder(a.dir or cfg.recordings, cfg=None if a.no_queue else cfg)
-    rec.recover()
+    threading.Thread(target=rec.recover, daemon=True).start()
     server = ThreadingHTTPServer((a.host, a.port), make_handler(rec))
 
     def shutdown(signum, _frame):
-        # systemd (or Ctrl-C): finish the current file before exiting.
+        # systemd (or Ctrl-C): close the current recording properly before
+        # exiting.  A conversion in progress is dropped; the original stays and
+        # is converted again at the next start.
         log(f"got {signal.Signals(signum).name}, shutting down")
         if rec.state == RECORDING:
             rec.stop()
-        while rec.status()["saving"] or rec.state != IDLE:
+        while rec.state != IDLE:
             time.sleep(0.2)
         threading.Thread(target=server.shutdown, daemon=True).start()
 

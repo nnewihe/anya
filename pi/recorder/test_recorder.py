@@ -99,7 +99,7 @@ def test_start_stop_gives_an_mp4(rec, tmp_path):
     assert rec.state == R.IDLE
     assert saved(rec)
     mp4s = list(tmp_path.glob("*.mp4"))
-    assert len(mp4s) == 1 and not list(tmp_path.glob("*.ts"))
+    assert len(mp4s) == 1 and not list(tmp_path.glob("*.mkv"))
     assert 1.5 < R.probe_duration(mp4s[0]) < 3.5
     st = rec.status()
     assert st["error"] is None
@@ -301,23 +301,26 @@ def test_http_start_passes_the_name(server, rec):
     assert saved(rec)
 
 
-def test_usb_webcam_command_encodes_its_mjpeg():
-    cmd = R.camera_command("/r/x.ts")
-    assert cmd[0] == "ffmpeg" and cmd[-1] == "/r/x.ts"
+def test_usb_webcam_saves_its_mjpeg_untouched():
+    """Encoding live made the video choppy: recording only copies."""
+    assert R.capture_suffix() == ".mkv"
+    cmd = R.camera_command("/r/x.mkv")
+    assert cmd[0] == "ffmpeg" and cmd[-1] == "/r/x.mkv"
     i = cmd.index("-i")
     assert cmd[i + 1] == "/dev/v4l/by-id/usb-fake-video-index0"
     assert cmd[cmd.index("-input_format") + 1] == "mjpeg"
-    assert cmd[cmd.index("-c:v") + 1] == "libx264"
-    assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
-    assert cmd[cmd.index("-g") + 1] == "30"
+    assert cmd[cmd.index("-c:v") + 1] == "copy" and "libx264" not in cmd
+    assert cmd[cmd.index("-f", i) + 1] == "matroska"
     assert cmd[cmd.index("-video_size") + 1] == "1920x1080"
     assert cmd[cmd.index("-framerate") + 1] == "30"
 
 
-def test_usb_webcam_h264_is_copied(monkeypatch):
+def test_usb_webcam_h264_is_copied_into_ts(monkeypatch):
     monkeypatch.setattr(R, "USB_FORMAT", "h264")
+    assert R.capture_suffix() == ".ts"
     cmd = R.camera_command("/r/x.ts")
-    assert cmd[cmd.index("-c:v") + 1] == "copy" and "-pix_fmt" not in cmd
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert cmd[cmd.index("-f", cmd.index("-i")) + 1] == "mpegts"
 
 
 def test_pi_camera_command_is_still_available(monkeypatch):
@@ -346,3 +349,78 @@ def test_close_commands_for_the_webcam(monkeypatch):
     assert R._close_cmds() == (["sudo", "-n", "fuser", "-k", "-TERM", "/dev/video0"],
                                ["fuser", "-k", "-TERM", "/dev/video0"])
     assert R.close_hint() == "sudo fuser -k /dev/video0"
+
+
+def _mjpeg(path, seconds=2, cut=0):
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                    f"testsrc=size=320x180:rate=30", "-t", str(seconds),
+                    "-c:v", "mjpeg", "-pix_fmt", "yuvj422p", "-f", "matroska",
+                    "-y", str(path)], check=True)
+    if cut:                                 # a recording cut off mid-write
+        data = path.read_bytes()
+        path.write_bytes(data[:len(data) - cut])
+
+
+def _stream(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                          "-show_entries", "stream=codec_name,pix_fmt,r_frame_rate",
+                          "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+def test_mjpeg_is_converted_to_h264_after_stop(tmp_path):
+    src = tmp_path / "2026-10-21_180000.mkv"
+    _mjpeg(src, seconds=3)
+    seen = []
+    assert R.finish(src, progress=seen.append) is None
+    mp4 = src.with_suffix(".mp4")
+    assert not src.exists() and not src.with_suffix(".part.mp4").exists()
+    codec, pix, rate = _stream(mp4).split(",")
+    assert codec == "h264" and pix.endswith("420p") and rate == "30/1"
+    assert abs(R.probe_duration(mp4) - 3) < 0.2
+    assert seen and seen[-1] > 0.9
+
+
+def test_a_cut_off_mjpeg_recording_still_converts(tmp_path):
+    src = tmp_path / "2026-10-21_180000.mkv"
+    _mjpeg(src, seconds=3, cut=4000)
+    assert R.finish(src) is None
+    assert R.probe_duration(src.with_suffix(".mp4")) > 1
+
+
+def test_recording_from_the_webcam_ends_as_a_queued_mp4(tmp_path, cfg):
+    rec = R.Recorder(tmp_path / "rec", camera=FAKE, cfg=cfg)
+    assert rec.start(player="Andy") is None
+    assert rec.file.suffix == ".mkv"
+    time.sleep(2)
+    rec.stop()
+    assert saved(rec)
+    files = sorted(p.name for p in (tmp_path / "rec").iterdir() if p.suffix != ".log")
+    stem = rec.recordings()[0]["name"][:-4]
+    assert files == [f"{stem}.mp4", f"{stem}.player"]
+    assert _stream(tmp_path / "rec" / f"{stem}.mp4").startswith("h264,")
+    assert J.Queue(cfg).get(stem)["recording"]["player"] == "Andy"
+
+
+def test_conversions_show_on_the_page(rec):
+    rec.converting = {"2026-10-21_180000": None, "2026-10-21_190000": 0.42}
+    names = [(r["name"], r["chips"][0]["text"]) for r in rec.recordings()]
+    assert names == [("2026-10-21_190000.mp4", "Converting to MP4 42%"),
+                     ("2026-10-21_180000.mp4", "Waiting to convert to MP4")]
+
+
+def test_recovery_converts_leftover_mkv(tmp_path, cfg):
+    d = tmp_path / "rec"
+    d.mkdir()
+    _mjpeg(d / "2026-10-21_180000.mkv")
+    R.Recorder(d, camera=FAKE, cfg=cfg).recover()
+    assert (d / "2026-10-21_180000.mp4").exists()
+    assert J.Queue(cfg).get("2026-10-21_180000")
+
+
+def test_low_disk_stops_the_recording(rec, monkeypatch):
+    assert rec.start() is None
+    monkeypatch.setattr(R, "LOW_DISK_STOP_GB", 1e9)
+    assert wait_for(lambda: rec.state == R.IDLE, timeout=10)
+    assert saved(rec)
+    assert "disk is nearly full" in rec.status()["notice"]
