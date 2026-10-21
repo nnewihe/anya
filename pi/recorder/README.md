@@ -135,26 +135,31 @@ At the top of `recorder.py`:
 |---|---|---|
 | `CAMERA` | `"usb"` | The webcam. Set `ANYA_CAMERA=picam` in the service to go back to a ribbon-cable Pi camera (`CAMERA_ARGS` keeps its settings). |
 | `USB_DEVICE` | empty | Uses the first webcam under `/dev/v4l/by-id/`, the permanent name. The Pi 5 has a dozen video devices of its own, so `/dev/video0` isn't a safe guess. Set `ANYA_CAMERA_DEVICE` to choose one. |
-| `USB_FORMAT` | `"h264"` | The Osmo sends H.264, which is copied straight into the file, so the Pi encodes nothing. `"mjpeg"` would make the Pi re-encode it (x264, about 7 GB an hour). |
+| `USB_FORMAT` | `"mjpeg"` | The Osmo lists H.264 too, but on the Pi it won't stream it (`VIDIOC_REQBUFS: Invalid argument`). So it sends MJPEG, and the Pi encodes H.264 as it records (x264, 16 Mbps, about 7 GB an hour, a keyframe every second). |
+| `USB_PRESET` | `"veryfast"` | x264's speed setting. Use `"ultrafast"` if the Pi falls behind (see *Check on the first sessions*). |
 | `USB_SIZE`, `USB_FPS` | 1920×1080, 30 | The Osmo's best webcam mode (`v4l2-ctl --list-formats-ext`). |
+
+`ANYA_CAMERA_FORMAT`, `ANYA_CAMERA_PRESET` and `ANYA_CAMERA_SIZE` override these
+without editing the code. Add them as `Environment=` lines in `anya-recorder.service`.
 
 **Set exposure and focus on the Osmo itself.** It gives the Pi no controls. A fast
 shutter keeps the ball sharp, so use the camera's Pro/manual mode if webcam mode
 allows it, and turn stabilisation off: the court calibration assumes a fixed view.
 
 Two things the camera, not the Pi, decides:
-- **Keyframes.** The highlights are cut without re-encoding, so each point starts at
-  the nearest keyframe before it. If the Osmo spaces them far apart, points start a
-  few seconds early.
-- **Bitrate.** It's whatever the Osmo sends in webcam mode, which sets both the file
-  size and the quality. Check both after the first session.
+- **The picture.** MJPEG is the Osmo's own compression, before the Pi re-encodes it,
+  so look at the first recording's sharpness.
+- **Frame rate.** If the Osmo sends fewer than 30 frames a second (in low light, for
+  example), the recording has fewer frames too.
 
 The page refuses to start with less than 5 GB free. A recording is deleted from the
 Pi `keep_inbox_days` (14) days after it's on YouTube and its highlights are done.
 
 ## Check on the first sessions
 - **Dropped frames.** Count a 2-minute recording's frames. You should get about
-  3600 (120 s × 30).
+  3600 (120 s × 30). If it's well short, the encode is falling behind: set
+  `ANYA_CAMERA_PRESET=ultrafast`, or drop to `ANYA_CAMERA_SIZE=1280x720`. `top` while
+  recording shows how busy `ffmpeg` keeps the CPU.
   ```bash
   ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 /srv/anya/recordings/<name>.mp4
   ```

@@ -301,15 +301,23 @@ def test_http_start_passes_the_name(server, rec):
     assert saved(rec)
 
 
-def test_usb_webcam_command_copies_its_h264():
+def test_usb_webcam_command_encodes_its_mjpeg():
     cmd = R.camera_command("/r/x.ts")
     assert cmd[0] == "ffmpeg" and cmd[-1] == "/r/x.ts"
     i = cmd.index("-i")
     assert cmd[i + 1] == "/dev/v4l/by-id/usb-fake-video-index0"
-    assert cmd[cmd.index("-input_format") + 1] == "h264"
-    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert cmd[cmd.index("-input_format") + 1] == "mjpeg"
+    assert cmd[cmd.index("-c:v") + 1] == "libx264"
+    assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
+    assert cmd[cmd.index("-g") + 1] == "30"
     assert cmd[cmd.index("-video_size") + 1] == "1920x1080"
     assert cmd[cmd.index("-framerate") + 1] == "30"
+
+
+def test_usb_webcam_h264_is_copied(monkeypatch):
+    monkeypatch.setattr(R, "USB_FORMAT", "h264")
+    cmd = R.camera_command("/r/x.ts")
+    assert cmd[cmd.index("-c:v") + 1] == "copy" and "-pix_fmt" not in cmd
 
 
 def test_pi_camera_command_is_still_available(monkeypatch):

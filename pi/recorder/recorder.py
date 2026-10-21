@@ -53,18 +53,26 @@ CAMERA = os.environ.get("ANYA_CAMERA", "usb")
 # devices of its own, so /dev/video0 is not a safe guess).  Empty: the first
 # webcam found.
 USB_DEVICE = os.environ.get("ANYA_CAMERA_DEVICE", "")
-# The Osmo Action 4 offers 1920x1080 at 30 fps as MJPEG or H.264 (v4l2-ctl
-# --list-formats-ext).  H.264 is copied straight into the file, so the Pi
-# encodes nothing; exposure and focus are set on the camera, which exposes
-# no controls to the Pi.  With "mjpeg" the Pi would have to encode it (x264).
-USB_FORMAT = "h264"
-USB_SIZE = "1920x1080"
+# The Osmo Action 4 lists 1920x1080 at 30 fps as MJPEG or H.264 (v4l2-ctl
+# --list-formats-ext), but on the Pi its H.264 will not stream: the driver
+# refuses the buffers (VIDIOC_REQBUFS: Invalid argument), under ffmpeg and
+# v4l2-ctl alike.  So it sends MJPEG and the Pi encodes H.264 in software as
+# it records.  "h264" (copied as is, no encode) is for a webcam where it works.
+# Exposure and focus are set on the camera, which exposes no controls to the Pi.
+USB_FORMAT = os.environ.get("ANYA_CAMERA_FORMAT", "mjpeg")
+USB_SIZE = os.environ.get("ANYA_CAMERA_SIZE", "1920x1080")
 USB_FPS = "30"
+# x264 speed: "veryfast" keeps 1080p30 real time on a Pi 5 with room to spare;
+# "ultrafast" if the log shows it falling behind.
+USB_PRESET = os.environ.get("ANYA_CAMERA_PRESET", "veryfast")
 
 
 def usb_args(device):
     encode = (["-c:v", "copy"] if USB_FORMAT == "h264" else
-              ["-c:v", "libx264", "-preset", "veryfast", "-b:v", "16M",
+              ["-c:v", "libx264", "-preset", USB_PRESET, "-b:v", "16M",
+               "-maxrate", "20M", "-bufsize", "32M",
+               # MJPEG decodes to 4:2:2; 4:2:0 is what players and YouTube expect.
+               "-pix_fmt", "yuv420p",
                "-g", USB_FPS])               # keyframe every second (see --intra)
     return ["-hide_banner", "-nostdin", "-loglevel", "warning",
             "-f", "v4l2", "-input_format", USB_FORMAT, "-video_size", USB_SIZE,
