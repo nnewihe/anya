@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
 """
-Start/stop web page for recording tennis with the Raspberry Pi camera.
+Start/stop web page for recording tennis from a camera on the Raspberry Pi.
 
     python3 recorder.py [--dir /srv/anya/recordings] [--port 8080]
 
 Open http://<pi>.local:8080 on a phone on the same network.
 
-Start launches rpicam-vid, which records to <dir>/<YYYY-MM-DD_HHMMSS>.ts until
-Stop is pressed, or for at most 90 minutes.  If another rpicam program already
-has the camera, the page asks before closing it (`pkill rpicam`).  MPEG-TS
-survives a crash or power cut (an MP4 without its index does not).  On stop
-the file is rewrapped, without re-encoding, into an .mp4 next to it, and the
-.ts is deleted only after the .mp4 reads back with the same duration.
+The camera is a USB webcam by default (ANYA_CAMERA=usb): a DJI Osmo Action 4
+in webcam mode, recorded with ffmpeg, its own H.264 stream copied as is.
+ANYA_CAMERA=picam uses a ribbon-cable Pi camera through rpicam-vid instead.
+
+Start records to <dir>/<YYYY-MM-DD_HHMMSS>.ts until Stop is pressed, or for at
+most 90 minutes.  If another program already has the camera, the page asks
+before closing it.  MPEG-TS survives a crash or power cut (an MP4 without its
+index does not).  On stop the file is rewrapped, without re-encoding, into an
+.mp4 next to it, and the .ts is deleted only after the .mp4 reads back with
+the same duration.
 
 Each .mp4 is then queued for the anya Pi worker (pi/anya_pi), which uploads it
 to YouTube, cuts the dead time out, and uploads the highlights.  The page shows
 how far each recording has got.  While the camera records, the worker pauses.
 
-Standard library only (plus pi/anya_pi, itself stdlib): the Pi needs
-rpicam-apps and ffmpeg for this part.
+Standard library only (plus pi/anya_pi, itself stdlib): the Pi needs ffmpeg
+and psmisc (fuser), or rpicam-apps for the Pi camera.
 """
 
 import argparse
 import datetime as dt
+import glob
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -38,10 +44,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # pi/, for anya_p
 from anya_pi import config as CFG  # noqa: E402
 from anya_pi import jobs as J  # noqa: E402
 
-# The camera settings.  Pi 5 has no hardware H.264 encoder, so encoding goes
-# through libav (software).  If the log shows dropped frames, lower
-# --framerate or --bitrate here.  Tuned for the HQ Camera (IMX477), which has
-# a manual-focus lens: no --autofocus-mode.
+# Which camera: "usb" (a webcam, e.g. the Osmo Action 4 in webcam mode) or
+# "picam" (a ribbon-cable Pi camera).
+CAMERA = os.environ.get("ANYA_CAMERA", "usb")
+
+# --- USB webcam -------------------------------------------------------------
+# The device: its permanent /dev/v4l/by-id name (the Pi 5 has a dozen video
+# devices of its own, so /dev/video0 is not a safe guess).  Empty: the first
+# webcam found.
+USB_DEVICE = os.environ.get("ANYA_CAMERA_DEVICE", "")
+# The Osmo Action 4 offers 1920x1080 at 30 fps as MJPEG or H.264 (v4l2-ctl
+# --list-formats-ext).  H.264 is copied straight into the file, so the Pi
+# encodes nothing; exposure and focus are set on the camera, which exposes
+# no controls to the Pi.  With "mjpeg" the Pi would have to encode it (x264).
+USB_FORMAT = "h264"
+USB_SIZE = "1920x1080"
+USB_FPS = "30"
+
+
+def usb_args(device):
+    encode = (["-c:v", "copy"] if USB_FORMAT == "h264" else
+              ["-c:v", "libx264", "-preset", "veryfast", "-b:v", "16M",
+               "-g", USB_FPS])               # keyframe every second (see --intra)
+    return ["-hide_banner", "-nostdin", "-loglevel", "warning",
+            "-f", "v4l2", "-input_format", USB_FORMAT, "-video_size", USB_SIZE,
+            "-framerate", USB_FPS, "-thread_queue_size", "512", "-i", device,
+            "-map", "0:v", *encode, "-f", "mpegts", "-y"]
+
+
+def find_usb_device():
+    """The webcam's device path, or None when none is plugged in."""
+    if USB_DEVICE:
+        return USB_DEVICE if os.path.exists(USB_DEVICE) else None
+    found = sorted(glob.glob("/dev/v4l/by-id/*-video-index0"))
+    return found[0] if found else None
+
+
+# --- Pi camera (rpicam-vid) ---------------------------------------------------
+# Pi 5 has no hardware H.264 encoder, so encoding goes through libav
+# (software).  If the log shows dropped frames, lower --framerate or --bitrate
+# here.  Tuned for the HQ Camera (IMX477), which has a manual-focus lens: no
+# --autofocus-mode.
 CAMERA_ARGS = [
     "--width", "1920",
     "--height", "1080",
@@ -68,12 +111,49 @@ MAX_RECORDING_S = 90 * 60
 STOP_GRACE_S = 10        # after SIGINT, before SIGTERM
 DURATION_TOLERANCE_S = 1.0
 
-# Who else has the camera, and how to close them.  sudo first (a sudoers rule
-# from install.sh) so it can close an rpicam-hello started from a login shell;
-# the plain pkill covers processes of the service's own user.
-CAMERA_USERS_CMD = ["pgrep", "-a", "rpicam"]
-CLOSE_CAMERA_CMDS = (["sudo", "-n", "pkill", "rpicam"], ["pkill", "rpicam"])
 CLOSE_WAIT_S = 3
+
+
+def camera_command(out, program=None):
+    """The command that records to `out`, or an error string."""
+    if CAMERA == "picam":
+        return [program or "rpicam-vid", *CAMERA_ARGS, "-o", str(out)]
+    device = find_usb_device()
+    if not device:
+        return ("No USB camera found. Plug the Osmo Action 4 into the Pi, "
+                "switch it to webcam mode, and press Start again.")
+    return [program or "ffmpeg", *usb_args(device), str(out)]
+
+
+def _users_cmd():
+    """Lists who else has the camera: pgrep for rpicam programs; for a
+    webcam, fuser on its device (prints the PIDs that hold it open)."""
+    if CAMERA == "picam":
+        return ["pgrep", "-a", "rpicam"]
+    device = find_usb_device()
+    return ["fuser", os.path.realpath(device)] if device else None
+
+
+def _close_cmds():
+    """How to close them.  sudo first (a sudoers rule from install.sh), so it
+    can close a program started from a login shell; the plain command covers
+    processes of the service's own user."""
+    if CAMERA == "picam":
+        cmd = ["pkill", "rpicam"]
+    else:
+        device = find_usb_device()
+        if not device:
+            return ()
+        cmd = ["fuser", "-k", "-TERM", os.path.realpath(device)]
+    return (["sudo", "-n", *cmd], cmd)
+
+
+def _command_of(pid):
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        return raw.replace(b"\0", b" ").decode(errors="replace").strip() or f"pid {pid}"
+    except OSError:
+        return f"pid {pid}"
 
 
 class CameraBusy(Exception):
@@ -134,23 +214,39 @@ def log_tail(path, n=5):
 
 
 def camera_users():
-    """[{pid, command}] of running rpicam programs."""
+    """[{pid, command}] of the programs holding the camera."""
+    cmd = _users_cmd()
+    if not cmd:
+        return []
     try:
-        r = subprocess.run(CAMERA_USERS_CMD, capture_output=True, text=True, timeout=5)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return []
     out = []
-    for line in r.stdout.splitlines():
-        pid, _, cmd = line.strip().partition(" ")
-        if pid.isdigit():
-            out.append({"pid": int(pid), "command": cmd or "rpicam"})
+    if cmd[0] == "pgrep":
+        for line in r.stdout.splitlines():
+            pid, _, command = line.strip().partition(" ")
+            if pid.isdigit():
+                out.append({"pid": int(pid), "command": command or "rpicam"})
+    else:                                   # fuser: PIDs on stdout
+        for pid in re.findall(r"\d+", r.stdout):
+            if int(pid) != os.getpid():
+                out.append({"pid": int(pid), "command": _command_of(pid)})
     return out
 
 
+def close_hint():
+    """What to run by hand when closing failed."""
+    if CAMERA == "picam":
+        return "sudo pkill rpicam"
+    device = find_usb_device()
+    return f"sudo fuser -k {os.path.realpath(device)}" if device else "unplug the camera"
+
+
 def close_camera_users():
-    """`pkill rpicam`; returns whatever is still running afterwards."""
+    """Close whatever holds the camera; returns what is still running after."""
     left = camera_users()
-    for cmd in CLOSE_CAMERA_CMDS:
+    for cmd in _close_cmds():
         if not left:
             break
         log(f"closing {', '.join(p['command'] for p in left)}: {' '.join(cmd)}")
@@ -230,7 +326,9 @@ class Recorder:
         and pause it while recording.  None: just record."""
         self.dir = Path(out_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.camera = camera or os.environ.get("RPICAM_VID", "rpicam-vid")
+        # Replaces the recording program (ffmpeg / rpicam-vid); the tests'
+        # fake camera comes in this way.
+        self.camera = camera or os.environ.get("ANYA_CAMERA_PROGRAM") or None
         self.cfg = cfg
         self.queue = J.Queue(cfg) if cfg else None
         if cfg:
@@ -269,7 +367,7 @@ class Recorder:
                 if left:
                     return ("could not close " + ", ".join(
                         f"{p['command']} (pid {p['pid']})" for p in left)
-                        + ". On the Pi, run: sudo pkill rpicam")
+                        + f". On the Pi, run: {close_hint()}")
         with self.lock:
             if self.state != IDLE:
                 return f"already {self.state}"
@@ -277,13 +375,17 @@ class Recorder:
                 return f"only {self.free_gb():.1f} GB free; need {MIN_FREE_GB} GB"
             name = f"{dt.datetime.now():%Y-%m-%d_%H%M%S}"
             ts = self.dir / f"{name}.ts"
+            cmd = camera_command(ts, self.camera)
+            if isinstance(cmd, str):
+                self.error = cmd
+                return cmd
             logf = open(self.dir / f"{name}.log", "w")
             # Beside the recording, so a crash-recovered .ts keeps its player.
             if player:
                 (self.dir / f"{name}.player").write_text(player + "\n")
             try:
                 proc = subprocess.Popen(
-                    [self.camera, *CAMERA_ARGS, "-o", str(ts)],
+                    cmd,
                     stdout=logf, stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
                     # Its own session, so a Ctrl-C in the terminal or a
@@ -291,7 +393,7 @@ class Recorder:
                     # the camera itself and marks the stop as intended.
                     start_new_session=True)
             except OSError as e:
-                self.error = f"could not run {self.camera}: {e}"
+                self.error = f"could not run {cmd[0]}: {e}"
                 return self.error
             finally:
                 logf.close()             # the child has its own copy

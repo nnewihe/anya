@@ -1,10 +1,11 @@
-# Court recorder (Raspberry Pi camera)
+# Court recorder (Raspberry Pi + webcam)
 
-A web page on the Pi with one big **Start / Stop** button. It records with the
-Pi's own camera, then does the rest of the work without anyone touching it:
+A web page on the Pi with one big **Start / Stop** button. It records from a USB
+webcam plugged into the Pi (a **DJI Osmo Action 4 in webcam mode**), then does the
+rest of the work without anyone touching it:
 
 ```
-phone ──▶ recorder.py :8080 ──▶ rpicam-vid ──▶ recordings/2026-10-01_183005.mp4
+phone ──▶ recorder.py :8080 ──▶ ffmpeg (webcam) ──▶ recordings/2026-10-01_183005.mp4
                                                    │  queued for anya-worker
                                                    ▼
              YouTube (unlisted)  "6:30 PM · Oct 1, 2026 · Andy Session"
@@ -16,9 +17,9 @@ phone ──▶ recorder.py :8080 ──▶ rpicam-vid ──▶ recordings/2026
   YouTube titles, and the phone remembers it. Leave it empty to get
   `[youtube] session_name` ("Wimbledon Session").
 
-- **Start** checks first whether another `rpicam` program (`rpicam-hello`, a
-  hand-run `rpicam-vid`) has the camera. If one does, the page lists it and asks
-  whether to close it. **OK** runs `pkill rpicam` and starts a fresh recording.
+- **Start** first checks whether another program already has the camera open
+  (found with `fuser`). If one does, the page lists it and asks whether to close it.
+  **OK** closes it and starts a fresh recording.
 - **Recordings stop by themselves at 90 minutes.** Press Start again to keep going.
 - **While recording, the camera writes MPEG-TS,** which survives a crash or power cut.
   Stop rewraps it to `.mp4` without re-encoding. A `.ts` left behind by a crash is
@@ -128,29 +129,40 @@ If the camera mount moves, redo this.
 
 ## Camera settings
 
-They're in `CAMERA_ARGS` at the top of `recorder.py`, tuned for the **HQ Camera
-(IMX477)** on a **Pi 5**:
+At the top of `recorder.py`:
 
-| Setting | Why |
-|---|---|
-| 1920×1080 at **50 fps** | The IMX477's fastest mode that covers the whole width at 1080p. At 60 fps it would drop to a lower-resolution mode. |
-| no `--autofocus-mode` | The HQ Camera's lens is focused by hand. |
-| `--codec libav --libav-format mpegts` | The Pi 5 has no hardware H.264 encoder. MPEG-TS survives a crash. |
-| `--bitrate 16000000` | 16 Mbps, about 7 GB an hour (11 GB for 90 minutes). |
-| `--intra 50` | A keyframe every second, so each point in the highlights starts at most a second early. |
-| `--timeout 0`, `-n` | Record until stopped, with no preview window. |
+| Setting | Value | Why |
+|---|---|---|
+| `CAMERA` | `"usb"` | The webcam. Set `ANYA_CAMERA=picam` in the service to go back to a ribbon-cable Pi camera (`CAMERA_ARGS` keeps its settings). |
+| `USB_DEVICE` | empty | Uses the first webcam under `/dev/v4l/by-id/`, the permanent name. The Pi 5 has a dozen video devices of its own, so `/dev/video0` isn't a safe guess. Set `ANYA_CAMERA_DEVICE` to choose one. |
+| `USB_FORMAT` | `"h264"` | The Osmo sends H.264, which is copied straight into the file, so the Pi encodes nothing. `"mjpeg"` would make the Pi re-encode it (x264, about 7 GB an hour). |
+| `USB_SIZE`, `USB_FPS` | 1920×1080, 30 | The Osmo's best webcam mode (`v4l2-ctl --list-formats-ext`). |
+
+**Set exposure and focus on the Osmo itself.** It gives the Pi no controls. A fast
+shutter keeps the ball sharp, so use the camera's Pro/manual mode if webcam mode
+allows it, and turn stabilisation off: the court calibration assumes a fixed view.
+
+Two things the camera, not the Pi, decides:
+- **Keyframes.** The highlights are cut without re-encoding, so each point starts at
+  the nearest keyframe before it. If the Osmo spaces them far apart, points start a
+  few seconds early.
+- **Bitrate.** It's whatever the Osmo sends in webcam mode, which sets both the file
+  size and the quality. Check both after the first session.
 
 The page refuses to start with less than 5 GB free. A recording is deleted from the
 Pi `keep_inbox_days` (14) days after it's on YouTube and its highlights are done.
 
 ## Check on the first sessions
 - **Dropped frames.** Count a 2-minute recording's frames. You should get about
-  6000 (120 s × 50).
+  3600 (120 s × 30).
   ```bash
   ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 /srv/anya/recordings/<name>.mp4
   ```
 - **Highlights quality.** anya was tuned on 4K action-camera footage. At 1080p the far
-  player is half the size, so the first processed session is the real test.
+  player is half the size, so the first processed session is the real test. The Osmo
+  records 4K on its own card, but webcam mode sends only 1080p at 30 fps.
+- **Court calibration** has to be redone with a recording from the webcam: the view
+  changed, so the old corners don't line up.
 - **Processing speed.** The worker log reports "× realtime" for each job. If decoding
   errors appear, set `hwaccel = ""` in `/srv/anya/config.toml`: the Pi 5 decodes
   H.264 only in software.
@@ -164,5 +176,5 @@ python -m pytest pi/recorder pi/tests
 `fake_rpicam_vid.py` stands in for the camera. To click through the page on a laptop:
 
 ```bash
-RPICAM_VID=pi/recorder/fake_rpicam_vid.py python3 pi/recorder/recorder.py --dir /tmp/rec --no-queue
+ANYA_CAMERA_PROGRAM=pi/recorder/fake_rpicam_vid.py python3 pi/recorder/recorder.py --dir /tmp/rec --no-queue
 ```

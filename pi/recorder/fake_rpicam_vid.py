@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Stand-in for rpicam-vid, for testing recorder.py off the Pi.
+"""Stand-in for the camera (ffmpeg on a webcam, or rpicam-vid), for testing
+recorder.py off the Pi.
 
-Takes the same arguments, ignores all but `-o`, and writes a small real-time
-MPEG-TS test pattern there until SIGINT, like the real camera.  Set
+Takes the same arguments, ignores all but the output (after `-o`, or last),
+and writes a small real-time MPEG-TS test pattern there until SIGINT, like
+the real camera.  Set
 FAKE_CAMERA_SECONDS to make it stop by itself (a camera failure), and
 FAKE_CAMERA_FAIL=1 to exit at once without writing anything.
 """
@@ -11,7 +13,7 @@ import os
 import sys
 
 args = sys.argv[1:]
-out = args[args.index("-o") + 1]
+out = args[args.index("-o") + 1] if "-o" in args else args[-1]
 if os.environ.get("FAKE_CAMERA_FAIL"):
     print("ERROR: *** no cameras available ***", flush=True)
     sys.exit(1)

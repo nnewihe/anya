@@ -46,6 +46,12 @@ def no_other_camera_users(monkeypatch):
     monkeypatch.setattr(R, "camera_users", lambda: [])
 
 
+@pytest.fixture(autouse=True)
+def a_webcam_is_plugged_in(monkeypatch):
+    monkeypatch.setattr(R, "CAMERA", "usb")
+    monkeypatch.setattr(R, "find_usb_device", lambda: "/dev/v4l/by-id/usb-fake-video-index0")
+
+
 @pytest.fixture
 def rec(tmp_path):
     return R.Recorder(tmp_path, camera=FAKE)
@@ -192,9 +198,9 @@ def test_close_camera_users_falls_back_to_plain_pkill(monkeypatch):
     """The sudo rule missing (first command does nothing) -> the plain one."""
     victim = subprocess.Popen(["sleep", "31415"])
     try:
-        monkeypatch.setattr(R, "CAMERA_USERS_CMD", ["pgrep", "-f", "sleep 31415"])
-        monkeypatch.setattr(R, "CLOSE_CAMERA_CMDS",
-                            (["false"], ["pkill", "-f", "sleep 31415"]))
+        monkeypatch.setattr(R, "_users_cmd", lambda: ["pgrep", "-f", "sleep 31415"])
+        monkeypatch.setattr(R, "_close_cmds",
+                            lambda: (["false"], ["pkill", "-f", "sleep 31415"]))
         monkeypatch.setattr(R, "CLOSE_WAIT_S", 0.5)
         monkeypatch.setattr(R, "camera_users", REAL_CAMERA_USERS)
         assert R.camera_users()[0]["pid"] == victim.pid
@@ -293,3 +299,42 @@ def test_http_start_passes_the_name(server, rec):
     assert code == 200 and body["player"] == "Andy"
     rec.stop()
     assert saved(rec)
+
+
+def test_usb_webcam_command_copies_its_h264():
+    cmd = R.camera_command("/r/x.ts")
+    assert cmd[0] == "ffmpeg" and cmd[-1] == "/r/x.ts"
+    i = cmd.index("-i")
+    assert cmd[i + 1] == "/dev/v4l/by-id/usb-fake-video-index0"
+    assert cmd[cmd.index("-input_format") + 1] == "h264"
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert cmd[cmd.index("-video_size") + 1] == "1920x1080"
+    assert cmd[cmd.index("-framerate") + 1] == "30"
+
+
+def test_pi_camera_command_is_still_available(monkeypatch):
+    monkeypatch.setattr(R, "CAMERA", "picam")
+    cmd = R.camera_command("/r/x.ts")
+    assert cmd[0] == "rpicam-vid" and cmd[-2:] == ["-o", "/r/x.ts"]
+
+
+def test_no_webcam_plugged_in_is_reported(rec, monkeypatch):
+    monkeypatch.setattr(R, "find_usb_device", lambda: None)
+    err = rec.start()
+    assert "No USB camera found" in err and rec.state == R.IDLE
+    assert rec.status()["error"] == err
+
+
+def test_webcam_users_come_from_fuser(monkeypatch):
+    monkeypatch.setattr(R, "camera_users", REAL_CAMERA_USERS)
+    monkeypatch.setattr(R, "_users_cmd", lambda: ["sh", "-c", "echo ' 4242 4243'"])
+    monkeypatch.setattr(R, "_command_of", lambda pid: f"prog{pid}")
+    assert R.camera_users() == [{"pid": 4242, "command": "prog4242"},
+                                {"pid": 4243, "command": "prog4243"}]
+
+
+def test_close_commands_for_the_webcam(monkeypatch):
+    monkeypatch.setattr(R.os.path, "realpath", lambda p: "/dev/video0")
+    assert R._close_cmds() == (["sudo", "-n", "fuser", "-k", "-TERM", "/dev/video0"],
+                               ["fuser", "-k", "-TERM", "/dev/video0"])
+    assert R.close_hint() == "sudo fuser -k /dev/video0"

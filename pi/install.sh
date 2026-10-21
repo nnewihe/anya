@@ -16,7 +16,8 @@ U=anya
 
 echo "== packages"
 apt-get update -q
-apt-get install -y -q ffmpeg python3-venv python3-dev rsync samba exfatprogs
+apt-get install -y -q ffmpeg python3-venv python3-dev rsync samba exfatprogs \
+  psmisc v4l-utils    # fuser (who holds the webcam), v4l2-ctl
 
 echo "== user $U"
 id -u $U >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin $U
@@ -82,9 +83,12 @@ systemctl enable anya-worker.service anya-recorder.service
 # The first, hand-installed recorder ran from here.
 rm -rf /opt/anya-recorder
 
-echo "== sudo rule: the recorder may close other rpicam programs (and only that)"
+echo "== sudo rule: the recorder may close whatever holds the camera (and only that)"
 SUDOERS=/etc/sudoers.d/anya-recorder
-echo "$U ALL=(root) NOPASSWD: $(command -v pkill) rpicam" > $SUDOERS.tmp
+{
+  echo "$U ALL=(root) NOPASSWD: $(command -v pkill) rpicam"
+  echo "$U ALL=(root) NOPASSWD: $(command -v fuser) -k -TERM /dev/video[0-9]*"
+} > $SUDOERS.tmp
 chmod 440 $SUDOERS.tmp
 visudo -cf $SUDOERS.tmp >/dev/null && mv $SUDOERS.tmp $SUDOERS || { rm -f $SUDOERS.tmp; echo "   sudoers rule rejected; skipped"; }
 
