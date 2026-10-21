@@ -25,6 +25,9 @@ phone ──▶ recorder.py :8080 ──▶ ffmpeg (webcam) ──▶ recordings
 - **While recording, the Pi only saves what the camera sends**: the Osmo's MJPEG goes
   untouched into a `.mkv`. Encoding H.264 live made the video choppy. A `.mkv` stays
   readable even if the recording is cut off by a crash or power cut.
+- **Sound comes from the Osmo's microphone,** which is also a USB device. It's recorded
+  into the same `.mkv` uncompressed, then becomes AAC in the `.mp4`, so the YouTube
+  uploads and the highlights have sound.
 - **After Stop, it's converted to an H.264 `.mp4` in the background.** The page shows
   "Converting to MP4" with a percentage, and you can record again meanwhile. The
   `.mkv` is deleted once the `.mp4` checks out. Anything left unconverted by a crash
@@ -143,8 +146,9 @@ At the top of `recorder.py`:
 | `USB_FORMAT` | `"mjpeg"` | The Osmo lists H.264 too, but on the Pi it won't stream it (`VIDIOC_REQBUFS: Invalid argument`). So it sends MJPEG, which is saved as is and converted after Stop. |
 | `CONVERT_PRESET` | `"veryfast"` | x264's speed for the conversion after Stop (16 Mbps, about 7 GB an hour, a keyframe every second). Nothing waits on it live, so a slower preset only means a longer conversion. |
 | `USB_SIZE`, `USB_FPS` | 1920×1080, 30 | The Osmo's best webcam mode (`v4l2-ctl --list-formats-ext`). **60 fps isn't possible**: webcam mode offers only 30. |
+| `USB_AUDIO` | `"auto"` | The microphone on the same USB device as the webcam (`arecord -l` lists it as `OsmoAction4`). An ALSA name such as `plughw:CARD=OsmoAction4,DEV=0` picks one; `"none"` records no sound. |
 
-`ANYA_CAMERA_FORMAT`, `ANYA_CONVERT_PRESET` and `ANYA_CAMERA_SIZE` override these
+`ANYA_CAMERA_FORMAT`, `ANYA_CONVERT_PRESET`, `ANYA_CAMERA_SIZE` and `ANYA_AUDIO_DEVICE` override these
 without editing the code. Add them as `Environment=` lines in `anya-recorder.service`.
 
 **MJPEG is large while it waits to be converted.** Check the size of a short test

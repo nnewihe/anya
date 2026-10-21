@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -23,7 +24,8 @@ from anya_pi import config as CFG  # noqa: E402
 from anya_pi import jobs as J  # noqa: E402
 
 FAKE = str(HERE / "fake_rpicam_vid.py")
-REAL_CAMERA_USERS = R.camera_users      # before the autouse stub replaces it
+REAL_CAMERA_USERS = R.camera_users      # before the autouse stubs replace them
+REAL_FIND_AUDIO = R.find_usb_audio
 
 pytestmark = pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
 
@@ -50,6 +52,7 @@ def no_other_camera_users(monkeypatch):
 def a_webcam_is_plugged_in(monkeypatch):
     monkeypatch.setattr(R, "CAMERA", "usb")
     monkeypatch.setattr(R, "find_usb_device", lambda: "/dev/v4l/by-id/usb-fake-video-index0")
+    monkeypatch.setattr(R, "find_usb_audio", lambda dev: "plughw:CARD=OsmoAction4,DEV=0")
 
 
 @pytest.fixture
@@ -310,7 +313,7 @@ def test_usb_webcam_saves_its_mjpeg_untouched():
     assert cmd[i + 1] == "/dev/v4l/by-id/usb-fake-video-index0"
     assert cmd[cmd.index("-input_format") + 1] == "mjpeg"
     assert cmd[cmd.index("-c:v") + 1] == "copy" and "libx264" not in cmd
-    assert cmd[cmd.index("-f", i) + 1] == "matroska"
+    assert cmd[-4:-1] == ["-f", "matroska", "-y"]
     assert cmd[cmd.index("-video_size") + 1] == "1920x1080"
     assert cmd[cmd.index("-framerate") + 1] == "30"
 
@@ -320,7 +323,7 @@ def test_usb_webcam_h264_is_copied_into_ts(monkeypatch):
     assert R.capture_suffix() == ".ts"
     cmd = R.camera_command("/r/x.ts")
     assert cmd[cmd.index("-c:v") + 1] == "copy"
-    assert cmd[cmd.index("-f", cmd.index("-i")) + 1] == "mpegts"
+    assert cmd[-4:-1] == ["-f", "mpegts", "-y"]
 
 
 def test_pi_camera_command_is_still_available(monkeypatch):
@@ -424,3 +427,57 @@ def test_low_disk_stops_the_recording(rec, monkeypatch):
     assert wait_for(lambda: rec.state == R.IDLE, timeout=10)
     assert saved(rec)
     assert "disk is nearly full" in rec.status()["notice"]
+
+
+def test_the_webcam_microphone_is_recorded_with_the_video():
+    cmd = R.camera_command("/r/x.mkv")
+    a = cmd.index("alsa")
+    assert cmd[a + 1:a + 5] == ["-thread_queue_size", "1024", "-i",
+                                "plughw:CARD=OsmoAction4,DEV=0"]
+    assert cmd[cmd.index("-ts") + 1] == "mono2abs"           # same clock as ALSA
+    assert cmd.index("-ts") < cmd.index("-i")                # a v4l2 input option
+    assert ["-map", "1:a", "-c:a", "pcm_s16le"] == cmd[cmd.index("1:a") - 1:
+                                                         cmd.index("1:a") + 3]
+
+
+def test_no_microphone_records_video_only(monkeypatch):
+    monkeypatch.setattr(R, "find_usb_audio", lambda dev: None)
+    cmd = R.camera_command("/r/x.mkv")
+    assert "alsa" not in cmd and "-ts" not in cmd and "1:a" not in cmd
+
+
+def test_microphone_is_found_on_the_webcams_usb_device(tmp_path, monkeypatch):
+    """/sys: video0's interface and card2's interface share one USB device."""
+    usb = tmp_path / "usb" / "1-1"
+    for d in ("1-1:1.0", "1-1:1.3"):
+        (usb / d).mkdir(parents=True)
+    other = tmp_path / "usb" / "2-1" / "2-1:1.0"
+    other.mkdir(parents=True)
+    sysfs = {"/sys/class/video4linux/video0/device": str(usb / "1-1:1.0"),
+             "/sys/class/sound/card1/device": str(other),
+             "/sys/class/sound/card2/device": str(usb / "1-1:1.3")}
+    ids = {"/sys/class/sound/card1": "Headset", "/sys/class/sound/card2": "OsmoAction4"}
+    monkeypatch.setattr(R.os.path, "realpath",
+                        lambda p: "/dev/video0" if p.startswith("/dev/") else sysfs.get(p, p))
+    monkeypatch.setattr(R.glob, "glob", lambda pat: sorted(ids))
+    real_path = R.Path
+    monkeypatch.setattr(R, "Path", lambda *a: types.SimpleNamespace(
+        read_text=lambda: ids[a[0]]) if a[1:] == ("id",) else real_path(*a))
+    assert REAL_FIND_AUDIO("/dev/v4l/by-id/usb-DJI-video-index0") == \
+        "plughw:CARD=OsmoAction4,DEV=0"
+    monkeypatch.setattr(R, "USB_AUDIO", "none")
+    assert REAL_FIND_AUDIO("/dev/v4l/by-id/usb-DJI-video-index0") is None
+
+
+def test_sound_survives_the_conversion(tmp_path):
+    src = tmp_path / "2026-10-21_180000.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc=size=320x180:rate=30", "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000", "-t", "2",
+                    "-map", "0:v", "-map", "1:a", "-c:v", "mjpeg", "-pix_fmt", "yuvj422p",
+                    "-c:a", "pcm_s16le", "-f", "matroska", "-y", str(src)], check=True)
+    assert R.finish(src) is None
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_name",
+                          "-of", "csv=p=0", str(src.with_suffix(".mp4"))],
+                         capture_output=True, text=True).stdout.split()
+    assert out == ["h264", "aac"]

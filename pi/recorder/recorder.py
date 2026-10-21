@@ -71,6 +71,10 @@ USB_FPS = "30"
 # x264 speed for the conversion after Stop.  Nothing waits on it in real time,
 # so this trades only conversion time (and the CPU it shares with processing).
 CONVERT_PRESET = os.environ.get("ANYA_CONVERT_PRESET", "veryfast")
+# Sound: the webcam's own microphone (the Osmo is also a USB audio device),
+# found as the ALSA card on the same USB device as the video.  An ALSA name
+# such as "plughw:CARD=OsmoAction4,DEV=0" picks one; "none" records no sound.
+USB_AUDIO = os.environ.get("ANYA_AUDIO_DEVICE", "auto")
 
 
 def capture_suffix():
@@ -78,14 +82,47 @@ def capture_suffix():
     return ".mkv" if CAMERA == "usb" and USB_FORMAT == "mjpeg" else ".ts"
 
 
-def usb_args(device):
+def usb_args(device, audio=None):
     # Copy only: whatever the camera sends goes to disk as is.  Matroska takes
     # MJPEG and, like MPEG-TS, stays readable if the recording is cut off.
     container = "matroska" if USB_FORMAT == "mjpeg" else "mpegts"
+    sound_in, sound_out, clock = [], [], []
+    if audio:
+        # ALSA stamps samples with the wall clock, V4L2 frames with the kernel's
+        # monotonic one: mono2abs puts the video on the wall clock too, so the
+        # two line up.  The sound is kept as raw PCM (no CPU); the conversion
+        # after Stop makes it AAC.
+        clock = ["-ts", "mono2abs"]
+        sound_in = ["-f", "alsa", "-thread_queue_size", "1024", "-i", audio]
+        sound_out = ["-map", "1:a",
+                     "-c:a", "pcm_s16le" if container == "matroska" else "aac"]
     return ["-hide_banner", "-nostdin", "-loglevel", "warning",
             "-f", "v4l2", "-input_format", USB_FORMAT, "-video_size", USB_SIZE,
-            "-framerate", USB_FPS, "-thread_queue_size", "512", "-i", device,
-            "-map", "0:v", "-c:v", "copy", "-f", container, "-y"]
+            "-framerate", USB_FPS, "-thread_queue_size", "512", *clock,
+            "-i", device, *sound_in,
+            "-map", "0:v", "-c:v", "copy", *sound_out,
+            "-f", container, "-y"]
+
+
+def find_usb_audio(video_device):
+    """The ALSA capture device on the same USB device as the webcam, or None."""
+    if USB_AUDIO == "none":
+        return None
+    if USB_AUDIO != "auto":
+        return USB_AUDIO
+    node = os.path.basename(os.path.realpath(video_device))      # video0
+    iface = os.path.realpath(f"/sys/class/video4linux/{node}/device")
+    usb = os.path.dirname(iface)                   # the USB device, not interface
+    for card in sorted(glob.glob("/sys/class/sound/card[0-9]*")):
+        if os.path.dirname(os.path.realpath(f"{card}/device")) != usb:
+            continue
+        try:
+            card_id = Path(card, "id").read_text().strip()
+        except OSError:
+            continue
+        # plughw: ALSA converts to whatever rate/channels ffmpeg asks for.
+        return f"plughw:CARD={card_id},DEV=0"
+    return None
 
 
 def find_usb_device():
@@ -139,7 +176,8 @@ def camera_command(out, program=None):
     if not device:
         return ("No USB camera found. Plug the Osmo Action 4 into the Pi, "
                 "switch it to webcam mode, and press Start again.")
-    return [program or "ffmpeg", *usb_args(device), str(out)]
+    audio = find_usb_audio(device)
+    return [program or "ffmpeg", *usb_args(device, audio), str(out)]
 
 
 def _users_cmd():
@@ -218,8 +256,10 @@ def finish(src, progress=None, log_path=None):
     # Matroska still converts, a .ts with no duration has nothing in it.
     if src_dur is None and not encode:
         return f"{src.name}: unreadable, left as is"
-    cmd = ["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", str(src), "-map", "0:v",
-           *(_encode_args() if encode else ["-map", "0:a?", "-c", "copy"]),
+    cmd = ["ffmpeg", "-y", "-v", "error", "-nostdin", "-i", str(src),
+           "-map", "0:v", "-map", "0:a?",
+           *([*_encode_args(), "-c:a", "aac", "-b:a", "160k"] if encode
+             else ["-c", "copy"]),
            "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(tmp)]
     if encode and shutil.which("nice"):
         cmd = ["nice", "-n", "10", *cmd]        # behind the camera and the page

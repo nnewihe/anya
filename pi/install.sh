@@ -21,7 +21,7 @@ apt-get install -y -q ffmpeg python3-venv python3-dev rsync samba exfatprogs \
 
 echo "== user $U"
 id -u $U >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin $U
-usermod -aG video,render $U     # the HEVC decoder's device nodes
+usermod -aG video,render,audio $U   # HEVC decoder + webcam (video), its microphone (audio)
 
 echo "== code -> $APP/src"
 mkdir -p $APP/src

@@ -7,7 +7,7 @@ Wants=network-online.target
 # The same user as anya-worker: the recorder queues jobs in its state dir.
 User=anya
 Group=anya
-SupplementaryGroups=video
+SupplementaryGroups=video audio
 Environment=PYTHONPATH=/opt/anya/src:/opt/anya/src/pi
 Environment=PYTHONUNBUFFERED=1
 Environment=ANYA_PI_CONFIG=/srv/anya/config.toml
