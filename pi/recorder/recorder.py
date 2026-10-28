@@ -6,15 +6,17 @@ Start/stop web page for recording tennis from a camera on the Raspberry Pi.
 
 Open http://<pi>.local:8080 on a phone on the same network.
 
-The camera is a USB webcam by default (ANYA_CAMERA=usb): a DJI Osmo Action 4
-in webcam mode, recorded with ffmpeg.  ANYA_CAMERA=picam uses a ribbon-cable
-Pi camera through rpicam-vid instead.
+The camera is a GoPro HERO8 in webcam mode by default (ANYA_CAMERA=gopro):
+over USB it is a network device, not a webcam, so the page asks it over HTTP
+to stream and ffmpeg records the H.264 it sends by UDP.  ANYA_CAMERA=usb
+records a USB webcam (the DJI Osmo Action 4 in webcam mode) with ffmpeg, and
+ANYA_CAMERA=picam a ribbon-cable Pi camera through rpicam-vid.
 
 Start records until Stop is pressed, for at most 90 minutes, or until the disk
 is nearly full.  If another program already has the camera, the page asks
 before closing it.  Recording only saves what the camera sends: the webcam's
 MJPEG into <dir>/<YYYY-MM-DD_HHMMSS>.mkv (the Pi encoding H.264 live made the
-video choppy), a Pi camera's H.264 into .ts.  Both stay readable after a crash
+video choppy), the GoPro's or a Pi camera's H.264 into .ts.  Both stay readable after a crash
 or power cut, which an MP4 without its index does not.  After Stop the file
 becomes an .mp4 in the background: the MJPEG is encoded to H.264, a .ts is
 just rewrapped.  The original is deleted only once the .mp4 reads back with
@@ -41,6 +43,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -48,9 +51,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # pi/, for anya_p
 from anya_pi import config as CFG  # noqa: E402
 from anya_pi import jobs as J  # noqa: E402
 
-# Which camera: "usb" (a webcam, e.g. the Osmo Action 4 in webcam mode) or
-# "picam" (a ribbon-cable Pi camera).
-CAMERA = os.environ.get("ANYA_CAMERA", "usb")
+# Which camera: "gopro" (a HERO8 in webcam mode), "usb" (a webcam, e.g. the
+# Osmo Action 4 in webcam mode) or "picam" (a ribbon-cable Pi camera).
+CAMERA = os.environ.get("ANYA_CAMERA", "gopro")
+
+# --- GoPro HERO8 (webcam mode) ------------------------------------------------
+# Plugged in by USB, the HERO8 shows up as a network card, not a V4L2 webcam:
+# the Pi gets an address 172.2x.1yy.z from it and the camera is 172.2x.1yy.51.
+# GET /gp/gpWebcam/START?res=1080 makes it send H.264 in MPEG-TS by UDP to the
+# Pi's port 8554, STOP ends it.  No sound comes with it.  ANYA_GOPRO_IP skips
+# looking for the camera's address.
+GOPRO_IP = os.environ.get("ANYA_GOPRO_IP", "")
+GOPRO_RES = os.environ.get("ANYA_GOPRO_RES", "1080")     # 1080, 720 or 480
+GOPRO_PORT = 8554
+GOPRO_HTTP_TIMEOUT_S = 5
+# The camera unplugged, asleep or overheated just stops sending: without a
+# timeout ffmpeg would wait forever, and the page would say Recording.
+GOPRO_SILENCE_S = 10
 
 # --- USB webcam -------------------------------------------------------------
 # The device: its permanent /dev/v4l/by-id name (the Pi 5 has a dozen video
@@ -133,6 +150,50 @@ def find_usb_device():
     return found[0] if found else None
 
 
+def find_gopro():
+    """The GoPro's IP address on its USB network link, or None."""
+    if GOPRO_IP:
+        return GOPRO_IP
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"\binet (172\.2\d\.1\d\d)\.\d+/", out)
+    return f"{m.group(1)}.51" if m else None
+
+
+def gopro_call(ip, command):
+    """GET /gp/gpWebcam/<command> on the camera.  Returns an error, or None."""
+    try:
+        with urllib.request.urlopen(f"http://{ip}/gp/gpWebcam/{command}",
+                                    timeout=GOPRO_HTTP_TIMEOUT_S) as r:
+            r.read()
+        return None
+    except (OSError, ValueError) as e:      # URLError and HTTPError are OSErrors
+        return str(e)
+
+
+def gopro_args():
+    # Copy only, as for the webcam.  fifo_size (in 188-byte packets, ~9 MB)
+    # and overrun_nonfatal ride out a slow disk write; timeout (microseconds)
+    # ends the recording once the camera goes quiet.
+    url = (f"udp://@0.0.0.0:{GOPRO_PORT}?overrun_nonfatal=1&fifo_size=50000"
+           f"&timeout={GOPRO_SILENCE_S * 1_000_000}")
+    return ["-hide_banner", "-nostdin", "-loglevel", "warning", "-i", url,
+            "-map", "0:v", "-map", "0:a?", "-c", "copy", "-f", "mpegts", "-y"]
+
+
+def camera_off():
+    """After a recording: the GoPro streams until told to stop."""
+    if CAMERA != "gopro":
+        return
+    ip = find_gopro()
+    err = gopro_call(ip, "STOP") if ip else "not found"
+    if err:
+        log(f"could not stop the GoPro's stream: {err}")
+
+
 # --- Pi camera (rpicam-vid) ---------------------------------------------------
 # Pi 5 has no hardware H.264 encoder, so encoding goes through libav
 # (software).  If the log shows dropped frames, lower --framerate or --bitrate
@@ -172,6 +233,15 @@ def camera_command(out, program=None):
     """The command that records to `out`, or an error string."""
     if CAMERA == "picam":
         return [program or "rpicam-vid", *CAMERA_ARGS, "-o", str(out)]
+    if CAMERA == "gopro":
+        ip = find_gopro()
+        if not ip:
+            return ("No GoPro found. Plug the HERO8 into the Pi with USB, turn it "
+                    "on, and press Start again.")
+        err = gopro_call(ip, f"START?res={GOPRO_RES}")
+        if err:
+            return f"The GoPro ({ip}) would not start streaming: {err}"
+        return [program or "ffmpeg", *gopro_args(), str(out)]
     device = find_usb_device()
     if not device:
         return ("No USB camera found. Plug the Osmo Action 4 into the Pi, "
@@ -182,9 +252,12 @@ def camera_command(out, program=None):
 
 def _users_cmd():
     """Lists who else has the camera: pgrep for rpicam programs; for a
-    webcam, fuser on its device (prints the PIDs that hold it open)."""
+    webcam, fuser on its device (prints the PIDs that hold it open); for the
+    GoPro, fuser on the UDP port its stream arrives on."""
     if CAMERA == "picam":
         return ["pgrep", "-a", "rpicam"]
+    if CAMERA == "gopro":
+        return ["fuser", f"{GOPRO_PORT}/udp"]
     device = find_usb_device()
     return ["fuser", os.path.realpath(device)] if device else None
 
@@ -195,6 +268,8 @@ def _close_cmds():
     processes of the service's own user."""
     if CAMERA == "picam":
         cmd = ["pkill", "rpicam"]
+    elif CAMERA == "gopro":
+        cmd = ["fuser", "-k", "-TERM", f"{GOPRO_PORT}/udp"]
     else:
         device = find_usb_device()
         if not device:
@@ -325,6 +400,8 @@ def close_hint():
     """What to run by hand when closing failed."""
     if CAMERA == "picam":
         return "sudo pkill rpicam"
+    if CAMERA == "gopro":
+        return f"sudo fuser -k {GOPRO_PORT}/udp"
     device = find_usb_device()
     return f"sudo fuser -k {os.path.realpath(device)}" if device else "unplug the camera"
 
@@ -480,6 +557,7 @@ class Recorder:
                     # the camera itself and marks the stop as intended.
                     start_new_session=True)
             except OSError as e:
+                camera_off()
                 self.error = f"could not run {cmd[0]}: {e}"
                 return self.error
             finally:
@@ -542,6 +620,7 @@ class Recorder:
         """Runs for each recording: waits for the camera to exit, for any
         reason, and hands the file to the conversion."""
         rc = proc.wait()
+        camera_off()
         if self.cfg:
             self.cfg.recording_flag.unlink(missing_ok=True)
         with self.lock:

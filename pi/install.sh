@@ -88,6 +88,7 @@ SUDOERS=/etc/sudoers.d/anya-recorder
 {
   echo "$U ALL=(root) NOPASSWD: $(command -v pkill) rpicam"
   echo "$U ALL=(root) NOPASSWD: $(command -v fuser) -k -TERM /dev/video[0-9]*"
+  echo "$U ALL=(root) NOPASSWD: $(command -v fuser) -k -TERM 8554/udp"   # the GoPro's stream
 } > $SUDOERS.tmp
 chmod 440 $SUDOERS.tmp
 visudo -cf $SUDOERS.tmp >/dev/null && mv $SUDOERS.tmp $SUDOERS || { rm -f $SUDOERS.tmp; echo "   sudoers rule rejected; skipped"; }

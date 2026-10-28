@@ -1,5 +1,5 @@
 [Unit]
-Description=anya: start/stop recording web page (Pi camera)
+Description=anya: start/stop recording web page (GoPro HERO8 webcam)
 After=network-online.target local-fs.target
 Wants=network-online.target
 

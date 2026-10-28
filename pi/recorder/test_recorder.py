@@ -469,6 +469,95 @@ def test_microphone_is_found_on_the_webcams_usb_device(tmp_path, monkeypatch):
     assert REAL_FIND_AUDIO("/dev/v4l/by-id/usb-DJI-video-index0") is None
 
 
+GOPRO_IP = "172.26.161.51"
+
+
+@pytest.fixture
+def gopro(monkeypatch):
+    """A HERO8 on its USB network link; returns the HTTP calls made to it."""
+    calls = []
+    monkeypatch.setattr(R, "CAMERA", "gopro")
+    monkeypatch.setattr(R, "find_gopro", lambda: GOPRO_IP)
+    monkeypatch.setattr(R, "gopro_call", lambda ip, c: calls.append((ip, c)))
+    return calls
+
+
+def test_gopro_stream_is_copied_into_ts(gopro):
+    assert R.capture_suffix() == ".ts"
+    cmd = R.camera_command("/r/x.ts")
+    assert gopro == [(GOPRO_IP, "START?res=1080")]
+    assert cmd[0] == "ffmpeg" and cmd[-1] == "/r/x.ts"
+    url = cmd[cmd.index("-i") + 1]
+    assert url.startswith("udp://@0.0.0.0:8554?") and "timeout=10000000" in url
+    assert cmd[cmd.index("-c") + 1] == "copy" and "libx264" not in cmd
+    assert cmd[-4:-1] == ["-f", "mpegts", "-y"]
+    assert "v4l2" not in cmd and "alsa" not in cmd
+
+
+def test_gopro_recording_ends_as_a_queued_mp4_and_stops_the_stream(
+        tmp_path, cfg, gopro):
+    rec = R.Recorder(tmp_path / "rec", camera=FAKE, cfg=cfg)
+    assert rec.start(player="Andy") is None
+    assert rec.file.suffix == ".ts"
+    time.sleep(2)
+    rec.stop()
+    assert saved(rec)
+    assert gopro == [(GOPRO_IP, "START?res=1080"), (GOPRO_IP, "STOP")]
+    mp4 = next((tmp_path / "rec").glob("*.mp4"))
+    assert not list((tmp_path / "rec").glob("*.ts"))
+    assert 1.5 < R.probe_duration(mp4) < 3.5
+    assert J.Queue(cfg).get(mp4.stem)["recording"]["player"] == "Andy"
+
+
+def test_gopro_going_quiet_stops_the_stream_too(rec, gopro, monkeypatch):
+    monkeypatch.setenv("FAKE_CAMERA_SECONDS", "1")
+    assert rec.start() is None
+    assert saved(rec)
+    assert "camera stopped by itself" in rec.status()["error"]
+    assert gopro[-1] == (GOPRO_IP, "STOP")
+
+
+def test_no_gopro_plugged_in_is_reported(rec, gopro, monkeypatch):
+    monkeypatch.setattr(R, "find_gopro", lambda: None)
+    err = rec.start()
+    assert "No GoPro found" in err and rec.state == R.IDLE and gopro == []
+
+
+def test_gopro_refusing_to_stream_is_reported(rec, monkeypatch):
+    monkeypatch.setattr(R, "CAMERA", "gopro")
+    monkeypatch.setattr(R, "find_gopro", lambda: GOPRO_IP)
+    monkeypatch.setattr(R, "gopro_call", lambda ip, c: "HTTP Error 500")
+    err = rec.start()
+    assert err == f"The GoPro ({GOPRO_IP}) would not start streaming: HTTP Error 500"
+    assert rec.state == R.IDLE
+
+
+def test_gopro_address_comes_from_its_usb_network_link(monkeypatch):
+    out = ("1: lo    inet 127.0.0.1/8 scope host lo\n"
+           "3: wlan0    inet 192.168.1.40/24 brd 192.168.1.255 scope global wlan0\n"
+           "5: enxd43260ab1234    inet 172.26.161.52/24 brd 172.26.161.255 scope global\n")
+    monkeypatch.setattr(R.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(stdout=out))
+    assert R.find_gopro() == GOPRO_IP
+    monkeypatch.setattr(R.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(stdout=out[:110]))
+    assert R.find_gopro() is None
+    monkeypatch.setattr(R, "GOPRO_IP", "172.20.110.51")
+    assert R.find_gopro() == "172.20.110.51"
+
+
+def test_gopro_call_reports_an_unreachable_camera():
+    # Port 9 on localhost: nothing listens, so the connection is refused.
+    assert R.gopro_call("127.0.0.1:9", "STOP")
+
+
+def test_close_commands_for_the_gopro(gopro):
+    assert R._users_cmd() == ["fuser", "8554/udp"]
+    assert R._close_cmds() == (["sudo", "-n", "fuser", "-k", "-TERM", "8554/udp"],
+                               ["fuser", "-k", "-TERM", "8554/udp"])
+    assert R.close_hint() == "sudo fuser -k 8554/udp"
+
+
 def test_sound_survives_the_conversion(tmp_path):
     src = tmp_path / "2026-10-21_180000.mkv"
     subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
