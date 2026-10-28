@@ -492,6 +492,8 @@ def test_gopro_stream_is_copied_into_ts(gopro):
     assert cmd[cmd.index("-c") + 1] == "copy" and "libx264" not in cmd
     assert cmd[-4:-1] == ["-f", "mpegts", "-y"]
     assert "v4l2" not in cmd and "alsa" not in cmd
+    # Its empty AC-3 track made the muxer refuse the header: video only.
+    assert [a for a in cmd if a.startswith("0:")] == ["0:v"]
 
 
 def test_gopro_recording_ends_as_a_queued_mp4_and_stops_the_stream(

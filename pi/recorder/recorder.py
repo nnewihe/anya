@@ -177,11 +177,13 @@ def gopro_call(ip, command):
 def gopro_args():
     # Copy only, as for the webcam.  fifo_size (in 188-byte packets, ~9 MB)
     # and overrun_nonfatal ride out a slow disk write; timeout (microseconds)
-    # ends the recording once the camera goes quiet.
+    # ends the recording once the camera goes quiet.  Video only: the stream
+    # also lists an AC-3 track with no channels or sample rate, which the
+    # MPEG-TS muxer refuses ("Could not write header"), so ffmpeg quit at once.
     url = (f"udp://@0.0.0.0:{GOPRO_PORT}?overrun_nonfatal=1&fifo_size=50000"
            f"&timeout={GOPRO_SILENCE_S * 1_000_000}")
     return ["-hide_banner", "-nostdin", "-loglevel", "warning", "-i", url,
-            "-map", "0:v", "-map", "0:a?", "-c", "copy", "-f", "mpegts", "-y"]
+            "-map", "0:v", "-c", "copy", "-f", "mpegts", "-y"]
 
 
 def camera_off():
