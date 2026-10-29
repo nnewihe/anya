@@ -1,0 +1,23 @@
+# Raspberry Pi 5 (aarch64, Raspberry Pi OS Bookworm, Python 3.11).
+# Versions match the Mac the pipeline is developed on, so the pickled walking
+# model (walking/outputs/walking_model.joblib) and the pose export behave the
+# same.  scikit-learn in particular must match the pickle.
+numpy==2.1.3
+scipy==1.17.1
+scikit-learn==1.8.0
+joblib==1.5.3
+filterpy==1.4.5
+opencv-python-headless>=4.9
+# torch is NOT listed here: PyPI's aarch64 torch wheel pulls in the NVIDIA CUDA
+# libraries (a 540 MB nvidia_cublas among them), useless on a Pi.  install.sh
+# installs torch==2.11.0 + torchvision==0.26.0 (a matched pair) from PyTorch's
+# CPU-only index first, which satisfies ultralytics' requirements so pip never
+# fetches the CUDA build or a mismatched torchvision.
+ultralytics==8.4.36
+# Pose runtimes (pipeline/anya2/pose_backend.py); pnnx is the NCNN exporter.
+ncnn
+pnnx
+onnxruntime
+# YouTube upload (pi/anya_pi/youtube.py)
+google-api-python-client
+google-auth-oauthlib

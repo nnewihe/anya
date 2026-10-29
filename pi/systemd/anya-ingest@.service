@@ -1,0 +1,13 @@
+[Unit]
+Description=anya: copy DJI recordings from /dev/%I
+BindsTo=dev-%i.device
+# local-fs first, so the SSD /srv/anya is on is already mounted (and skipped
+# by the script) when its own udev event arrives at boot.
+After=dev-%i.device local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/anya/src/pi/bin/anya-ingest-device %I
+# A long session is tens of GB over USB 2.
+TimeoutStartSec=6h
+Environment=PYTHONUNBUFFERED=1
