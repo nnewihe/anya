@@ -63,6 +63,11 @@ CAMERA = os.environ.get("ANYA_CAMERA", "gopro")
 # looking for the camera's address.
 GOPRO_IP = os.environ.get("ANYA_GOPRO_IP", "")
 GOPRO_RES = os.environ.get("ANYA_GOPRO_RES", "1080")     # 1080, 720 or 480
+# The lens, set with SETTINGS?fov=N once streaming.  Webcam mode otherwise
+# streams Wide, whose fisheye bends the court lines; Linear keeps them
+# straight.  Empty: leave the camera as it is.
+GOPRO_FOV = os.environ.get("ANYA_GOPRO_FOV", "linear")
+GOPRO_FOVS = {"wide": 0, "linear": 4, "narrow": 6}
 GOPRO_PORT = 8554
 GOPRO_HTTP_TIMEOUT_S = 5
 # The camera unplugged, asleep or overheated just stops sending: without a
@@ -243,6 +248,12 @@ def camera_command(out, program=None):
         err = gopro_call(ip, f"START?res={GOPRO_RES}")
         if err:
             return f"The GoPro ({ip}) would not start streaming: {err}"
+        if GOPRO_FOV:
+            # A lens the camera refuses still leaves a recording worth having.
+            fov = GOPRO_FOVS.get(GOPRO_FOV.lower(), GOPRO_FOV)
+            err = gopro_call(ip, f"SETTINGS?fov={fov}")
+            if err:
+                log(f"could not set the GoPro's lens to {GOPRO_FOV}: {err}")
         return [program or "ffmpeg", *gopro_args(), str(out)]
     device = find_usb_device()
     if not device:

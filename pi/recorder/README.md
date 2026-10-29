@@ -168,11 +168,13 @@ Replace `172.2X.1YY` with the first three numbers from the `ip` line.
 | `CAMERA` | `"gopro"` | Set `ANYA_CAMERA=usb` for a USB webcam (the Osmo, below), `picam` for a ribbon-cable Pi camera (`CAMERA_ARGS` keeps its settings). |
 | `GOPRO_IP` | empty | Found from the Pi's own address on the camera's network (`172.2x.1yy.z` → `.51`). Set `ANYA_GOPRO_IP` if that guess is wrong. |
 | `GOPRO_RES` | `"1080"` | Webcam mode's best: 1080p at 30 fps. `720` and `480` also work (`ANYA_GOPRO_RES`). The camera records 4K/60 to its own card, but not while it's a webcam. |
+| `GOPRO_FOV` | `"linear"` | The lens, set after Start (`/gp/gpWebcam/SETTINGS?fov=4`). Webcam mode otherwise streams Wide, whose fisheye bends the court lines. `wide`, `narrow`, or empty to leave the camera's own (`ANYA_GOPRO_FOV`). If the camera refuses, it records anyway and the log says so. |
 | `GOPRO_SILENCE_S` | 10 | How long the stream may go quiet before the recording ends. |
 
 Things the camera decides, not the Pi:
-- **The lens.** Webcam mode has its own field of view; check the first recording.
-  Linear (no fisheye) suits the court calibration best, if the camera offers it.
+- **Framing in Linear.** Linear crops the edges of the Wide view, so check that all
+  four court corners are in the first recording; tilt the camera if not. Changing
+  the lens means redoing the court calibration.
 - **Bitrate and keyframes.** The stream is compressed harder than the camera's own
   recordings. The highlights are cut without re-encoding, so each point starts up
   to one keyframe early.
@@ -190,7 +192,7 @@ Things the camera decides, not the Pi:
 | `USB_SIZE`, `USB_FPS` | 1920×1080, 30 | The Osmo's best webcam mode (`v4l2-ctl --list-formats-ext`). **60 fps isn't possible**: webcam mode offers only 30. |
 | `USB_AUDIO` | `"auto"` | The microphone on the same USB device as the webcam (`arecord -l` lists it as `OsmoAction4`). An ALSA name such as `plughw:CARD=OsmoAction4,DEV=0` picks one; `"none"` records no sound. |
 
-`ANYA_CAMERA`, `ANYA_GOPRO_IP`, `ANYA_GOPRO_RES`, `ANYA_CAMERA_FORMAT`,
+`ANYA_CAMERA`, `ANYA_GOPRO_IP`, `ANYA_GOPRO_RES`, `ANYA_GOPRO_FOV`, `ANYA_CAMERA_FORMAT`,
 `ANYA_CONVERT_PRESET`, `ANYA_CAMERA_SIZE` and `ANYA_AUDIO_DEVICE` override these
 without editing the code. Add them as `Environment=` lines in `anya-recorder.service`.
 

@@ -485,7 +485,7 @@ def gopro(monkeypatch):
 def test_gopro_stream_is_copied_into_ts(gopro):
     assert R.capture_suffix() == ".ts"
     cmd = R.camera_command("/r/x.ts")
-    assert gopro == [(GOPRO_IP, "START?res=1080")]
+    assert gopro == [(GOPRO_IP, "START?res=1080"), (GOPRO_IP, "SETTINGS?fov=4")]
     assert cmd[0] == "ffmpeg" and cmd[-1] == "/r/x.ts"
     url = cmd[cmd.index("-i") + 1]
     assert url.startswith("udp://@0.0.0.0:8554?") and "timeout=10000000" in url
@@ -504,7 +504,8 @@ def test_gopro_recording_ends_as_a_queued_mp4_and_stops_the_stream(
     time.sleep(2)
     rec.stop()
     assert saved(rec)
-    assert gopro == [(GOPRO_IP, "START?res=1080"), (GOPRO_IP, "STOP")]
+    assert gopro == [(GOPRO_IP, "START?res=1080"), (GOPRO_IP, "SETTINGS?fov=4"),
+                     (GOPRO_IP, "STOP")]
     mp4 = next((tmp_path / "rec").glob("*.mp4"))
     assert not list((tmp_path / "rec").glob("*.ts"))
     assert 1.5 < R.probe_duration(mp4) < 3.5
@@ -517,6 +518,22 @@ def test_gopro_going_quiet_stops_the_stream_too(rec, gopro, monkeypatch):
     assert saved(rec)
     assert "camera stopped by itself" in rec.status()["error"]
     assert gopro[-1] == (GOPRO_IP, "STOP")
+
+
+def test_gopro_lens_can_be_chosen_or_left_alone(gopro, monkeypatch):
+    monkeypatch.setattr(R, "GOPRO_FOV", "Narrow")
+    R.camera_command("/r/x.ts")
+    monkeypatch.setattr(R, "GOPRO_FOV", "")
+    R.camera_command("/r/x.ts")
+    assert [c for _, c in gopro] == ["START?res=1080", "SETTINGS?fov=6", "START?res=1080"]
+
+
+def test_gopro_refusing_the_lens_still_records(rec, monkeypatch):
+    monkeypatch.setattr(R, "CAMERA", "gopro")
+    monkeypatch.setattr(R, "find_gopro", lambda: GOPRO_IP)
+    monkeypatch.setattr(R, "gopro_call",
+                        lambda ip, c: "HTTP Error 500" if c.startswith("SETTINGS") else None)
+    assert R.camera_command("/r/x.ts")[0] == "ffmpeg"
 
 
 def test_no_gopro_plugged_in_is_reported(rec, gopro, monkeypatch):
