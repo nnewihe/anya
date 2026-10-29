@@ -1,209 +1,88 @@
 """
 far_serve.py
 ============
-A far-side serve detector: the same phase-sequence idea as `near_serve`, with
-the geometry re-derived for a player 30 pixels tall on the other side of the
-net.
+Did a point start with a FAR-side serve?  Pose only, no ball.
 
-Why not just run the near detector on the far slots
----------------------------------------------------
-Because two of its three trophy terms do not survive the change of viewpoint
-and scale, and one of them is actively harmful.  Measured on Data/23's 15
-labelled far serves, per pose sample, against every non-serve sample in the
-clip:
+Same READY -> TROPHY -> SWING idea as near_serve.py (shared skeleton in
+serve_common.py), re-derived for a player ~30 px tall who FACES the camera:
 
-    hi_head > 0.05      serve 13%   non-serve  0%   (non-serve p99 = +0.002)
-    hi_elev > 0.10      serve 14%   non-serve  1%
-    lo_elev > -0.05     serve 11%   non-serve  2%
-    gap     > 0.18      serve 35%   non-serve 58%   <-- INVERTED
+  * TROPHY is elevation only: higher wrist over the head * lower wrist near
+    the shoulders.  The hand split used on the near side is not measurable
+    here (it is even inverted), so it is not read at all.
+  * READY is the MEAN over the 2 s before the trophy (arms carried low and
+    quiet), not the max over 6 s.
+  * STILL: a server stands still before serving; a returner has just been
+    running.  Median box travel 5 s .. 1 s before the trophy.
+  * No serve-zone band: far court positions carry metres of error.  Only the
+    lateral `eligible` gate (doubles court + 3 ft) applies.
+  * Boxes with an implausible height or aspect are not used at all (`_sane`).
 
-The elevation terms are close to perfectly discriminative: a far wrist above
-the head essentially never happens outside a serve.  THE HAND SPLIT IS WORSE
-THAN USELESS.  On the near player -- filmed from behind, 200 px tall -- the
-hands coming apart off the grip is the sharpest transition in the action.  On
-the far player it is not measurable: the arms are extended VERTICALLY at the
-trophy, so their horizontal separation is small exactly when the near view
-would have it large, while ordinary walking swings the arms apart.  So the far
-trophy is elevation-only, and `gap` is not read anywhere in this module.
+Score per candidate:
 
-That asymmetry is the reason these are two detectors and not one with a flag.
+    p = (0.45 * trophy + 0.20 * ready) / 0.65 * (0.45 + 0.55 * swing)
+        * (0.70 + 0.30 * still)
 
-What is kept from the near construction
----------------------------------------
-  * THE ORDERING.  ready -> trophy -> swing, each within a bounded delay.  A
-    lone thresholded shape is what the shipped `anya_far_serve` hand-raise gate
-    is, and its measured cost is 39 false positives over 14 clips.
+reported when p >= THRESHOLD (0.75).
 
-  * THE PHASE DILATION.  Terms are dilated before the conjunction, so the
-    product describes a phase and not a single 67 ms sample.  This mattered
-    more on the near side than anything else and the sampling argument is
-    identical here.
+A separate TOSS score (the tossing arm's own motion) is attached to each serve
+but never folded into p; the orchestrator uses it (rule 1).
 
-  * THE SWING MULTIPLIES WITH A FLOOR, the shape terms add.  Same arbitration,
-    same reason: a raise that never becomes a strike must be vetoable, but a
-    serve caught mid-stroke must not be thrown away.
+Reported time: trophy-run START minus SERVE_LEAD_S (0.90 s).  (The near side
+uses the trophy PEAK; each lead was fitted to its own anchor.)
 
-What is dropped, and why
-------------------------
-  * THE HAND SPLIT -- measured inverted, see above.
-
-  * THE SERVE-ZONE BAND ON court_y.  The near detector gates on the server
-    standing within a 1.4 m band about the near baseline, which is what
-    separates a serve from a mid-court smash.  The same gate cannot be built
-    here: a far player's ground point is 22-32 px tall in the analysis frame,
-    and at that depth two pixels of box-bottom error is metres of court.
-    Measured on Data/23 the far player's court_y spans 19.7-28.6 m (p5-p95)
-    while really moving about three, and sits a median 4 m BEHIND the baseline
-    it is standing on.  A 1.4 m band on that quantity is noise.  The far
-    player is still required to be on the far side and inside the lateral
-    doubles+3ft gate (`tracks.eligible`), because those are coarse enough to
-    survive the noise -- 100% of far detections satisfy both.
-
-BOX SANITY, which the near side never needed
---------------------------------------------
-Every quantity here is normalised by box height, and at 30 px a bad box makes
-those ratios meaningless rather than merely noisy -- a merged two-person box or
-a fragment produced apparent wrist separations of 1.4-1.9 body heights, which
-is anatomically impossible.  `_sane` rejects boxes by height and aspect before
-anything is divided by them.  This is not a detection threshold; it is refusing
-to divide by a number that is wrong.
-
-What this detector structurally cannot do
------------------------------------------
-The same thing the near one cannot: know whether a point is already in
-progress.  The shipped far detector's 39 false positives over 14 clips broke
-down as 17 idle raises in dead time, 14 in-rally overheads and returns, and 8
-the far player REACTING to a near serve -- 22 of 39 being "play was live and
-the detector did not know it".  None of that is visible from inside a far-player
-pose crop, and every far-side pose formulation aimed at it has failed.  This
-module therefore does not try: it declares `windows="between_points"` and
-leaves the arbitration to the composition layer, which will have the near
-serves and the point ends that actually settle it.
+Pose helpers: anya2's own (fill_interior_gaps / keypoint_xy / midpoint_both_required).
+Evidence and history: docs/anya2/NOTES.md, "far_serve.py".
 """
 
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from pipeline import workdir as WD
 
-from pipeline.anya2 import signals as S
-from pipeline.anya2 import tracks as T
+from pipeline import workdir
+from pipeline.anya2 import serve_common
+from pipeline.anya2 import signals
+from pipeline.anya2 import tracks
 from pipeline.anya2.contract import (FAR_SERVE, ROI_FAR, W_BETWEEN, Event,
                                      Requirement, dump_events)
 
 EVENTS_SUFFIX = "_anya2_far_serve.json"
-MAX_GAP_S = 0.5
-KP_CONF = 0.20            # keypoint confidence floor.  Higher than the near
-                          # side's implicit 0: at this scale a low-confidence
-                          # keypoint is a guess, and a guessed wrist reads as a
-                          # posture the player never held.
 
-# ── box sanity ───────────────────────────────────────────────────────────
+MAX_GAP_S = 0.5            # fill pose occlusions up to this long
+KP_CONF = 0.20             # keypoints at or below this confidence are ignored
+
+# ── box sanity (refuse to normalise by a bad box) ────────────────────────
 BOX_H_MIN_PX, BOX_H_MAX_PX = 12.0, 120.0
-BOX_ASPECT_MAX = 1.6      # wider than this is two people merged or a fragment
+BOX_ASPECT_MAX = 1.6       # wider than this (w/h) is a merged pair or a fragment
 
-# ── head reference ───────────────────────────────────────────────────────
-# The far player FACES this camera, so nose/eyes/ears are the keypoints the
-# model is most confident about -- the exact opposite of the near player, who
-# has their back turned.  The geometric fallback is therefore rarely used here.
+# ── head reference (rarely needed: the far player faces the camera) ──────
 HEAD_ABOVE_SHO_BH = 0.14
 
 # ── ready ────────────────────────────────────────────────────────────────
-READY_HI_MAX_BH = 0.02    # both wrists carried at or below the shoulder line.
-                          # Tighter than the near side's 0.10 because the far
-                          # ready position is measured over a 30 px body and a
-                          # loose bound admits half the clip.
-READY_STILL_BH_S = 1.2    # limb speed relative to the hip, body heights/s.
-                          # Looser than near's 0.9: at 30 px the same real
-                          # motion is a smaller pixel motion but a NOISIER
-                          # normalised one, so the quiet bar has to allow for
-                          # keypoint jitter that the near view does not have.
-READY_WIN_S = 0.7
+READY_HI_MAX_BH = 0.02     # both wrists at or below the shoulder line
+READY_STILL_BH_S = 1.2     # limb speed (relative to hip) counted as quiet
+READY_WIN_S = 0.7          # smoothing window for the ready score
+READY_MEAN_FROM_S = 2.0    # ready = mean over [trophy - 2.0 s, trophy - 0.3 s)
+READY_MEAN_TO_S = 0.3
 
-# ── how the ready phase is READ ──────────────────────────────────────────
-# The original reading -- the MAX of `ready` anywhere in the six seconds before
-# the trophy -- is nearly useless, and measurably so: over 105 true far serves
-# and 101 false positives its median is 1.00 on BOTH, separating them at AUC
-# 62%.  Any six-second window contains some quiet moment, so a returner who
-# stood still once five seconds ago scores a perfect ready.
-#
-# Read instead as the MEAN over a short window ENDING AT THE TROPHY, the
-# separation is AUC 79% (true 0.90, false 0.62).  That is the difference
-# between "was quiet at some point recently" and "was quiet right up until the
-# racket went up", and only the second is what a service stance is.
-READY_MEAN_FROM_S = 2.0   # window start, before the trophy
-READY_MEAN_TO_S = 0.3     # ...and end, stopping short of the toss itself
+# ── pre-serve stillness (the feet; ready is the arms) ────────────────────
+STILL_FROM_S, STILL_TO_S = 5.0, 1.0   # window before the trophy
+STILL_FULL_BH_S = 0.20     # median travel at or below this = stationary
+STILL_NONE_BH_S = 0.55     # ...at or above this = travelling
+W_STILL = 0.30             # weight of the stillness multiplier
+STILL_UNKNOWN = 0.5        # score when the player was untracked in the window
 
-# ── pre-serve stillness ──────────────────────────────────────────────────
-# A SERVER IS STATIONARY BEFORE SERVING; A RETURNER HAS JUST BEEN RUNNING.
-# That is the single largest thing separating a real far serve from the far
-# player's return, and it is local to this detector -- no other agent needed.
-#
-# Measured as the median of the player's own translation (box centre, in body
-# heights per second) over the window below: true far serves 0.15, false
-# positives 0.31, separating at AUC 78%.  It is the mirror of the ready term
-# and independent of it -- ready is about the ARMS, this is about the FEET.
-#
-# It enters multiplicatively but softened, so it can veto a candidate that is
-# clearly mid-rally without deleting one whose track was noisy.
-# ── the toss ─────────────────────────────────────────────────────────────
-# A SEPARATE SCORE, deliberately never folded into `p`.  It answers a different
-# question -- "did the tossing arm do what a toss does" -- and the orchestrator
-# arbitrates the two, so keeping them apart is what lets it trade precision
-# against recall without this module choosing on its behalf.
-#
-# Read from the TOSSING ARM ONLY, which is the arm carrying the higher wrist at
-# the trophy (`hi_side`).  Four components, each measured against the trophy
-# peak k, each ramped to [0, 1] and then AVERAGED:
-#
-#   low    the wrist STARTED low, below the shoulder, before the rise
-#   lat    at the top the wrist is offset LATERALLY from its own shoulder
-#   hold   the wrist stays above head height for a sustained beat
-#   peak   how far above the head it gets
-#
-# Every one is weak alone -- over 103 true far serves and 56 false positives
-# their individual AUCs are 66%, 66%, 64% and 65% -- and the average of the four
-# reaches AUC 74%, true serves at median 0.72 against 0.33 for false positives.
-#
-# Two findings worth keeping:
-#
-#   THE TOSS ARM IS NOT VERTICAL.  The obvious formulation -- the wrist travels
-#   straight up over its own shoulder -- is BACKWARDS.  True serves have a
-#   LARGER lateral offset than false positives (0.148 vs 0.090 body heights),
-#   because a real toss is released up and forward across the body while a
-#   return's arm stays nearer the shoulder line.  `lat` is scored in the
-#   direction the data gives, not the one anatomy-by-description suggests.
-#
-#   AVERAGE, DO NOT MULTIPLY.  A product of the same four scores the same AUC
-#   (74%) but is degenerate -- most candidates land at exactly zero, so as a
-#   filter it costs 53% of true serves to remove 88% of false positives.  The
-#   mean keeps it graded, which is what a separate signal handed to an
-#   arbitrator has to be.
-TOSS_PRE_FROM_S, TOSS_PRE_TO_S = -1.3, -0.2   # window for the pre-rise low point
-TOSS_TOP_FROM_S, TOSS_TOP_TO_S = -0.3, 0.6    # window for the extended top
-TOSS_LOW_NONE_BH, TOSS_LOW_FULL_BH = -0.22, -0.42
-TOSS_LAT_MIN_BH, TOSS_LAT_FULL_BH = 0.07, 0.17
-TOSS_HOLD_MIN_S, TOSS_HOLD_FULL_S = 0.13, 0.42
-TOSS_PEAK_MIN_BH, TOSS_PEAK_FULL_BH = 0.08, 0.17
-
-STILL_FROM_S, STILL_TO_S = 5.0, 1.0
-STILL_FULL_BH_S = 0.20    # at or below this the player was stationary
-STILL_NONE_BH_S = 0.55    # ...and at or above it they were travelling
-W_STILL = 0.30            # weight of the stillness veto; see THRESHOLD
-
-# ── trophy (elevation only -- see the module docstring) ──────────────────
-TROPHY_HEAD_MIN_BH = -0.02   # higher wrist below head height = no credit
-TROPHY_HEAD_FULL_BH = 0.06   # ...and this far above it = full credit.  Lower
-                             # than the near side's 0.10: a 0.10 bh margin is
-                             # 3 px on a 30 px body and is not resolvable.
-TROPHY_LO_MIN_BH = -0.18     # lower wrist this far below the shoulder = none
-TROPHY_LO_FULL_BH = -0.02    # ...and level with it = full credit
+# ── trophy (elevation only), each term dilated by TROPHY_DILATE_S ────────
+TROPHY_HEAD_MIN_BH = -0.02     # higher wrist at/below head height = no credit
+TROPHY_HEAD_FULL_BH = 0.06     # ...this far above = full credit
+TROPHY_LO_MIN_BH = -0.18       # lower wrist this far below the shoulders = none
+TROPHY_LO_FULL_BH = -0.02      # ...level with them = full credit
 TROPHY_DILATE_S = 0.20
 TROPHY_MIN = 0.30
 
@@ -211,323 +90,306 @@ TROPHY_MIN = 0.30
 SWING_MIN_S, SWING_MAX_S = 0.06, 0.90
 PEAK_ABOVE_HEAD_BH = 0.04
 
-# ── ready lookback ───────────────────────────────────────────────────────
-READY_BACK_MIN_S, READY_BACK_MAX_S = 0.20, 6.00
+# ── toss score: mean of four ramped parts, read from the tossing arm ─────
+TOSS_PRE_FROM_S, TOSS_PRE_TO_S = -1.3, -0.2   # window (rel. trophy) for "started low"
+TOSS_TOP_FROM_S, TOSS_TOP_TO_S = -0.3, 0.6    # window for the top of the toss
+TOSS_LOW_NONE_BH, TOSS_LOW_FULL_BH = -0.22, -0.42   # lowest wrist vs shoulders
+TOSS_LAT_MIN_BH, TOSS_LAT_FULL_BH = 0.07, 0.17      # wrist sideways from its shoulder
+TOSS_HOLD_MIN_S, TOSS_HOLD_FULL_S = 0.13, 0.42      # time spent above the head
+TOSS_PEAK_MIN_BH, TOSS_PEAK_FULL_BH = 0.08, 0.17    # highest point above the head
 
 # ── combination ──────────────────────────────────────────────────────────
 W_TROPHY, W_READY = 0.45, 0.20
 SWING_FLOOR = 0.45
-# Swept on the nine clips carrying a far serve.  Over the six FAR-DOMINANT
-# clips (70 of the 77 labelled far serves) the curve reads:
-#
-#     thr    recall   precision
-#     0.55   100.0%     65.4%
-#     0.90   100.0%     71.4%      <-- here
-#     0.95    98.6%     73.4%
-#     0.999   94.3%     76.7%
-#
-# RE-SWEPT after the ready and stillness terms were added.  Those two multiply
-# the score down, so the old 0.90 knee no longer sits in the same place; over
-# all 129 labelled far serves on 13 clips:
-#
-#     ready  w_still  thr     recall  precision   F1
-#     max      0.0    0.90     81.4%     51.0%   62.7   <- the previous default
-#     max      0.3    0.85     80.6%     63.0%   70.7
-#     mean     0.3    0.75     79.8%     65.2%   71.8   <- here
-#     mean     0.3    0.85     70.5%     72.8%   71.7
-#     mean     0.5    0.90     56.6%     72.3%   63.5
-#
-# 0.75 with both terms holds recall (-1.6 points) and buys FOURTEEN points of
-# precision.  Pushing to 0.85 buys another 7.6 of precision for 9.3 of recall,
-# which is the wrong direction for a point START -- a missed serve loses a
-# whole point from the reel, an extra one is something the orchestrator can
-# arbitrate.
 THRESHOLD = 0.75
 REFRACT_S = 3.0
-
-# The label lead, as on the near side: `ground_truth.json`'s `start` is a point
-# boundary marked before the server moves, so it is corrected as a constant.
-# The far anchor is the TROPHY ONSET, not the hands-together instant the near
-# detector uses -- the hand split is not measurable on a 30 px body (see the
-# module docstring), so there is no earlier anchor to walk back to.  Swept over
-# the far corpus, the lead is almost inert: 0.9, 1.2 and 1.6 all produce
-# identical matches at a +/-2.0 s tolerance, and only below ~0.6 does it start
-# costing hits.  0.90 sits in the middle of that flat region.
-SERVE_LEAD_S = 0.90
+SERVE_LEAD_S = 0.90        # subtracted from the trophy-run start
 
 REQUIREMENT = Requirement(roi=ROI_FAR, pose_fps=15.0, needs_ball=False,
                           windows=W_BETWEEN)
 
 
 def events_path(video, suffix=EVENTS_SUFFIX):
-    d = WD.artifact_dir(video)
     stem = os.path.splitext(os.path.basename(video))[0]
-    return os.path.join(d, f"{stem}{suffix}")
+    return os.path.join(workdir.artifact_dir(video), f"{stem}{suffix}")
 
 
-def _sane(bbox):
-    """Box height, NaN where the box cannot be trusted to normalise by."""
-    h = bbox[:, 3] - bbox[:, 1]
-    w = bbox[:, 2] - bbox[:, 0]
-    with np.errstate(invalid="ignore"):
-        ok = ((h > BOX_H_MIN_PX) & (h < BOX_H_MAX_PX)
-              & (w / np.maximum(h, 1e-6) < BOX_ASPECT_MAX))
-    return np.where(ok, h, np.nan)
-
-
-def serve_primitives(kp, bbox, fps: float,
-                     eligible: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
-    """Per-sample phase primitives for one far-player track.
-
-    `kp` [N, 17, 3] and `bbox` [N, 4] are one far slot of `anya2.tracks`.
-    `eligible` [N] is that module's lateral gate.  There is deliberately no
-    `court_y` parameter -- see the module docstring on why a serve-zone band
-    cannot be built on the far side.
-    """
-    kp = np.asarray(kp, dtype=np.float64)
-    bbox = np.asarray(bbox, dtype=np.float64)
-    n = len(kp)
-    gap = int(MAX_GAP_S * fps)
-    kp = S.interp_gaps(kp, gap)
-    bbox = S.interp_gaps(bbox, gap)
-
-    h = _sane(bbox)
-    valid = np.isfinite(h)
-
-    l_sho, r_sho = S.kp_xy(kp, S.L_SHO, KP_CONF), S.kp_xy(kp, S.R_SHO, KP_CONF)
-    l_wri, r_wri = S.kp_xy(kp, S.L_WRI, KP_CONF), S.kp_xy(kp, S.R_WRI, KP_CONF)
-    l_hip, r_hip = S.kp_xy(kp, S.L_HIP, KP_CONF), S.kp_xy(kp, S.R_HIP, KP_CONF)
-    nose = S.kp_xy(kp, S.NOSE, KP_CONF)
-    l_ear, r_ear = S.kp_xy(kp, S.L_EAR, KP_CONF), S.kp_xy(kp, S.R_EAR, KP_CONF)
-
-    sho, hip = S.mid(l_sho, r_sho), S.mid(l_hip, r_hip)
-    head = S.mid(S.mid(l_ear, r_ear), nose)
-    head_y = np.where(np.isfinite(head[:, 1]),
-                      head[:, 1], sho[:, 1] - HEAD_ABOVE_SHO_BH * h)
-
-    elev_l = (sho[:, 1] - l_wri[:, 1]) / h
-    elev_r = (sho[:, 1] - r_wri[:, 1]) / h
-    head_l = (head_y - l_wri[:, 1]) / h
-    head_r = (head_y - r_wri[:, 1]) / h
-
-    both = np.isfinite(elev_l) & np.isfinite(elev_r)
-    with np.errstate(invalid="ignore"):
-        hi_elev = np.where(both, np.fmax(elev_l, elev_r), np.nan)
-        lo_elev = np.where(both, np.fmin(elev_l, elev_r), np.nan)
-        hi_head = np.where(both, np.fmax(head_l, head_r), np.nan)
-    hi_side = np.where(both, np.where(elev_l >= elev_r, 1.0, -1.0), 0.0)
-
-    # Lateral offset of each wrist from ITS OWN shoulder (not the midpoint), in
-    # body heights.  The toss score reads this; see the TOSS block for why it
-    # points the opposite way to the obvious guess.
-    lat_l = np.abs(l_wri[:, 0] - l_sho[:, 0]) / h
-    lat_r = np.abs(r_wri[:, 0] - r_sho[:, 0]) / h
-
-    def rel_speed(pt):
-        rel = (pt - hip) / h[:, None]
-        d = np.full(n, np.nan)
-        d[1:] = np.linalg.norm(np.diff(rel, axis=0), axis=1) * fps
-        return d
-
-    # The player's own translation across the ground, in body heights per
-    # second.  Box centre rather than a keypoint: at 30 px an individual joint
-    # is noisy, while the box as a whole is what moves when the player runs.
-    cx = 0.5 * (bbox[:, 0] + bbox[:, 2])
-    cy_px = bbox[:, 3]
-    self_move = np.full(n, np.nan)
-    self_move[1:] = np.hypot(np.diff(cx), np.diff(cy_px)) / h[1:] * fps
-
-    limb = np.fmax(rel_speed(l_wri), rel_speed(r_wri))
-    still = 1.0 - S.ramp(limb, READY_STILL_BH_S * 0.5, READY_STILL_BH_S * 1.6)
-    carried = 1.0 - S.ramp(hi_elev, READY_HI_MAX_BH, READY_HI_MAX_BH + 0.14)
-    ready_raw = carried * still
-    w = max(1, int(round(READY_WIN_S * fps)))
-    ready = ready_raw if w <= 1 else np.convolve(
-        np.nan_to_num(ready_raw, nan=0.0), np.ones(w) / w, mode="same")
-
-    dil = max(1, int(round(TROPHY_DILATE_S * fps)) * 2 + 1)
-    trophy = (S.movmax(S.ramp(hi_head, TROPHY_HEAD_MIN_BH, TROPHY_HEAD_FULL_BH), dil)
-              * S.movmax(S.ramp(lo_elev, TROPHY_LO_MIN_BH, TROPHY_LO_FULL_BH), dil))
-
-    on_court = (np.asarray(eligible, dtype=bool) if eligible is not None
-                else np.ones(n, dtype=bool))
-
-    return {"valid": valid & both, "ready": ready, "trophy": trophy,
-            "hi_elev": hi_elev, "lo_elev": lo_elev, "hi_head": hi_head,
-            "elev_l": elev_l, "elev_r": elev_r,
-            "head_l": head_l, "head_r": head_r, "hi_side": hi_side,
-            "lat_l": lat_l, "lat_r": lat_r,
-            "still": still, "self_move": self_move,
-            "on_court": on_court, "fps": np.float64(fps)}
-
-
-def toss_score(prim: Dict[str, np.ndarray], k: int, toss_left: bool) -> Dict:
-    """Did the tossing arm perform a toss?  Independent of the serve score.
-
-    Returns the mean of four ramped components plus the components themselves,
-    so a low score can be attributed rather than merely observed.  Missing
-    keypoints yield None, which a caller must NOT read as zero -- an untracked
-    arm is not evidence of a bad toss.
-    """
-    fps = float(prim["fps"])
-    elev = prim["elev_l"] if toss_left else prim["elev_r"]
-    head = prim["head_l"] if toss_left else prim["head_r"]
-    lat = prim["lat_l"] if toss_left else prim["lat_r"]
-
-    def win(x, a, b):
-        lo = max(0, k + int(round(a * fps)))
-        hi = min(len(x), k + int(round(b * fps)))
-        q = x[lo:hi]
-        return q[np.isfinite(q)]
-
-    pre = win(elev, TOSS_PRE_FROM_S, TOSS_PRE_TO_S)
-    lt = win(lat, TOSS_TOP_FROM_S, TOSS_TOP_TO_S)
-    ab = win(head, TOSS_TOP_FROM_S, TOSS_TOP_TO_S)
-    if not (pre.size and lt.size and ab.size):
-        return {"toss": None, "toss_parts": None}
-
-    parts = {
-        "low": 1.0 - float(S.ramp(float(np.min(pre)),
-                                  TOSS_LOW_FULL_BH, TOSS_LOW_NONE_BH)),
-        "lat": float(S.ramp(float(np.median(lt)),
-                            TOSS_LAT_MIN_BH, TOSS_LAT_FULL_BH)),
-        "hold": float(S.ramp(float(np.sum(ab > 0.0) / fps),
-                             TOSS_HOLD_MIN_S, TOSS_HOLD_FULL_S)),
-        "peak": float(S.ramp(float(np.max(ab)),
-                             TOSS_PEAK_MIN_BH, TOSS_PEAK_FULL_BH)),
-    }
-    return {"toss": round(float(np.mean(list(parts.values()))), 4),
-            "toss_parts": {k2: round(v, 3) for k2, v in parts.items()}}
-
-
-def detect_serves(prim, threshold: float = THRESHOLD,
-                  require_court: bool = True,
-                  track: Optional[int] = None,
-                  lead_s: Optional[float] = None,
-                  refract_s: Optional[float] = None,
-                  w_still: Optional[float] = None) -> List[Dict]:
-    """Sequence-match ready -> trophy -> swing, as `near_serve.detect_serves`."""
-    fps = float(prim["fps"])
-    trophy, ready = prim["trophy"], prim["ready"]
-    n = len(trophy)
-    tro = np.nan_to_num(trophy, nan=0.0)
-    cand = tro >= TROPHY_MIN
-    if require_court:
-        cand = cand & prim["on_court"]
-
-    back_lo = int(round(READY_BACK_MAX_S * fps))
-    back_hi = int(round(READY_BACK_MIN_S * fps))
-    fwd_lo = max(1, int(round(SWING_MIN_S * fps)))
-    fwd_hi = int(round(SWING_MAX_S * fps))
-
-    out: List[Dict] = []
-    for lo, hi in S.runs(cand):
-        k = lo + int(np.argmax(tro[lo:hi]))
-        s_trophy = float(tro[k])
-
-        # Ready as a MEAN over a short window ending at the trophy, not a max
-        # over six seconds -- see READY_MEAN_FROM_S for why the max is inert.
-        a = max(0, k - int(round(READY_MEAN_FROM_S * fps)))
-        b = max(1, k - int(round(READY_MEAN_TO_S * fps)))
-        rd = ready[a:b]
-        rd = rd[np.isfinite(rd)]
-        s_ready = float(rd.mean()) if rd.size else 0.0
-
-        # Was this player standing still before the racket went up?
-        sa = max(0, k - int(round(STILL_FROM_S * fps)))
-        sb = max(1, k - int(round(STILL_TO_S * fps)))
-        mv = prim["self_move"][sa:sb]
-        mv = mv[np.isfinite(mv)]
-        # An untracked stretch scores 0.5 rather than 0 or 1: not knowing where
-        # the player was is not evidence either way, and this term must not
-        # delete a serve just because the track had a hole before it.
-        s_still = (1.0 - float(S.ramp(float(np.median(mv)),
-                                      STILL_FULL_BH_S, STILL_NONE_BH_S))
-                   if mv.size else 0.5)
-
-        toss_left = prim["hi_side"][k] > 0
-        rack_head = prim["head_r"] if toss_left else prim["head_l"]
-        c, d = min(n, k + fwd_lo), min(n, k + fwd_hi + 1)
-        s_swing, t_contact = 0.0, None
-        if d > c:
-            win = rack_head[c:d]
-            ok = np.isfinite(win)
-            if ok.any():
-                j = int(np.nanargmax(np.where(ok, win, -np.inf)))
-                s_swing = float(S.ramp(float(win[j]), 0.0, PEAK_ABOVE_HEAD_BH))
-                t_contact = (c + j) / fps
-
-        shape = (W_TROPHY * s_trophy + W_READY * s_ready) / (W_TROPHY + W_READY)
-        p = shape * (SWING_FLOOR + (1.0 - SWING_FLOOR) * s_swing)
-        ws = W_STILL if w_still is None else float(w_still)
-        p *= (1.0 - ws) + ws * s_still
-        if p < threshold:
-            continue
-        out.append({
-            "t": lo / fps - (SERVE_LEAD_S if lead_s is None else float(lead_s)),
-            "p": round(p, 4),
-            "trophy": round(s_trophy, 4), "swing": round(s_swing, 4),
-            "ready": round(s_ready, 4), "still": round(s_still, 4),
-            **toss_score(prim, k, bool(toss_left)),
-            "t_trophy": round(k / fps, 3),
-            "t_contact": round(t_contact, 3) if t_contact is not None else None,
-            "track": track,
-        })
-    return S.refractory(out, REFRACT_S if refract_s is None else float(refract_s))
-
+# ═════════════════════════════════════════════════════════════════════════
+# Entry point
+# ═════════════════════════════════════════════════════════════════════════
 
 def detect_video(video, tracks_npz=None, threshold: float = THRESHOLD,
                  require_court: bool = True, verbose: bool = True,
                  lead_s: Optional[float] = None,
                  refract_s: Optional[float] = None,
                  w_still: Optional[float] = None):
-    """Score every far slot; the server is whichever produced the candidate."""
-    z = T.load(video, tracks_npz)
-    fps = float(z["fps"])
-    kp, bbox, el = z["kp"], z["bbox"], z["eligible"]
+    """Far serves for a video, as contract Events.  Each far slot is scored on
+    its own; then one serve per refractory window across both slots."""
+    track_data = tracks.load(video, tracks_npz)
+    fps = float(track_data["fps"])
+    keypoints, boxes, eligible = track_data["kp"], track_data["bbox"], track_data["eligible"]
 
-    raw: List[Dict] = []
-    for slot in T.FAR_SLOTS:
-        seen = np.isfinite(bbox[:, slot, 0])
+    candidates: List[Dict] = []
+    for slot in tracks.FAR_SLOTS:
+        seen = np.isfinite(boxes[:, slot, 0])
         if not seen.any():
             if verbose:
                 print(f"[far-serve] slot {slot}: never tracked, skipped")
             continue
-        prim = serve_primitives(kp[:, slot], bbox[:, slot], fps,
-                                eligible=el[:, slot])
-        ev = detect_serves(prim, threshold, require_court, track=int(slot),
-                           lead_s=lead_s, refract_s=refract_s, w_still=w_still)
+        features = serve_features(keypoints[:, slot], boxes[:, slot], fps,
+                                  eligible=eligible[:, slot])
+        serves = detect_serves(features, threshold, require_court, track=int(slot),
+                               lead_s=lead_s, refract_s=refract_s, w_still=w_still)
         if verbose:
             print(f"[far-serve] slot {slot}: tracked {100 * seen.mean():5.1f}%"
-                  f"  sane boxes {100 * np.mean(prim['valid']):5.1f}%"
-                  f"  -> {len(ev)} candidates")
-        raw.extend(ev)
+                  f"  sane boxes {100 * np.mean(features.valid):5.1f}%"
+                  f"  -> {len(serves)} candidates")
+        candidates.extend(serves)
 
-    kept = S.refractory(raw, REFRACT_S if refract_s is None else float(refract_s))
+    kept = signals.keep_one_per_window(candidates, _refract(refract_s))
     return [Event(t=float(e["t"]), p=float(e["p"]), kind=FAR_SERVE,
                   track=e["track"],
-                  detail={k: e[k] for k in ("trophy", "swing", "ready",
-                                            "still", "toss", "toss_parts",
-                                            "t_trophy", "t_contact")})
+                  detail={key: e[key] for key in ("trophy", "swing", "ready",
+                                                  "still", "toss", "toss_parts",
+                                                  "t_trophy", "t_contact")})
             for e in kept]
 
 
+def _refract(refract_s):
+    return REFRACT_S if refract_s is None else float(refract_s)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Per-sample features for one player
+# ═════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class FarServeFeatures:
+    """Per pose sample, for one far player.  Elevations in body heights, + = higher."""
+    fps: float
+    valid: np.ndarray       # bool: sane box and both wrists seen
+    ready: np.ndarray       # 0..1 arms-low-and-quiet score (smoothed)
+    trophy: np.ndarray      # 0..1 trophy-shape score
+    hi_elev: np.ndarray     # higher / lower wrist above the shoulder line
+    lo_elev: np.ndarray
+    hi_head: np.ndarray     # higher wrist above the head
+    elev_l: np.ndarray      # each wrist above the shoulder line
+    elev_r: np.ndarray
+    head_l: np.ndarray      # each wrist above the head
+    head_r: np.ndarray
+    hi_side: np.ndarray     # +1 left wrist higher, -1 right, 0 unknown
+    lat_l: np.ndarray       # each wrist's sideways offset from its own shoulder
+    lat_r: np.ndarray
+    still: np.ndarray       # 0..1 limbs quiet
+    self_move: np.ndarray   # box travel, body heights/s
+    on_court: np.ndarray    # bool: eligible
+
+
+def serve_features(kp, bbox, fps: float,
+                   eligible: Optional[np.ndarray] = None) -> FarServeFeatures:
+    """Compute FarServeFeatures for one far slot of tracks.npz."""
+    kp = np.asarray(kp, dtype=np.float64)
+    bbox = np.asarray(bbox, dtype=np.float64)
+    n = len(kp)
+    gap = int(MAX_GAP_S * fps)
+    kp = signals.fill_interior_gaps(kp, gap)
+    bbox = signals.fill_interior_gaps(bbox, gap)
+
+    body_height = _sane_box_height(bbox)
+    box_ok = np.isfinite(body_height)
+
+    def xy(index):
+        return signals.keypoint_xy(kp, index, KP_CONF)
+
+    l_sho, r_sho = xy(signals.L_SHO), xy(signals.R_SHO)
+    l_wri, r_wri = xy(signals.L_WRI), xy(signals.R_WRI)
+    l_hip, r_hip = xy(signals.L_HIP), xy(signals.R_HIP)
+    nose = xy(signals.NOSE)
+    l_ear, r_ear = xy(signals.L_EAR), xy(signals.R_EAR)
+    mid = signals.midpoint_both_required
+    shoulders, hips = mid(l_sho, r_sho), mid(l_hip, r_hip)
+    head = mid(mid(l_ear, r_ear), nose)
+    head_y = np.where(np.isfinite(head[:, 1]),
+                      head[:, 1], shoulders[:, 1] - HEAD_ABOVE_SHO_BH * body_height)
+
+    elev_l = (shoulders[:, 1] - l_wri[:, 1]) / body_height
+    elev_r = (shoulders[:, 1] - r_wri[:, 1]) / body_height
+    head_l = (head_y - l_wri[:, 1]) / body_height
+    head_r = (head_y - r_wri[:, 1]) / body_height
+
+    both_wrists = np.isfinite(elev_l) & np.isfinite(elev_r)
+    with np.errstate(invalid="ignore"):
+        hi_elev = np.where(both_wrists, np.fmax(elev_l, elev_r), np.nan)
+        lo_elev = np.where(both_wrists, np.fmin(elev_l, elev_r), np.nan)
+        hi_head = np.where(both_wrists, np.fmax(head_l, head_r), np.nan)
+    hi_side = np.where(both_wrists, np.where(elev_l >= elev_r, 1.0, -1.0), 0.0)
+
+    lat_l = np.abs(l_wri[:, 0] - l_sho[:, 0]) / body_height
+    lat_r = np.abs(r_wri[:, 0] - r_sho[:, 0]) / body_height
+
+    self_move = signals.box_travel_speed(bbox, body_height, fps)
+
+    # ── ready: wrists carried low * limbs quiet, smoothed ──
+    fastest_wrist = np.fmax(
+        signals.limb_speed_relative_to_hip(l_wri, hips, body_height, fps),
+        signals.limb_speed_relative_to_hip(r_wri, hips, body_height, fps))
+    still = 1.0 - signals.ramp(fastest_wrist, READY_STILL_BH_S * 0.5, READY_STILL_BH_S * 1.6)
+    carried_low = 1.0 - signals.ramp(hi_elev, READY_HI_MAX_BH, READY_HI_MAX_BH + 0.14)
+    ready_raw = carried_low * still
+    # Missing samples are skipped, not counted as 0: a tracking dropout is not
+    # evidence that the player was out of the ready stance.
+    ready = signals.nan_skipping_moving_mean(ready_raw, max(1, int(round(READY_WIN_S * fps))))
+
+    # ── trophy: (higher wrist over head) * (lower wrist near shoulders) ──
+    dilate = max(1, int(round(TROPHY_DILATE_S * fps)) * 2 + 1)
+    trophy = (signals.running_max(signals.ramp(hi_head, TROPHY_HEAD_MIN_BH, TROPHY_HEAD_FULL_BH), dilate)
+              * signals.running_max(signals.ramp(lo_elev, TROPHY_LO_MIN_BH, TROPHY_LO_FULL_BH), dilate))
+
+    on_court = (np.asarray(eligible, dtype=bool) if eligible is not None
+                else np.ones(n, dtype=bool))
+
+    return FarServeFeatures(
+        fps=float(fps), valid=box_ok & both_wrists, ready=ready, trophy=trophy,
+        hi_elev=hi_elev, lo_elev=lo_elev, hi_head=hi_head,
+        elev_l=elev_l, elev_r=elev_r, head_l=head_l, head_r=head_r, hi_side=hi_side,
+        lat_l=lat_l, lat_r=lat_r, still=still, self_move=self_move, on_court=on_court)
+
+
+def _sane_box_height(bbox):
+    """Box height in px, NaN where the box is too small, too big or too wide."""
+    height = bbox[:, 3] - bbox[:, 1]
+    width = bbox[:, 2] - bbox[:, 0]
+    with np.errstate(invalid="ignore"):
+        ok = ((height > BOX_H_MIN_PX) & (height < BOX_H_MAX_PX)
+              & (width / np.maximum(height, 1e-6) < BOX_ASPECT_MAX))
+    return np.where(ok, height, np.nan)
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Candidates -> serves
+# ═════════════════════════════════════════════════════════════════════════
+
+def detect_serves(features: FarServeFeatures, threshold: float = THRESHOLD,
+                  require_court: bool = True,
+                  track: Optional[int] = None,
+                  lead_s: Optional[float] = None,
+                  refract_s: Optional[float] = None,
+                  w_still: Optional[float] = None) -> List[Dict]:
+    """Score every trophy candidate; return serves with p >= threshold.
+
+    Each returned dict: t, p, trophy, swing, ready, still, toss, toss_parts,
+    t_trophy, t_contact, track.
+    """
+    fps = features.fps
+    still_weight = W_STILL if w_still is None else float(w_still)
+    lead = SERVE_LEAD_S if lead_s is None else float(lead_s)
+
+    serves: List[Dict] = []
+    for cand in serve_common.trophy_candidates(features.trophy, features.on_court,
+                                               TROPHY_MIN, require_court):
+        ready = _ready_before(features, cand.peak)
+        still = _still_before(features, cand.peak)
+        swing = serve_common.swing(features, cand.peak, fps,
+                                   SWING_MIN_S, SWING_MAX_S, PEAK_ABOVE_HEAD_BH)
+        p = serve_common.combine(cand.trophy, ready, swing.score,
+                                 W_TROPHY, W_READY, SWING_FLOOR)
+        p *= (1.0 - still_weight) + still_weight * still
+        if p < threshold:
+            continue
+        serves.append({
+            "t": cand.run_start / fps - lead,
+            "p": round(p, 4),
+            "trophy": round(cand.trophy, 4), "swing": round(swing.score, 4),
+            "ready": round(ready, 4), "still": round(still, 4),
+            **toss_score(features, cand.peak, bool(swing.toss_is_left)),
+            "t_trophy": round(cand.peak / fps, 3),
+            "t_contact": round(swing.contact_s, 3) if swing.contact_s is not None else None,
+            "track": track,
+        })
+    return signals.keep_one_per_window(serves, _refract(refract_s))
+
+
+def _ready_before(features, peak):
+    """Mean ready score over [peak - READY_MEAN_FROM_S, peak - READY_MEAN_TO_S)."""
+    fps = features.fps
+    start = max(0, peak - serve_common.samples(READY_MEAN_FROM_S, fps))
+    stop = max(1, peak - serve_common.samples(READY_MEAN_TO_S, fps))
+    window = features.ready[start:stop]
+    window = window[np.isfinite(window)]
+    return float(window.mean()) if window.size else 0.0
+
+
+def _still_before(features, peak):
+    """1 = stood still before the trophy, 0 = was travelling; STILL_UNKNOWN if untracked."""
+    fps = features.fps
+    start = max(0, peak - serve_common.samples(STILL_FROM_S, fps))
+    stop = max(1, peak - serve_common.samples(STILL_TO_S, fps))
+    travel = features.self_move[start:stop]
+    travel = travel[np.isfinite(travel)]
+    if not travel.size:
+        return STILL_UNKNOWN
+    return 1.0 - float(signals.ramp(float(np.median(travel)), STILL_FULL_BH_S, STILL_NONE_BH_S))
+
+
+def toss_score(features: FarServeFeatures, peak: int, toss_is_left: bool) -> Dict:
+    """Did the tossing arm do what a toss does?  Separate from p.
+
+    Mean of four 0..1 parts, all relative to the trophy peak:
+      low   the wrist started well below the shoulders
+      lat   at the top, the wrist is offset sideways from its shoulder
+      hold  the wrist stayed above the head for a while
+      peak  how far above the head it got
+    Returns {"toss": mean, "toss_parts": {...}}, or Nones if the arm was not
+    tracked (which must not be read as a bad toss).
+    """
+    fps = features.fps
+    elevation = features.elev_l if toss_is_left else features.elev_r
+    above_head = features.head_l if toss_is_left else features.head_r
+    lateral = features.lat_l if toss_is_left else features.lat_r
+
+    def window(x, from_s, to_s):
+        start = max(0, peak + int(round(from_s * fps)))
+        stop = min(len(x), peak + int(round(to_s * fps)))
+        values = x[start:stop]
+        return values[np.isfinite(values)]
+
+    before_rise = window(elevation, TOSS_PRE_FROM_S, TOSS_PRE_TO_S)
+    top_lateral = window(lateral, TOSS_TOP_FROM_S, TOSS_TOP_TO_S)
+    top_above_head = window(above_head, TOSS_TOP_FROM_S, TOSS_TOP_TO_S)
+    if not (before_rise.size and top_lateral.size and top_above_head.size):
+        return {"toss": None, "toss_parts": None}
+
+    parts = {
+        "low": 1.0 - float(signals.ramp(float(np.min(before_rise)),
+                                        TOSS_LOW_FULL_BH, TOSS_LOW_NONE_BH)),
+        "lat": float(signals.ramp(float(np.median(top_lateral)),
+                                  TOSS_LAT_MIN_BH, TOSS_LAT_FULL_BH)),
+        "hold": float(signals.ramp(float(np.sum(top_above_head > 0.0) / fps),
+                                   TOSS_HOLD_MIN_S, TOSS_HOLD_FULL_S)),
+        "peak": float(signals.ramp(float(np.max(top_above_head)),
+                                   TOSS_PEAK_MIN_BH, TOSS_PEAK_FULL_BH)),
+    }
+    return {"toss": round(float(np.mean(list(parts.values()))), 4),
+            "toss_parts": {name: round(value, 3) for name, value in parts.items()}}
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[3])
+    ap = argparse.ArgumentParser(description="A far-side serve detector: the same "
+                                 "phase-sequence idea as `near_serve`, with")
     ap.add_argument("video")
     ap.add_argument("--tracks", default=None)
     ap.add_argument("--threshold", type=float, default=THRESHOLD)
     ap.add_argument("--no-court", action="store_true")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
-    ev = detect_video(a.video, a.tracks, a.threshold, not a.no_court)
-    print(f"[far-serve] {len(ev)} serves at p >= {a.threshold}")
-    for e in ev[:40]:
+    serves = detect_video(a.video, a.tracks, a.threshold, not a.no_court)
+    print(f"[far-serve] {len(serves)} serves at p >= {a.threshold}")
+    for e in serves[:40]:
         d = e.detail
         print(f"  {e.t:8.2f}s  p={e.p:.3f}  slot={e.track}  "
               f"trophy={d['trophy']:.2f} swing={d['swing']:.2f} ready={d['ready']:.2f}")
     out = a.json or events_path(a.video)
-    dump_events(ev, out, threshold=a.threshold, requirement=REQUIREMENT.__dict__)
+    dump_events(serves, out, threshold=a.threshold, requirement=REQUIREMENT.__dict__)
     print(f"[far-serve] wrote {out}")
 
 
