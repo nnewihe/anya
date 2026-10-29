@@ -59,7 +59,7 @@ CAMERA = os.environ.get("ANYA_CAMERA", "gopro")
 # Plugged in by USB, the HERO8 shows up as a network card, not a V4L2 webcam:
 # the Pi gets an address 172.2x.1yy.z from it and the camera is 172.2x.1yy.51.
 # GET /gp/gpWebcam/START?res=1080 makes it send H.264 in MPEG-TS by UDP to the
-# Pi's port 8554, STOP ends it.  No sound comes with it.  ANYA_GOPRO_IP skips
+# Pi's port 8554, STOP ends it.  Its sound comes in the same stream.  ANYA_GOPRO_IP skips
 # looking for the camera's address.
 GOPRO_IP = os.environ.get("ANYA_GOPRO_IP", "")
 GOPRO_RES = os.environ.get("ANYA_GOPRO_RES", "1080")     # 1080, 720 or 480
@@ -182,13 +182,15 @@ def gopro_call(ip, command):
 def gopro_args():
     # Copy only, as for the webcam.  fifo_size (in 188-byte packets, ~9 MB)
     # and overrun_nonfatal ride out a slow disk write; timeout (microseconds)
-    # ends the recording once the camera goes quiet.  Video only: the stream
-    # also lists an AC-3 track with no channels or sample rate, which the
-    # MPEG-TS muxer refuses ("Could not write header"), so ffmpeg quit at once.
+    # ends the recording once the camera goes quiet.  No -map: ffmpeg's own
+    # choice takes the video and the one real audio track.  The stream also
+    # lists an AC-3 track with no channels or sample rate; mapping every audio
+    # track (0:a?) took that one too, and the MPEG-TS muxer refused it ("Could
+    # not write header"), so ffmpeg quit at once.
     url = (f"udp://@0.0.0.0:{GOPRO_PORT}?overrun_nonfatal=1&fifo_size=50000"
            f"&timeout={GOPRO_SILENCE_S * 1_000_000}")
     return ["-hide_banner", "-nostdin", "-loglevel", "warning", "-i", url,
-            "-map", "0:v", "-c", "copy", "-f", "mpegts", "-y"]
+            "-c", "copy", "-f", "mpegts", "-y"]
 
 
 def camera_off():

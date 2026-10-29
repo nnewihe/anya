@@ -32,7 +32,7 @@ phone ──▶ recorder.py :8080 ──▶ ffmpeg (GoPro) ──▶ recordings/
 - **While recording, the Pi only saves what the camera sends**: the GoPro's H.264 goes
   untouched into a `.ts`, which stays readable even if the recording is cut off by a
   crash or power cut.
-- **No sound.** The HERO8's webcam stream carries video only.
+- **Sound comes from the GoPro's own stream**, copied as is into the `.ts` and kept in the `.mp4`. The stream also lists an empty AC-3 track; ffmpeg's own stream choice skips it.
 - **After Stop, it's rewrapped to an `.mp4` in the background** (no re-encoding, so
   it takes seconds). The `.ts` is deleted once the `.mp4` checks out. Anything left
   unconverted by a crash or reboot is converted the next time the service starts.
