@@ -1,0 +1,18 @@
+[Unit]
+Description=anya: Bluetooth remote (T-Watch 2020) for the court recorder
+After=bluetooth.target anya-recorder.service
+Wants=bluetooth.target
+
+[Service]
+# It only calls the recorder's web API, so it needs none of the recorder's
+# rights: just BlueZ (the bluetooth group may talk to org.bluez).
+User=anya
+Group=anya
+SupplementaryGroups=bluetooth
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/anya/venv/bin/python /opt/anya/src/pi/watch/bridge.py --recorder http://127.0.0.1:8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

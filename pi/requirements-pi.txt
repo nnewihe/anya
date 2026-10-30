@@ -21,3 +21,5 @@ onnxruntime
 # YouTube upload (pi/anya_pi/youtube.py)
 google-api-python-client
 google-auth-oauthlib
+# Bluetooth remote for the recorder (pi/watch/bridge.py)
+dbus-next==0.2.3
