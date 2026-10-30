@@ -46,6 +46,8 @@ phone ──▶ recorder.py :8080 ──▶ ffmpeg (GoPro) ──▶ recordings/
 - **Processing pauses while the camera records.** It uses all four cores, and the
   camera's software encoder would drop frames. It resumes after Stop from the stage
   it reached.
+- **A T-Watch S3 can press Start/Stop too,** over Bluetooth, with no phone or Wi-Fi:
+  see `pi/watch/README.md`.
 - **The page has no login.** Anyone on the same network can use it. Don't expose port
   8080 to the internet.
 

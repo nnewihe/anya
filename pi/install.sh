@@ -17,11 +17,13 @@ U=anya
 echo "== packages"
 apt-get update -q
 apt-get install -y -q ffmpeg python3-venv python3-dev rsync samba exfatprogs \
-  psmisc v4l-utils    # fuser (who holds the webcam), v4l2-ctl
+  psmisc v4l-utils \
+  bluez               # fuser (who holds the webcam), v4l2-ctl; the watch remote
 
 echo "== user $U"
 id -u $U >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin $U
 usermod -aG video,render,audio $U   # HEVC decoder + webcam (video), its microphone (audio)
+getent group bluetooth >/dev/null && usermod -aG bluetooth $U   # the watch remote (BlueZ)
 
 echo "== code -> $APP/src"
 mkdir -p $APP/src
@@ -76,10 +78,11 @@ install -m 644 $APP/src/pi/udev/99-anya-camera.rules /etc/udev/rules.d/
 install -m 644 $APP/src/pi/systemd/anya-ingest@.service /etc/systemd/system/
 install -m 644 $APP/src/pi/systemd/anya-worker.service /etc/systemd/system/
 install -m 644 $APP/src/pi/recorder/anya-recorder.service /etc/systemd/system/
+install -m 644 $APP/src/pi/watch/anya-watch.service /etc/systemd/system/
 chmod +x $APP/src/pi/bin/anya-ingest-device
 udevadm control --reload
 systemctl daemon-reload
-systemctl enable anya-worker.service anya-recorder.service
+systemctl enable anya-worker.service anya-recorder.service anya-watch.service
 # The first, hand-installed recorder ran from here.
 rm -rf /opt/anya-recorder
 
@@ -97,10 +100,11 @@ echo "== NCNN pose export for the near pass (the far one is made per site on fir
 runuser -u $U -- env PYTHONPATH=$APP/src ANYA_POSE_MODELS=$DATA/models \
   $APP/venv/bin/python -m pipeline.anya2.export_pose export --backend ncnn
 
-systemctl restart anya-worker.service anya-recorder.service
+systemctl restart anya-worker.service anya-recorder.service anya-watch.service
 echo
 echo "Installed.  Next steps (pi/README.md):"
 echo "  1. put a site profile in $DATA/site   (python -m pipeline.anya2.site save ...)"
 echo "  2. sudo smbpasswd -a $U               (to reach the reels share)"
 echo "  3. plug the camera in; follow with:  journalctl -fu anya-worker -u 'anya-ingest@*'"
 echo "  Pi camera: http://$(hostname).local:8080   (journalctl -fu anya-recorder)"
+echo "  Watch remote: pair it once with  sudo $APP/venv/bin/python $APP/src/pi/watch/bridge.py pair"
