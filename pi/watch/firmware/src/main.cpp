@@ -1,11 +1,11 @@
-// T-Watch S3: Start/Stop for the court recorder over Bluetooth LE.
+// T-Watch 2020: Start/Stop for the court recorder over Bluetooth LE.
 //
 // The Pi side is pi/watch/bridge.py, which describes the two characteristics.
 // Bluetooth runs in its own task (scanning and connecting block); the UI runs
-// in loop() and only ever reads what that task leaves in `ble`.
+// in loop() and only ever reads what that task leaves in `ble`.  The board
+// version comes from platformio.ini (see config.h).
 
-#include <LilyGoLib.h>
-#include <LV_Helper.h>
+#include "config.h"
 #include <NimBLEDevice.h>
 #include <ArduinoJson.h>
 #include <string>
@@ -16,15 +16,17 @@ static const char *STATUS_UUID  = "a5c0de02-7e9b-4c39-9a35-0c0a0f7e1a00";
 
 static const uint32_t HOLD_MS = 1000;             // press this long to start/stop
 static const uint32_t SCREEN_OFF_MS = 20000;
-static const uint32_t SLEEP_AFTER_OFF_MS = 60000; // then deep sleep; the crown wakes it
+static const uint32_t SLEEP_AFTER_OFF_MS = 60000; // then deep sleep; the side button wakes it
 static const uint32_t PENDING_MS = 15000;         // a command's answer, at most
-static const uint8_t  BRIGHTNESS = 120;
+static const uint8_t  BRIGHTNESS = 160;
 
 static const lv_color_t LIME = lv_color_hex(0xdfff00);
 static const lv_color_t RED  = lv_color_hex(0xff4d4d);
 static const lv_color_t GREY = lv_color_hex(0x454845);
 static const lv_color_t DARK = lv_color_hex(0x070807);
 static const lv_color_t MUTED = lv_color_hex(0x9ea09e);
+
+static TTGOClass *ttgo;
 
 // -- shared between the Bluetooth task and the UI ------------------------------
 
@@ -142,7 +144,7 @@ static void bleTask(void *)
     }
 }
 
-// -- UI -----------------------------------------------------------------------
+// -- UI (LVGL 7) --------------------------------------------------------------
 
 static struct {
     std::string s = "offline";   // idle | recording | finishing | offline
@@ -159,6 +161,16 @@ static bool screenOn = true;
 static uint32_t offAt = 0;
 static volatile bool pmuIrq = false;
 
+static void textColor(lv_obj_t *o, lv_color_t c)
+{
+    lv_obj_set_style_local_text_color(o, LV_LABEL_PART_MAIN, LV_STATE_DEFAULT, c);
+}
+
+static void textFont(lv_obj_t *o, const lv_font_t *f)
+{
+    lv_obj_set_style_local_text_font(o, LV_LABEL_PART_MAIN, LV_STATE_DEFAULT, f);
+}
+
 static void send(const char *c)
 {
     {
@@ -169,117 +181,140 @@ static void send(const char *c)
     askOnBusy = strcmp(c, "start") == 0;
 }
 
-static void onHold(lv_event_t *)
+static void onButton(lv_obj_t *, lv_event_t e)
 {
-    if (pendingAt) return;
+    if (e != LV_EVENT_LONG_PRESSED || pendingAt) return;
     if (rec.s == "idle") send("start");
     else if (rec.s == "recording") send("stop");
 }
 
-static void onBusyAnswer(lv_event_t *e)
+static void onBusyAnswer(lv_obj_t *m, lv_event_t e)
 {
-    lv_obj_t *m = lv_event_get_current_target(e);
+    if (e != LV_EVENT_VALUE_CHANGED) return;
     const char *b = lv_msgbox_get_active_btn_text(m);
     if (b && strcmp(b, "Close it") == 0) send("start-force");
-    lv_msgbox_close(m);
+    lv_msgbox_start_auto_close(m, 0);
     mbox = nullptr;
 }
 
 static void showBusy()
 {
     static const char *btns[] = {"Close it", "Cancel", ""};
-    std::string text = "Another program has the camera:\n" + rec.busy +
-                       "\nClose it and start recording?";
-    mbox = lv_msgbox_create(NULL, "Camera in use", text.c_str(), btns, false);
+    std::string text = "Camera in use by\n" + rec.busy + "\nClose it and start?";
+    mbox = lv_msgbox_create(lv_scr_act(), NULL);
+    lv_msgbox_set_text(mbox, text.c_str());
+    lv_msgbox_add_btns(mbox, btns);
     lv_obj_set_width(mbox, 220);
-    lv_obj_center(mbox);
-    lv_obj_add_event_cb(mbox, onBusyAnswer, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_align(mbox, NULL, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_event_cb(mbox, onBusyAnswer);
 }
 
 static void screenOff()
 {
     screenOn = false;
     offAt = millis();
-    watch.setBrightness(0);
-    lv_obj_clear_flag(shield, LV_OBJ_FLAG_HIDDEN);
+    ttgo->closeBL();
+    ttgo->displaySleep();
+    lv_obj_set_hidden(shield, false);
 }
 
 static void screenWake()
 {
     screenOn = true;
-    lv_obj_add_flag(shield, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_hidden(shield, true);
     lv_disp_trig_activity(NULL);
-    watch.setBrightness(BRIGHTNESS);
+    ttgo->displayWakeup();
+    ttgo->openBL();
+    ttgo->setBrightness(BRIGHTNESS);
 }
 
 // While the screen is off, a full-screen layer takes the first touch, so
 // waking the watch can never press Start or Stop.
-static void onShield(lv_event_t *)
+static void onShield(lv_obj_t *, lv_event_t e)
 {
-    screenWake();
+    if (e == LV_EVENT_PRESSED) screenWake();
 }
 
+// LilyGo's WakeupFormPEKKey: power the peripherals down, wake on the side
+// button (the AXP202's interrupt line).  Waking reboots.
 static void deepSleep()
 {
     wantLink = false;
     for (int i = 0; i < 20 && NimBLEDevice::getClientListSize() &&
                     NimBLEDevice::getClientList()->front()->isConnected(); i++)
         delay(50);
-    watch.clearPMU();
-    watch.setSleepMode(PMU_BTN_WAKEUP);
-    watch.sleep();                     // wakes by rebooting
+    ttgo->power->clearIRQ();
+    ttgo->displaySleep();
+#ifdef LILYGO_WATCH_2020_V1
+    ttgo->powerOff();
+#else
+    ttgo->power->setPowerOutPut(AXP202_LDO3, false);
+    ttgo->power->setPowerOutPut(AXP202_LDO4, false);
+    ttgo->power->setPowerOutPut(AXP202_LDO2, false);
+    ttgo->power->setPowerOutPut(AXP202_EXTEN, false);
+    ttgo->power->setPowerOutPut(AXP202_DCDC2, false);
+#endif
+    esp_sleep_enable_ext1_wakeup(GPIO_SEL_35, ESP_EXT1_WAKEUP_ALL_LOW);
+    esp_deep_sleep_start();
+}
+
+static void styleBtn(lv_color_t c, const char *text, bool enabled)
+{
+    lv_obj_set_style_local_bg_color(btn, LV_BTN_PART_MAIN, LV_STATE_DEFAULT, c);
+    lv_obj_set_style_local_bg_color(btn, LV_BTN_PART_MAIN, LV_STATE_PRESSED, c);
+    lv_obj_set_style_local_bg_color(btn, LV_BTN_PART_MAIN, LV_STATE_FOCUSED, c);
+    lv_obj_set_style_local_bg_color(btn, LV_BTN_PART_MAIN, LV_STATE_FOCUSED | LV_STATE_PRESSED, c);
+    textColor(lblBtn, enabled ? DARK : MUTED);
+    lv_label_set_text(lblBtn, text);
 }
 
 static void buildUi()
 {
     lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, DARK, 0);
-    lv_obj_set_style_text_color(scr, lv_color_white(), 0);
+    lv_obj_set_style_local_bg_color(scr, LV_OBJ_PART_MAIN, LV_STATE_DEFAULT, DARK);
+    lv_obj_set_style_local_text_color(scr, LV_OBJ_PART_MAIN, LV_STATE_DEFAULT, LV_COLOR_WHITE);
 
-    lblLink = lv_label_create(scr);
-    lv_obj_set_style_text_font(lblLink, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lblLink, MUTED, 0);
-    lv_obj_align(lblLink, LV_ALIGN_TOP_MID, 0, 6);
+    lblLink = lv_label_create(scr, NULL);
+    textFont(lblLink, &lv_font_montserrat_16);
+    textColor(lblLink, MUTED);
+    lv_obj_set_auto_realign(lblLink, true);
+    lv_obj_align(lblLink, NULL, LV_ALIGN_IN_TOP_MID, 0, 6);
 
-    lblTime = lv_label_create(scr);
-    lv_obj_set_style_text_font(lblTime, &lv_font_montserrat_28, 0);
-    lv_obj_align(lblTime, LV_ALIGN_TOP_MID, 0, 28);
+    lblTime = lv_label_create(scr, NULL);
+    textFont(lblTime, &lv_font_montserrat_28);
+    lv_obj_set_auto_realign(lblTime, true);
+    lv_obj_align(lblTime, NULL, LV_ALIGN_IN_TOP_MID, 0, 28);
 
-    btn = lv_btn_create(scr);
+    btn = lv_btn_create(scr, NULL);
     lv_obj_set_size(btn, 130, 130);
-    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_shadow_width(btn, 0, 0);
-    lv_obj_align(btn, LV_ALIGN_CENTER, 0, 14);
-    lv_obj_add_event_cb(btn, onHold, LV_EVENT_LONG_PRESSED, NULL);
-    lblBtn = lv_label_create(btn);
-    lv_obj_set_style_text_font(lblBtn, &lv_font_montserrat_26, 0);
-    lv_obj_center(lblBtn);
+    lv_obj_set_style_local_radius(btn, LV_BTN_PART_MAIN, LV_STATE_DEFAULT, LV_RADIUS_CIRCLE);
+    lv_obj_set_style_local_border_width(btn, LV_BTN_PART_MAIN, LV_STATE_DEFAULT, 0);
+    lv_obj_set_style_local_border_width(btn, LV_BTN_PART_MAIN, LV_STATE_FOCUSED, 0);
+    lv_obj_set_style_local_outline_width(btn, LV_BTN_PART_MAIN, LV_STATE_FOCUSED, 0);
+    lv_obj_set_style_local_shadow_width(btn, LV_BTN_PART_MAIN, LV_STATE_DEFAULT, 0);
+    lv_obj_align(btn, NULL, LV_ALIGN_CENTER, 0, 14);
+    lv_obj_set_event_cb(btn, onButton);
+    lblBtn = lv_label_create(btn, NULL);
+    textFont(lblBtn, &lv_font_montserrat_28);
 
-    lblInfo = lv_label_create(scr);
+    lblInfo = lv_label_create(scr, NULL);
+    lv_label_set_long_mode(lblInfo, LV_LABEL_LONG_BREAK);
     lv_obj_set_width(lblInfo, 224);
-    lv_obj_set_style_text_align(lblInfo, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(lblInfo, &lv_font_montserrat_14, 0);
-    lv_label_set_long_mode(lblInfo, LV_LABEL_LONG_DOT);
-    lv_obj_set_height(lblInfo, 36);
-    lv_obj_align(lblInfo, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_label_set_align(lblInfo, LV_LABEL_ALIGN_CENTER);
+    textFont(lblInfo, &lv_font_montserrat_14);
+    lv_obj_set_auto_realign(lblInfo, true);
+    lv_obj_align(lblInfo, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -4);
 
-    shield = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(shield);
-    lv_obj_set_size(shield, LV_PCT(100), LV_PCT(100));
-    lv_obj_add_flag(shield, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_event_cb(shield, onShield, LV_EVENT_PRESSED, NULL);
+    shield = lv_obj_create(lv_layer_top(), NULL);
+    lv_obj_set_size(shield, LV_HOR_RES, LV_VER_RES);
+    lv_obj_set_style_local_bg_opa(shield, LV_OBJ_PART_MAIN, LV_STATE_DEFAULT, LV_OPA_TRANSP);
+    lv_obj_set_style_local_border_width(shield, LV_OBJ_PART_MAIN, LV_STATE_DEFAULT, 0);
+    lv_obj_set_click(shield, true);
+    lv_obj_set_event_cb(shield, onShield);
+    lv_obj_set_hidden(shield, true);
 
     lv_indev_t *indev = lv_indev_get_next(NULL);
-    if (indev) indev->driver->long_press_time = HOLD_MS;
-}
-
-static void styleBtn(lv_color_t c, const char *text, bool enabled)
-{
-    lv_obj_set_style_bg_color(btn, c, 0);
-    lv_obj_set_style_text_color(lblBtn, enabled ? DARK : MUTED, 0);
-    lv_label_set_text(lblBtn, text);
-    if (enabled) lv_obj_clear_state(btn, LV_STATE_DISABLED);
-    else lv_obj_add_state(btn, LV_STATE_DISABLED);
+    if (indev) indev->driver.long_press_time = HOLD_MS;
 }
 
 static void takeStatus(const std::string &json)
@@ -305,26 +340,33 @@ static void takeStatus(const std::string &json)
     }
 }
 
+// lv_label_set_text redraws even when nothing changed; skip those.
+static void setText(lv_obj_t *o, const char *t)
+{
+    if (strcmp(lv_label_get_text(o), t) != 0) lv_label_set_text(o, t);
+}
+
 static void render(Phase phase, bool notPaired)
 {
-    char buf[64];
+    char buf[80];
     bool up = phase == CONNECTED;
-    if (up) lv_label_set_text(lblLink, LV_SYMBOL_BLUETOOTH " Court Pi");
-    else if (phase == PAIRING) lv_label_set_text(lblLink, "Pairing...");
-    else if (notPaired) lv_label_set_text(lblLink, "Not paired");
-    else if (phase == CONNECTING) lv_label_set_text(lblLink, "Connecting...");
-    else lv_label_set_text(lblLink, "Looking for the Pi...");
+    if (up) setText(lblLink, LV_SYMBOL_BLUETOOTH " Court Pi");
+    else if (phase == PAIRING) setText(lblLink, "Pairing...");
+    else if (notPaired) setText(lblLink, "Not paired");
+    else if (phase == CONNECTING) setText(lblLink, "Connecting...");
+    else setText(lblLink, "Looking for the Pi...");
 
     if (!up) {
-        lv_label_set_text(lblTime, "");
+        setText(lblTime, "");
         styleBtn(GREY, LV_SYMBOL_BLUETOOTH, false);
+        textColor(lblInfo, MUTED);
         if (phase == PAIRING || notPaired) {
             snprintf(buf, sizeof buf, "%s%03lu %03lu",
                      phase == PAIRING ? "Type on the Pi: " : "On the Pi run: bridge.py pair\nthen type ",
                      (unsigned long)(passkey / 1000), (unsigned long)(passkey % 1000));
-            lv_label_set_text(lblInfo, buf);
+            setText(lblInfo, buf);
         } else {
-            lv_label_set_text(lblInfo, "");
+            setText(lblInfo, "");
         }
         return;
     }
@@ -334,29 +376,29 @@ static void render(Phase phase, bool notPaired)
         long secs = rec.t + (long)((millis() - rec.at) / 1000);
         if (secs >= 3600) snprintf(buf, sizeof buf, "%ld:%02ld:%02ld", secs / 3600, secs / 60 % 60, secs % 60);
         else snprintf(buf, sizeof buf, "%02ld:%02ld", secs / 60, secs % 60);
-        lv_obj_set_style_text_color(lblTime, RED, 0);
-        lv_label_set_text(lblTime, buf);
+        textColor(lblTime, RED);
+        setText(lblTime, buf);
         styleBtn(RED, waiting ? "..." : "STOP", !waiting);
     } else if (rec.s == "idle") {
-        lv_obj_set_style_text_color(lblTime, lv_color_white(), 0);
-        lv_label_set_text(lblTime, "Ready");
+        textColor(lblTime, LV_COLOR_WHITE);
+        setText(lblTime, "Ready");
         styleBtn(LIME, waiting ? "..." : "START", !waiting);
     } else if (rec.s == "finishing") {
-        lv_obj_set_style_text_color(lblTime, lv_color_white(), 0);
-        lv_label_set_text(lblTime, "Saving");
+        textColor(lblTime, LV_COLOR_WHITE);
+        setText(lblTime, "Saving");
         styleBtn(GREY, "...", false);
     } else {
-        lv_obj_set_style_text_color(lblTime, MUTED, 0);
-        lv_label_set_text(lblTime, "Recorder off");
+        textColor(lblTime, MUTED);
+        setText(lblTime, "Recorder off");
         styleBtn(GREY, "-", false);
     }
     if (!rec.err.empty()) {
-        lv_obj_set_style_text_color(lblInfo, RED, 0);
-        lv_label_set_text(lblInfo, rec.err.c_str());
+        textColor(lblInfo, RED);
+        setText(lblInfo, rec.err.c_str());
     } else {
-        lv_obj_set_style_text_color(lblInfo, MUTED, 0);
-        lv_label_set_text(lblInfo, rec.s == "idle" ? "Hold to start"
-                                 : rec.s == "recording" ? "Hold to stop" : "");
+        textColor(lblInfo, MUTED);
+        setText(lblInfo, rec.s == "idle" ? "Hold to start"
+                         : rec.s == "recording" ? "Hold to stop" : "");
     }
 }
 
@@ -368,11 +410,18 @@ static void IRAM_ATTR onPmu()
 void setup()
 {
     mtx = xSemaphoreCreateMutex();
-    watch.begin();
-    beginLvglHelper();
-    watch.setBrightness(BRIGHTNESS);
-    watch.attachPMU(onPmu);
+    ttgo = TTGOClass::getWatch();
+    ttgo->begin();
+    ttgo->lvgl_begin();
     buildUi();
+    ttgo->openBL();
+    ttgo->setBrightness(BRIGHTNESS);
+
+    // The side button: a short press turns the screen off or on.
+    pinMode(AXP202_INT, INPUT_PULLUP);
+    attachInterrupt(AXP202_INT, onPmu, FALLING);
+    ttgo->power->enableIRQ(AXP202_PEK_SHORTPRESS_IRQ, true);
+    ttgo->power->clearIRQ();
 
     passkey = 100000 + esp_random() % 900000;
     NimBLEDevice::init("Anya Watch");
@@ -410,12 +459,12 @@ void loop()
 
     if (pmuIrq) {
         pmuIrq = false;
-        watch.readPMU();
-        if (watch.isPekeyShortPressIrq()) {
+        ttgo->power->readIRQ();
+        if (ttgo->power->isPEKShortPressIRQ()) {
             if (screenOn) screenOff();
             else screenWake();
         }
-        watch.clearPMU();
+        ttgo->power->clearIRQ();
     }
     // Keep the passkey on screen while the Pi waits for it.
     if (phase == PAIRING) lv_disp_trig_activity(NULL);

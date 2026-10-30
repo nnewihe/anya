@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bluetooth remote for the court recorder: a paired LilyGo T-Watch S3 presses
+Bluetooth remote for the court recorder: a paired LilyGo T-Watch 2020 presses
 Start and Stop.
 
     python3 bridge.py [--recorder http://127.0.0.1:8080]     the service

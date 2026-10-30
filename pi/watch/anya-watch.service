@@ -1,5 +1,5 @@
 [Unit]
-Description=anya: Bluetooth remote (T-Watch S3) for the court recorder
+Description=anya: Bluetooth remote (T-Watch 2020) for the court recorder
 After=bluetooth.target anya-recorder.service
 Wants=bluetooth.target
 

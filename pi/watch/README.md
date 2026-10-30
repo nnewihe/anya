@@ -1,12 +1,12 @@
-# Watch remote (LilyGo T-Watch S3 → Pi, Bluetooth)
+# Watch remote (LilyGo T-Watch 2020 → Pi, Bluetooth)
 
-Start and Stop the court recorder from a **T-Watch S3** on your wrist, with no phone
+Start and Stop the court recorder from a **T-Watch 2020** (V1, V2 or V3) on your wrist, with no phone
 and no Wi-Fi. The watch talks Bluetooth LE to the Pi; the Pi passes each press to the
 recorder's own web page API, so everything after Stop (the `.mp4`, the YouTube
 uploads, the highlights) happens exactly as it does from the page.
 
 ```
-T-Watch S3 ──BLE──▶ anya-watch (bridge.py) ──HTTP 127.0.0.1:8080──▶ anya-recorder ──▶ anya-worker
+T-Watch 2020 ──BLE──▶ anya-watch (bridge.py) ──HTTP 127.0.0.1:8080──▶ anya-recorder ──▶ anya-worker
 ```
 
 - **Hold the round button for one second** to start (lime) or stop (red). A plain tap
@@ -23,7 +23,7 @@ T-Watch S3 ──BLE──▶ anya-watch (bridge.py) ──HTTP 127.0.0.1:8080�
   (passkey pairing) and the Pi must have marked the watch trusted. Phones or other
   devices nearby can see the Pi advertising, but they can't press anything.
 - **Battery.** The screen goes off after 20 s and the watch sleeps a minute later. The
-  side (crown) button wakes it; it reconnects in a second or two. While the screen is
+  side button wakes it (a short press also turns the screen off); it reconnects in a second or two. While the screen is
   off, the first touch only wakes it.
 
 ## Install on the Pi
@@ -40,11 +40,20 @@ It logs `advertising a5c0de00-…` and the recorder's state.
 
 ## Flash the watch (on the Mac)
 
-Install PlatformIO once (`pipx install platformio`), plug the watch in by USB-C, then:
+Install PlatformIO once (`brew install platformio`), plug the watch in by USB, then
+flash the build for its version (printed on the back):
 
 ```bash
-cd pi/watch/firmware && pio run -t upload
+cd pi/watch/firmware && pio run -e twatch2020-v3 -t upload
 ```
+
+Use `-e twatch2020-v2` or `-e twatch2020-v1` for the older ones. The versions use
+different pins, and the chip can't tell which watch it's in: the wrong build shows a
+dark screen, and flashing the right one fixes it. The watch appears on the Mac as
+`/dev/cu.usbserial-…` (its USB-serial chip); PlatformIO finds it by itself.
+
+This replaces LilyGo's demo firmware. It's an ESP32 watch, so the S3's library and
+board settings don't apply.
 
 ## Pair (once per watch)
 
