@@ -112,35 +112,15 @@ empty, it ends with `[youtube] session_name` from `/srv/anya/config.toml` instea
 (default `"Wimbledon Session"`).
 
 ### 2. Court calibration
-The court corners are clicked once on a computer with a screen, then reused for every
-recording. On the Mac, with any recording from the Pi:
+From a phone: open **http://<pi>:8080/calibrate** (the main page links to it, and warns
+while there is no calibration). Record ~20 seconds with the camera where it will stay,
+pick that recording, tap the four singles corners, check that the yellow court sits on
+the painted lines, and Save. Recordings that were waiting with **"needs court
+calibration"** are re-queued on their own. The previous calibration is kept as
+`/srv/anya/site.prev`. Redo it whenever the mount moves. Step by step: `pi/PILOT.md`.
 
-```bash
-scp nnewihe@biquet.local:/srv/anya/recordings/<name>.mp4 .
-```
-
-```bash
-python -m pipeline.anya2.site save <name>.mp4 site
-```
-
-Click the four **singles** corners. Then copy the profile to the Pi:
-
-```bash
-scp -r site nnewihe@biquet.local:/tmp/site
-```
-
-```bash
-ssh nnewihe@biquet.local 'sudo rsync -a /tmp/site/ /srv/anya/site/ && sudo chown -R anya:anya /srv/anya/site'
-```
-
-Until this is done, recordings show **"needs court calibration"**, but their raw
-uploads still go out. Once the site profile is in place, re-queue them:
-
-```bash
-sudo -u anya env PYTHONPATH=/opt/anya/src:/opt/anya/src/pi /opt/anya/venv/bin/python -m anya_pi retry <name>
-```
-
-If the camera mount moves, redo this.
+The laptop way (`python -m pipeline.anya2.site save <recording>.mp4 site`, then copy
+`site/` to `/srv/anya/site/`) still works and makes the same files.
 
 ## Camera settings
 

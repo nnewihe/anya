@@ -7,6 +7,8 @@ python -m anya_pi <command>
     retry ID             put a failed / needs-calibration job back in the queue
     reupload ID [--raw]  queue a finished reel (or, --raw, the recording) for YouTube again
     youtube-auth         one-time YouTube consent (run on a laptop with a browser)
+    youtube-playlist T   create the club playlist every upload goes into
+    calibrate-frame / calibrate-save   used by the recorder's /calibrate page
 """
 
 import argparse
@@ -36,6 +38,21 @@ def main(argv=None):
     p.add_argument("--out", default="youtube_token.json")
     p.add_argument("--playlists", action="store_true",
                    help="also ask for playlist access (needed for playlist_id)")
+    p = sub.add_parser("youtube-playlist",
+                       help="create the playlist every upload is added to")
+    p.add_argument("title")
+    p.add_argument("--description", default="")
+    p.add_argument("--privacy", default="unlisted",
+                   choices=["unlisted", "public", "private"])
+    p.add_argument("--token", help="default: the config's [youtube] token")
+    p = sub.add_parser("calibrate-frame", help="(the recorder page) write a "
+                       "recording's calibration frame as PNG")
+    p.add_argument("video")
+    p.add_argument("out_png")
+    p = sub.add_parser("calibrate-save", help="(the recorder page) save the site "
+                       "profile from four corners")
+    p.add_argument("video")
+    p.add_argument("points", help='JSON: [[x,y] x4], bottom-left first')
     a = ap.parse_args(argv)
 
     if a.cmd == "youtube-auth":             # no config needed on the laptop
@@ -44,6 +61,33 @@ def main(argv=None):
         return 0
 
     cfg = CFG.load(a.config)
+    if a.cmd == "youtube-playlist":
+        from . import youtube as Y
+        pl = Y.create_playlist(a.token or cfg.youtube_token, a.title,
+                               a.description, a.privacy)
+        print(f"playlist created ({pl['privacy']}): {pl['url']}\n\n"
+              f"Put this in /srv/anya/config.toml under [youtube]:\n\n"
+              f'    playlist_id = "{pl["id"]}"\n\n'
+              f"then: sudo systemctl restart anya-worker anya-recorder")
+        return 0
+    if a.cmd in ("calibrate-frame", "calibrate-save"):
+        # The recorder page reads stdout: one JSON object, errors included.
+        import contextlib
+        import json
+        from . import calibrate as K
+        try:
+            # pipeline code prints progress; keep stdout for the one JSON line
+            with contextlib.redirect_stdout(sys.stderr):
+                out = (K.frame(a.video, a.out_png) if a.cmd == "calibrate-frame"
+                       else K.save(cfg, a.video, json.loads(a.points)))
+        except K.BadCorners as e:
+            print(json.dumps({"ok": False, "error": str(e)}))
+            return 2
+        except Exception as e:              # noqa: BLE001 -- shown on the page
+            print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}))
+            return 1
+        print(json.dumps(out))
+        return 0
     q = J.Queue(cfg)
     if a.cmd == "ingest":
         from . import ingest as I

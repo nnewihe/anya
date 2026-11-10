@@ -1,0 +1,59 @@
+#!/bin/bash
+# Where is the Pi on the network, and how do I reach its recorder page?
+#
+#   anya-netinfo
+#
+# Prints the Pi's own addresses, the router it sits behind (the travel router:
+# its admin page is that address in a browser), and the recorder page's URL on
+# each.  The GoPro's USB link (172.2x.1yy.z) is listed separately: it is not a
+# way in.  Read-only; needs no sudo.
+
+PORT=${ANYA_RECORDER_PORT:-8080}
+
+echo "Pi:         $(hostname)"
+ssid=$(iwgetid -r 2>/dev/null || nmcli -t -f active,ssid dev wifi 2>/dev/null | awk -F: '$1=="yes"{print $2; exit}')
+[ -n "$ssid" ] && echo "Wi-Fi:      $ssid"
+
+gw=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
+gwdev=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
+if [ -n "$gw" ]; then
+  echo "Router:     $gw (via $gwdev)  -- its admin page: http://$gw"
+else
+  echo "Router:     none (no default route: the Pi has no way to the internet)"
+fi
+
+echo
+echo "Recorder page:"
+found=
+while read -r dev cidr; do
+  ip=${cidr%/*}
+  case "$ip" in
+    127.*) continue ;;
+    172.2[0-9].1[0-9][0-9].*) echo "  (GoPro USB link on $dev: $ip -- not reachable from a phone)"; continue ;;
+  esac
+  case "$dev" in
+    tailscale*) echo "  http://$ip:$PORT    (Tailscale: from anywhere, on a device signed in to your tailnet)" ;;
+    *)          echo "  http://$ip:$PORT    ($dev: from a phone on the SAME network as the Pi)" ;;
+  esac
+  found=1
+done < <(ip -4 -o addr show 2>/dev/null | awk '{print $2, $4}')
+[ -z "$found" ] && echo "  (no network address -- is Wi-Fi connected?)"
+
+if command -v tailscale >/dev/null 2>&1; then
+  ts=$(tailscale ip -4 2>/dev/null | head -1)
+  name=$(tailscale status --self --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null)
+  if [ -n "$ts" ]; then
+    echo "  http://${name:-$ts}:$PORT    (Tailscale name)"
+  else
+    echo "  Tailscale is installed but not signed in: sudo tailscale up"
+  fi
+else
+  echo "  Tailscale not installed (to reach the page from anywhere: see pi/PILOT.md)"
+fi
+
+if [ -n "$gw" ]; then
+  echo
+  echo "A phone on the club's Wi-Fi can NOT reach the addresses above while the"
+  echo "travel router is in router (NAT) mode. Join the travel router's own Wi-Fi,"
+  echo "use Tailscale, or forward a port on the travel router (pi/PILOT.md)."
+fi

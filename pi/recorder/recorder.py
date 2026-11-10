@@ -43,6 +43,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -499,10 +500,15 @@ def chips(job):
 
 
 class Recorder:
-    def __init__(self, out_dir, camera=None, cfg=None):
+    def __init__(self, out_dir, camera=None, cfg=None, settings=None, config_path=None):
         """`cfg` (anya_pi.config.Config): queue each recording for the worker
-        and pause it while recording.  None: just record."""
+        and pause it while recording.  None: just record.  `settings`: the
+        config the calibration page and the playlist link read (default
+        `cfg`), with `config_path` the file it came from."""
         self.dir = Path(out_dir)
+        self.settings = settings or cfg
+        self.config_path = config_path
+        self._calibrate_lock = threading.Lock()
         self.dir.mkdir(parents=True, exist_ok=True)
         # Replaces the recording program (ffmpeg / rpicam-vid); the tests'
         # fake camera comes in this way.
@@ -752,7 +758,106 @@ class Recorder:
         s["recordings"] = self.recordings()
         s["default_session"] = (self.cfg.youtube.session_name if self.cfg
                                 else CFG.YouTube().session_name)
+        s["calibrated"] = self.calibrated()
+        s["playlist_url"] = self.playlist_url()
         return s
+
+    # -- club playlist ---------------------------------------------------
+    def playlist_url(self):
+        pid = self.settings.youtube.playlist_id if self.settings else ""
+        return f"https://www.youtube.com/playlist?list={pid}" if pid else None
+
+    # -- court calibration (the /calibrate page) ---------------------------
+    def calibrated(self):
+        return bool(self.settings) and (self.settings.site_dir / "court.json").is_file()
+
+    def recording_path(self, name):
+        """A finished recording in our folder, by its file name -- or None.
+        The name comes from the page, so nothing but a bare *.mp4 is accepted."""
+        if not name or name != os.path.basename(name) or not name.endswith(".mp4") \
+                or name.endswith(".part.mp4"):
+            return None
+        p = self.dir / name
+        return p if p.is_file() else None
+
+    def newest_recording(self):
+        files = sorted(p for p in self.dir.glob("*.mp4") if not p.name.endswith(".part.mp4"))
+        return files[-1] if files else None
+
+    def _anya_pi(self, *args, timeout):
+        """Run `python -m anya_pi ...` (it has OpenCV and the pipeline; this
+        process doesn't load them).  Returns (exit code, the JSON it printed)."""
+        here = Path(__file__).resolve()
+        paths = [str(here.parents[2]), str(here.parents[1])]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(paths + [p for p in
+                                            env.get("PYTHONPATH", "").split(os.pathsep) if p])
+        cmd = [sys.executable, "-m", "anya_pi"]
+        if self.config_path:
+            cmd += ["--config", str(self.config_path)]
+        with self._calibrate_lock:
+            try:
+                r = subprocess.run(cmd + list(args), env=env, capture_output=True,
+                                   text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return 1, {"ok": False, "error": "the Pi took too long; try again"}
+        lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
+        try:
+            return r.returncode, json.loads(lines[-1])
+        except (IndexError, ValueError):
+            tail = (r.stderr or "").strip().splitlines()[-3:]
+            return 1, {"ok": False, "error": "\n".join(tail) or "no output"}
+
+    def calibration_frame(self, name=None):
+        """(png bytes, info) for a recording's calibration frame, or (None, error)."""
+        if not self.settings:
+            return None, "calibration needs the anya Pi config"
+        video = self.recording_path(name) if name else self.newest_recording()
+        if not video:
+            return None, ("no such recording" if name else
+                          "no recordings yet: record ~20 seconds with the camera "
+                          "in place, press Stop, then come back here")
+        cache = self.settings.state / "calibrate"
+        cache.mkdir(parents=True, exist_ok=True)
+        png = cache / f"{video.stem}.png"
+        meta = cache / f"{video.stem}.json"
+        if not (png.is_file() and meta.is_file()
+                and png.stat().st_mtime >= video.stat().st_mtime):
+            code, out = self._anya_pi("calibrate-frame", str(video), str(png), timeout=90)
+            if code != 0:
+                return None, out.get("error") or "could not read the recording"
+            meta.write_text(json.dumps(out))
+        return png.read_bytes(), json.loads(meta.read_text())
+
+    def calibration_info(self):
+        prof = None
+        if self.settings:
+            try:
+                prof = json.loads((self.settings.site_dir / "court.json").read_text())
+            except (OSError, ValueError):
+                prof = None
+        names = [p.name for p in sorted((p for p in self.dir.glob("*.mp4")
+                                         if not p.name.endswith(".part.mp4")),
+                                        reverse=True)[:10]]
+        return {"recordings": names,
+                "current": ({"points": prof.get("points"),
+                             "from_video": prof.get("from_video")} if prof else None),
+                "recording_now": self.state == RECORDING}
+
+    def save_calibration(self, name, points):
+        if not self.settings:
+            return 400, {"ok": False, "error": "calibration needs the anya Pi config"}
+        video = self.recording_path(name)
+        if not video:
+            return 400, {"ok": False, "error": "no such recording"}
+        if not (isinstance(points, list) and len(points) == 4):
+            return 400, {"ok": False, "error": "tap all four corners first"}
+        code, out = self._anya_pi("calibrate-save", str(video), json.dumps(points),
+                                  timeout=180)
+        if code == 0:
+            log(f"court calibration saved from {video.name}; "
+                f"re-queued {len(out.get('requeued') or [])} job(s)")
+        return (200 if code == 0 else 400 if code == 2 else 500), out
 
 
 PAGE = r"""<!doctype html>
@@ -818,6 +923,11 @@ li:first-child { border-top:0; }
 .chip.err { border-color:rgba(255,77,77,.5); color:var(--bad); background:var(--badbg); }
 a.chip:hover { background:var(--lime); color:#000; }
 footer { text-align:center; color:rgba(255,255,255,.4); font-size:12px; margin-top:28px; }
+footer a, .err a { color:inherit; }
+.pill { display:block; text-align:center; margin-top:16px; padding:14px; border-radius:999px;
+        border:1px solid rgba(223,255,0,.55); color:var(--lime); background:var(--okbg);
+        font-weight:800; text-decoration:none; }
+.pill[hidden] { display:none; }
 </style></head>
 <body><main id="app">
 <svg class="logo" viewBox="60 20 680 545" role="img" aria-label="Anya Tennis">
@@ -859,9 +969,14 @@ footer { text-align:center; color:rgba(255,255,255,.4); font-size:12px; margin-t
   <div class="err" id="err" hidden></div>
 </div>
 
+<div class="err" id="uncal" hidden>The court isn't calibrated for this camera position,
+so highlights can't be made yet. <a href="/calibrate">Calibrate the court ▸</a></div>
+<a class="pill" id="club" hidden target="_blank" rel="noopener">▶ All club videos on YouTube</a>
+
 <h2>Recent recordings</h2>
 <ul id="list"><li><span>None yet</span></li></ul>
-<footer>© 2026 Anya Tennis · Cut the dead time. See the action.</footer>
+<footer><a href="/calibrate">Court calibration</a><br><br>
+© 2026 Anya Tennis · Cut the dead time. See the action.</footer>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -900,6 +1015,9 @@ function render(s) {
   $("note").textContent = s.notice || "";
   $("err").hidden = !s.error;
   $("err").textContent = s.error || "";
+  $("uncal").hidden = s.calibrated !== false;
+  $("club").hidden = !s.playlist_url;
+  if (s.playlist_url) $("club").href = s.playlist_url;
   const list = $("list");
   list.innerHTML = "";
   if (!s.recordings.length) list.innerHTML = "<li><span>None yet</span></li>";
@@ -966,6 +1084,272 @@ poll();
 """
 
 
+CALIBRATE_PAGE = r"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#070807">
+<title>Court Calibration</title>
+<style>
+:root { --lime:#dfff00; --dark:#070807; --card:#111311; --line:#2a2d2a;
+        --muted:rgba(255,255,255,.62); --warn:#ffcf70; --warnbg:rgba(255,190,60,.12);
+        --okbg:rgba(223,255,0,.12); }
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--dark); color:#fff;
+             font-family:Arial, Helvetica, sans-serif; }
+main { max-width:980px; margin:0 auto; padding:16px 16px 40px; }
+a { color:var(--lime); }
+h1 { font-size:20px; margin:4px 0 4px; }
+.sub { color:var(--muted); font-size:13px; margin:0 0 14px; }
+.steps { display:flex; gap:6px; flex-wrap:wrap; margin:0 0 10px; }
+.step { font-size:12px; font-weight:700; padding:5px 10px; border-radius:999px;
+        border:1px solid rgba(255,255,255,.25); color:var(--muted); }
+.step.done { border-color:rgba(223,255,0,.55); color:var(--lime); background:var(--okbg); }
+.step.next { border-color:#fff; color:#fff; }
+#wrap { position:relative; width:100%; border-radius:12px; overflow:hidden;
+        background:#000; border:1px solid var(--line); }
+canvas { display:block; width:100%; touch-action:none; }
+.bar { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; align-items:center; }
+button, select { font:inherit; font-size:15px; font-weight:800; padding:12px 16px;
+                 border-radius:999px; border:1px solid var(--line); background:var(--card);
+                 color:#fff; cursor:pointer; }
+select { font-weight:400; max-width:100%; }
+button.go { background:var(--lime); color:#000; border:0; flex:1; min-width:160px; }
+button:disabled { opacity:.45; cursor:default; }
+.nudge { display:grid; grid-template-columns:repeat(3,44px); gap:4px; }
+.nudge button { padding:8px 0; border-radius:10px; }
+.msg { white-space:pre-wrap; padding:12px 14px; border-radius:9px; margin-top:12px;
+       font-size:14px; }
+.msg.err { background:var(--warnbg); color:var(--warn); }
+.msg.ok { background:var(--okbg); color:var(--lime); }
+.msg[hidden] { display:none; }
+ol { color:var(--muted); font-size:13px; padding-left:20px; line-height:1.5; }
+</style></head>
+<body><main>
+<a href="/">‹ Recorder</a>
+<h1>Court calibration</h1>
+<p class="sub">Do this whenever the camera is moved. Turn the phone sideways for a bigger picture.</p>
+<div class="bar" style="margin:0 0 10px">
+  <select id="rec" aria-label="Recording"></select>
+</div>
+<div class="steps" id="steps"></div>
+<div id="wrap"><canvas id="cv" width="960" height="540"></canvas></div>
+<div class="bar">
+  <button id="undo">Undo</button>
+  <button id="reset">Clear</button>
+  <div class="nudge" aria-label="Nudge the selected corner">
+    <span></span><button data-d="0,-1">↑</button><span></span>
+    <button data-d="-1,0">←</button><button data-d="0,1">↓</button><button data-d="1,0">→</button>
+  </div>
+  <button class="go" id="save" disabled>Save calibration</button>
+</div>
+<div class="msg" id="msg" hidden></div>
+<ol>
+  <li>Record about 20 seconds with the camera where it will stay, press Stop, and pick that recording above.</li>
+  <li>Tap the four <b>singles</b> corners (the inner sidelines), starting with the near left corner
+      (closest to the camera), then near right, far right, far left. Hold and drag to move one;
+      the magnifier shows exactly where it is. Arrows nudge the last one touched.</li>
+  <li>The yellow lines are the court those corners imply. They should sit on the painted lines,
+      service boxes included. If they don't, a corner is off.</li>
+  <li>Save. Recordings that were waiting for calibration are processed again on their own.</li>
+</ol>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const NAMES = ["near left", "near right", "far right", "far left"];
+const cv = $("cv"), ctx = cv.getContext("2d");
+let img = null, pts = [], sel = -1, drag = false, pointer = null, video = null, saved = null;
+
+function msg(text, ok) {
+  $("msg").hidden = !text; $("msg").textContent = text || "";
+  $("msg").className = "msg " + (ok ? "ok" : "err");
+}
+
+// Court model in metres: x across (singles 0..8.23), y along (0 = near baseline).
+const L = 23.77, W = 8.23, A = 1.37, SV = 23.77 / 2 - 6.40;
+const COURT = [
+  [[0, 0], [W, 0]], [[0, L], [W, L]], [[0, 0], [0, L]], [[W, 0], [W, L]],
+  [[0, SV], [W, SV]], [[0, L - SV], [W, L - SV]], [[W / 2, SV], [W / 2, L - SV]],
+  [[-A, 0], [-A, L]], [[W + A, 0], [W + A, L]], [[-A, 0], [0, 0]], [[W, 0], [W + A, 0]],
+  [[-A, L], [0, L]], [[W, L], [W + A, L]], [[-A, L / 2], [W + A, L / 2]],
+];
+const MODEL = [[0, 0], [W, 0], [W, L], [0, L]];
+
+function homography(src, dst) {           // 4 point pairs -> 3x3, h33 = 1
+  const M = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = src[i], [u, v] = dst[i];
+    M.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
+    M.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
+  }
+  for (let c = 0; c < 8; c++) {           // Gaussian elimination, partial pivot
+    let p = c;
+    for (let r = c + 1; r < 8; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]]; [b[c], b[p]] = [b[p], b[c]];
+    if (Math.abs(M[c][c]) < 1e-12) return null;
+    for (let r = 0; r < 8; r++) if (r !== c) {
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k < 8; k++) M[r][k] -= f * M[c][k];
+      b[r] -= f * b[c];
+    }
+  }
+  const h = b.map((v, i) => v / M[i][i]);
+  return [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1]];
+}
+function project(H, [x, y]) {
+  const w = H[2][0] * x + H[2][1] * y + H[2][2];
+  return [(H[0][0] * x + H[0][1] * y + H[0][2]) / w, (H[1][0] * x + H[1][1] * y + H[1][2]) / w];
+}
+
+function scale() { return cv.width / cv.getBoundingClientRect().width; }  // image px per CSS px
+
+function draw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (img) ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  const s = scale();
+  if (pts.length === 4) {
+    const H = homography(MODEL, pts);
+    if (H) {
+      ctx.strokeStyle = "rgba(223,255,0,.9)"; ctx.lineWidth = 1.5 * s;
+      for (const [a, b] of COURT) {
+        ctx.beginPath();
+        for (let t = 0; t <= 1.0001; t += 0.05) {   // segments: a line stays a line,
+          const q = project(H, [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+          t === 0 ? ctx.moveTo(q[0], q[1]) : ctx.lineTo(q[0], q[1]);   // but clips sanely
+        }
+        ctx.stroke();
+      }
+    }
+  } else if (pts.length > 1) {
+    ctx.strokeStyle = "rgba(223,255,0,.6)"; ctx.lineWidth = 1.5 * s;
+    ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.stroke();
+  }
+  pts.forEach((p, i) => {
+    ctx.strokeStyle = i === sel ? "#fff" : "#dfff00"; ctx.lineWidth = 2 * s;
+    ctx.beginPath(); ctx.arc(p[0], p[1], 9 * s, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p[0] - 4 * s, p[1]); ctx.lineTo(p[0] + 4 * s, p[1]);
+    ctx.moveTo(p[0], p[1] - 4 * s); ctx.lineTo(p[0], p[1] + 4 * s); ctx.stroke();
+    ctx.fillStyle = "#000"; ctx.font = `bold ${13 * s}px Arial`;
+    ctx.fillRect(p[0] + 11 * s, p[1] - 22 * s, 16 * s, 17 * s);
+    ctx.fillStyle = "#dfff00"; ctx.fillText(String(i + 1), p[0] + 14 * s, p[1] - 8 * s);
+  });
+  if (drag && sel >= 0 && img) loupe(pts[sel], s);
+  steps();
+}
+
+function loupe(p, s) {                     // 4x magnifier, in the corner away from the finger
+  const R = 70 * s, Z = 4, cx = p[0] < cv.width / 2 ? cv.width - R - 10 * s : R + 10 * s,
+        cy = R + 10 * s;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.clip();
+  const sw = (2 * R) / Z;
+  ctx.drawImage(img, (p[0] - sw / 2) * img.width / cv.width, (p[1] - sw / 2) * img.height / cv.height,
+                sw * img.width / cv.width, sw * img.height / cv.height, cx - R, cy - R, 2 * R, 2 * R);
+  ctx.strokeStyle = "#ff3b3b"; ctx.lineWidth = 1.5 * s;
+  ctx.beginPath(); ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+  ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R); ctx.stroke();
+  ctx.restore();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 7); ctx.stroke();
+}
+
+function steps() {
+  $("steps").innerHTML = "";
+  NAMES.forEach((n, i) => {
+    const el = document.createElement("span");
+    el.className = "step " + (i < pts.length ? "done" : i === pts.length ? "next" : "");
+    el.textContent = (i + 1) + " · " + n;
+    $("steps").appendChild(el);
+  });
+  $("save").disabled = pts.length !== 4 || !video;
+  $("undo").disabled = !pts.length;
+}
+
+function at(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
+}
+function clamp(p) { return [Math.min(cv.width, Math.max(0, p[0])), Math.min(cv.height, Math.max(0, p[1]))]; }
+
+cv.addEventListener("pointerdown", e => {
+  if (!img) return;
+  const p = at(e), s = scale();
+  let best = -1, bd = 30 * s;
+  pts.forEach((q, i) => { const d = Math.hypot(q[0] - p[0], q[1] - p[1]); if (d < bd) { bd = d; best = i; } });
+  if (best >= 0) { sel = best; pointer = [p[0] - pts[best][0], p[1] - pts[best][1]]; }
+  else if (pts.length < 4) { pts.push(clamp(p)); sel = pts.length - 1; pointer = [0, 0]; }
+  else return;
+  drag = true; cv.setPointerCapture(e.pointerId); msg(""); draw();
+});
+cv.addEventListener("pointermove", e => {
+  if (!drag || sel < 0) return;
+  const p = at(e); pts[sel] = clamp([p[0] - pointer[0], p[1] - pointer[1]]); draw();
+});
+const end = () => { drag = false; draw(); };
+cv.addEventListener("pointerup", end); cv.addEventListener("pointercancel", end);
+
+document.querySelectorAll(".nudge button").forEach(b => b.onclick = () => {
+  if (sel < 0 || !pts[sel]) return;
+  const [dx, dy] = b.dataset.d.split(",").map(Number);
+  pts[sel] = clamp([pts[sel][0] + dx, pts[sel][1] + dy]); draw();
+});
+$("undo").onclick = () => { pts.pop(); sel = pts.length - 1; draw(); };
+$("reset").onclick = () => { pts = []; sel = -1; draw(); };
+window.addEventListener("resize", draw);
+
+async function loadFrame(name) {
+  img = null; video = null; draw();
+  msg("Reading the picture from the Pi…", true);
+  const r = await fetch("/api/calibrate/frame" + (name ? "?name=" + encodeURIComponent(name) : ""),
+                        {cache: "no-store"});
+  if (!r.ok) { msg((await r.json()).error || "Couldn't read that recording"); return; }
+  video = r.headers.get("X-Recording");
+  const im = new Image();
+  im.onload = () => {
+    img = im; cv.width = im.width; cv.height = im.height;
+    msg(saved && pts.length === 4 ? "This is the saved calibration. If the yellow lines sit on " +
+        "the court's lines, nothing needs doing; otherwise drag the corners and Save." : "", true);
+    draw();
+  };
+  im.src = URL.createObjectURL(await r.blob());
+}
+
+$("rec").onchange = () => loadFrame($("rec").value);
+$("save").onclick = async () => {
+  $("save").disabled = true; msg("Saving…", true);
+  try {
+    const r = await fetch("/api/calibrate", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name: video, points: pts.map(p => [Math.round(p[0] * 10) / 10,
+                                                                Math.round(p[1] * 10) / 10])})});
+    const b = await r.json();
+    if (!r.ok || b.ok === false) { msg(b.error || "Saving failed"); return; }
+    const n = (b.requeued || []).length;
+    msg("Saved. New recordings will use this calibration." +
+        (n ? "\n" + n + " recording" + (n > 1 ? "s were" : " was") + " re-queued for highlights." : ""), true);
+  } catch (e) { msg("Can't reach the Pi"); }
+  finally { steps(); }
+};
+
+(async () => {
+  try {
+    const info = await (await fetch("/api/calibrate", {cache: "no-store"})).json();
+    if (!info.recordings.length) {
+      msg("No recordings yet. Record about 20 seconds with the camera in place, press Stop, " +
+          "then come back here."); steps(); return;
+    }
+    for (const n of info.recordings) {
+      const o = document.createElement("option"); o.value = n; o.textContent = n; $("rec").appendChild(o);
+    }
+    if (info.current && info.current.points && info.current.points.length === 4) {
+      saved = info.current; pts = info.current.points.map(p => [p[0], p[1]]);
+    }
+    await loadFrame(info.recordings[0]);
+  } catch (e) { msg("Can't reach the Pi"); }
+})();
+</script></body></html>
+"""
+
+
 def make_handler(rec):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, ctype="application/json"):
@@ -978,21 +1362,43 @@ def make_handler(rec):
             self.wfile.write(data)
 
         def do_GET(self):
-            if self.path == "/":
+            url = urllib.parse.urlsplit(self.path)
+            query = urllib.parse.parse_qs(url.query)
+            if url.path == "/":
                 self._send(200, PAGE, "text/html; charset=utf-8")
-            elif self.path == "/api/status":
+            elif url.path == "/calibrate":
+                self._send(200, CALIBRATE_PAGE, "text/html; charset=utf-8")
+            elif url.path == "/api/status":
                 self._send(200, rec.status())
+            elif url.path == "/api/calibrate":
+                self._send(200, rec.calibration_info())
+            elif url.path == "/api/calibrate/frame":
+                png, info = rec.calibration_frame((query.get("name") or [None])[0])
+                if png is None:
+                    return self._send(404, {"error": info})
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(png)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Recording", info["video"])
+                self.end_headers()
+                self.wfile.write(png)
             else:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self):
-            if self.path not in ("/api/start", "/api/stop"):
+            if self.path not in ("/api/start", "/api/stop", "/api/calibrate"):
                 return self._send(404, {"error": "not found"})
             try:
                 n = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(n) or b"{}") if n else {}
             except (ValueError, json.JSONDecodeError):
                 body = {}
+            if not isinstance(body, dict):
+                body = {}
+            if self.path == "/api/calibrate":
+                code, out = rec.save_calibration(body.get("name"), body.get("points"))
+                return self._send(code, out)
             try:
                 err = (rec.start(force=bool(body.get("force")),
                                  player=body.get("player") or "")
@@ -1022,7 +1428,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     cfg = CFG.load(a.config)
-    rec = Recorder(a.dir or cfg.recordings, cfg=None if a.no_queue else cfg)
+    rec = Recorder(a.dir or cfg.recordings, cfg=None if a.no_queue else cfg,
+                   settings=cfg, config_path=a.config)
     threading.Thread(target=rec.recover, daemon=True).start()
     server = ThreadingHTTPServer((a.host, a.port), make_handler(rec))
 

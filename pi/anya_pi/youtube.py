@@ -147,10 +147,53 @@ def upload(path, title, description, token_path, privacy="unlisted",
             "private; change it in YouTube Studio, or apply for the API audit.")
     if playlist_id:
         try:
-            yt.playlistItems().insert(part="snippet", body={"snippet": {
-                "playlistId": playlist_id,
-                "resourceId": {"kind": "youtube#video", "videoId": vid}}}).execute()
+            add_to_playlist(yt, playlist_id, vid)
+            out["playlist_id"] = playlist_id
         except Exception as e:                  # noqa: BLE001 -- the upload stands
             log(f"[youtube] uploaded, but adding to playlist failed: {e} "
                 f"(playlists need `youtube-auth --playlists`)")
     return out
+
+
+def add_to_playlist(yt, playlist_id, video_id):
+    """Add at the TOP, so the club's playlist reads newest session first.
+
+    `position` only works on a manually ordered playlist (the default for one
+    made by `create_playlist`); if someone re-sorted it in YouTube Studio the
+    insert is refused, and the video goes on the end instead.
+    """
+    def insert(position):
+        snippet = {"playlistId": playlist_id,
+                   "resourceId": {"kind": "youtube#video", "videoId": video_id}}
+        if position is not None:
+            snippet["position"] = position
+        return yt.playlistItems().insert(part="snippet",
+                                         body={"snippet": snippet}).execute()
+    try:
+        return insert(0)
+    except Exception as e:                      # noqa: BLE001
+        status = int(getattr(getattr(e, "resp", None), "status", 0) or 0)
+        if status != 400:
+            raise
+        return insert(None)
+
+
+def create_playlist(token_path, title, description="", privacy="unlisted",
+                    service=None):
+    """A playlist for every upload; returns {id, url, privacy}.
+
+    Unlisted is the club's case: anyone with the link sees every video in it,
+    including the unlisted ones, and nobody finds it by searching YouTube.
+    Needs a token made with `youtube-auth --playlists`.
+    """
+    yt = service or _service(token_path)
+    resp = yt.playlists().insert(part="snippet,status", body={
+        "snippet": {"title": title[:150], "description": description[:5000]},
+        "status": {"privacyStatus": privacy}}).execute()
+    pid = resp["id"]
+    return {"id": pid, "url": playlist_url(pid),
+            "privacy": (resp.get("status") or {}).get("privacyStatus", privacy)}
+
+
+def playlist_url(playlist_id):
+    return f"https://www.youtube.com/playlist?list={playlist_id}"

@@ -590,3 +590,19 @@ def test_sound_survives_the_conversion(tmp_path):
                           "-of", "csv=p=0", str(src.with_suffix(".mp4"))],
                          capture_output=True, text=True).stdout.split()
     assert out == ["h264", "aac"]
+
+
+def test_calibration_only_reads_our_own_recordings(tmp_path):
+    cfg = CFG.Config(root=tmp_path / "srv")
+    rec = R.Recorder(tmp_path / "rec", settings=cfg)
+    (tmp_path / "rec" / "2026-11-10_100000.mp4").write_bytes(b"x")
+    (tmp_path / "secret.mp4").write_bytes(b"x")
+    assert rec.recording_path("2026-11-10_100000.mp4") == tmp_path / "rec" / "2026-11-10_100000.mp4"
+    for bad in ("../secret.mp4", "/etc/passwd", "x.part.mp4", "missing.mp4", "", None):
+        assert rec.recording_path(bad) is None
+    code, out = rec.save_calibration("../secret.mp4", [[0, 0]] * 4)
+    assert code == 400 and not out["ok"]
+    assert rec.status()["calibrated"] is False
+    assert rec.status()["playlist_url"] is None
+    cfg.youtube.playlist_id = "PLabc"
+    assert rec.status()["playlist_url"] == "https://www.youtube.com/playlist?list=PLabc"
