@@ -4,10 +4,9 @@
 import SwiftUI
 
 struct RootView: View {
-    @Environment(AppModel.self) private var model
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        @Bindable var model = model
         Group {
             switch model.screen {
             case .list: MatchListView()
@@ -27,7 +26,7 @@ struct RootView: View {
 }
 
 struct MatchListView: View {
-    @Environment(AppModel.self) private var model
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
         NavigationStack {

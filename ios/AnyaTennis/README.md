@@ -15,6 +15,23 @@ OpenCV only for camera-bump registration.
 | **M5** | **Live analysis while recording, and the reel** | **built; simulator replay end to end** |
 | **M6** | **Match info, Photos, Share, YouTube** | **built; YouTube waits for the OAuth client** |
 
+## Devices and compute
+
+The app runs on **iOS 16 and later, from the iPhone X (A11) up**. The iPhone X's last iOS is 16, and it records 4K30 and encodes HEVC, so capture is the same on every phone. The app uses `ObservableObject` rather than `@Observable`, because Observation needs iOS 17. The pose model is exported with `minimum_deployment_target=iOS16` (Core ML spec 7). It's the same weights as the earlier iOS 17 export, and its outputs were bit-identical on the CPU and the Neural Engine.
+
+Pose runs wherever is fastest on the phone. `ComputeProfile` (in `Anya2Perception`) decides once per launch:
+
+| Device | Detected by | Runs on | Planning hints |
+|---|---|---|---|
+| A12 and later on iOS 17+ | `MLModel.availableComputeDevices` lists the Neural Engine | Neural Engine (`.all`; Core ML spills unsupported ops to GPU/CPU) | 17.4+: `reshapeFrequency .infrequent`; 18+: `.fastPrediction` |
+| A12 and later on iOS 16 | Metal GPU family `apple5` | Neural Engine (`.all`) | none on iOS 16 |
+| iPhone X / 8 (A11) | not `apple5` | GPU (`.cpuAndGPU`): A11 has a Neural Engine, but Core ML can't use it | none on iOS 16 |
+| Simulator | | CPU | |
+
+Measured on an M-series Mac, near pass: CPU 8.5 ms, GPU 4.3 ms, Neural Engine 2.0 ms. On an A11's GPU, expect analysis to fall further behind the camera while recording. `AnalysisScheduler` already queues segments, so the only cost is a longer "Analysing the last of the recording…" wait after Stop.
+
+To time the options on a phone, Debug builds accept `-AnyaComputeUnits cpu|gpu|ane|all` as a launch argument. `anya2-perceive` takes the same words, or `auto`, as its 7th argument.
+
 ## The app (`AnyaTennis/`)
 
 | Folder | What |

@@ -11,6 +11,7 @@
 //                     is typed here meanwhile
 //   MatchDetailView   the reel: play, save to Photos, share, YouTube
 import AVFoundation
+import Combine
 import SwiftUI
 #if canImport(GoogleSignIn)
 import GoogleSignIn
@@ -19,12 +20,12 @@ import GoogleSignIn
 @main
 struct AnyaTennisApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var model = AppModel()
+    @StateObject private var model = AppModel()
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environment(model)
+                .environmentObject(model)
                 .preferredColorScheme(.dark)
                 #if canImport(GoogleSignIn)
                 .onOpenURL { GIDSignIn.sharedInstance.handle($0) }
@@ -49,9 +50,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 
 /// Which screen is up, and the match it is about.
+///
+/// ObservableObject rather than @Observable: Observation needs iOS 17 and the
+/// app supports iOS 16 (iPhone X). The current match's changes are forwarded
+/// as this model's, so views reading `model.current?.…` still update.
 @MainActor
-@Observable
-final class AppModel {
+final class AppModel: ObservableObject {
     enum Screen: Equatable {
         case list
         case calibrate
@@ -61,10 +65,16 @@ final class AppModel {
         case detail(String)
     }
 
-    var screen: Screen = .list
-    var matches: [MatchManifest] = []
-    var current: MatchController?
-    var error: String?
+    @Published var screen: Screen = .list
+    @Published var matches: [MatchManifest] = []
+    @Published var current: MatchController? {
+        didSet {
+            guard current !== oldValue else { return }
+            currentChanges = current?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        }
+    }
+    @Published var error: String?
+    private var currentChanges: AnyCancellable?
     let camera = CameraSession()
 
     func launch() async {

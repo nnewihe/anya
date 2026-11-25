@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct FinishView: View {
-    @Environment(AppModel.self) private var model
+    @EnvironmentObject private var model: AppModel
     @State private var info = MatchManifest.Info()
 
     var body: some View {

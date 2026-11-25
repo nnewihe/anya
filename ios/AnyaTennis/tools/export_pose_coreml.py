@@ -85,7 +85,7 @@ def convert(precision="fp16"):
         inputs=[ct.ImageType(name="image", shape=ct.EnumeratedShapes(shapes=shapes, default=shapes[0]),
                              scale=1 / 255.0, color_layout=ct.colorlayout.RGB)],
         outputs=[ct.TensorType(name=f"p{s}") for s in STRIDES],
-        minimum_deployment_target=ct.target.iOS17,
+        minimum_deployment_target=ct.target.iOS16,   # iPhone X (A11) tops out at iOS 16
         compute_precision=ct.precision.FLOAT16 if precision == "fp16" else ct.precision.FLOAT32,
     )
     return mlmodel

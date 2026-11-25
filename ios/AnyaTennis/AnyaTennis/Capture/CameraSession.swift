@@ -80,7 +80,7 @@ final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         session.addOutput(videoOutput)
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
-            if connection.isVideoRotationAngleSupported(0) { connection.videoRotationAngle = 0 }
+            connection.useSensorOrientation()
         }
 
         if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
@@ -109,5 +109,17 @@ final class CameraSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         if output === videoOutput { onVideo?(sampleBuffer) } else { onAudio?(sampleBuffer) }
+    }
+}
+
+extension AVCaptureConnection {
+    /// Landscape-right, the sensor's own orientation: buffers need no
+    /// rotation. iOS 17 names it by angle; iOS 16 by orientation.
+    func useSensorOrientation() {
+        if #available(iOS 17.0, *) {
+            if isVideoRotationAngleSupported(0) { videoRotationAngle = 0 }
+        } else if isVideoOrientationSupported {
+            videoOrientation = .landscapeRight
+        }
     }
 }

@@ -15,13 +15,23 @@ import Foundation
 
 let arguments = CommandLine.arguments
 guard arguments.count >= 7 else {
-    print("usage: anya2-perceive MODEL.mlpackage PROXY540.mp4 FARBAND.mp4 X1,Y1,X2,Y2 SRC_W,SRC_H OUT_DIR [cpu|all]")
+    print("usage: anya2-perceive MODEL.mlpackage PROXY540.mp4 FARBAND.mp4 X1,Y1,X2,Y2 SRC_W,SRC_H OUT_DIR [cpu|gpu|ane|all|auto] [bt601]")
     exit(2)
 }
 let crop = arguments[4].split(separator: ",").map { Int($0)! }
 let sourceSize = arguments[5].split(separator: ",").map { Int($0)! }
 let outDir = URL(fileURLWithPath: arguments[6])
-let computeUnits: MLComputeUnits = arguments.count > 7 && arguments[7] == "cpu" ? .cpuOnly : .all
+// The compute choice; "auto" (or none) = this machine's ComputeProfile.
+let computeUnits: MLComputeUnits? = switch arguments.count > 7 ? arguments[7] : "auto" {
+case "cpu": .cpuOnly
+case "gpu": .cpuAndGPU
+case "ane": .cpuAndNeuralEngine
+case "all": .all
+default: nil
+}
+print(computeUnits.map { "compute units forced: \($0.rawValue) (0 cpu, 1 cpu+gpu, 2 all, 3 cpu+ane)" }
+      ?? ComputeProfile.current.description)
+fflush(stdout)
 // "bt601": convert YUV to BGR with the BT.601 video-range matrix, as
 // ffmpeg/OpenCV do for perceive.py, instead of the file's own tagged matrix.
 let bt601 = arguments.contains("bt601")

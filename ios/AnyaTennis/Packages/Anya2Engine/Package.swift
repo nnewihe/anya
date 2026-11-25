@@ -7,7 +7,7 @@ import PackageDescription
 
 let package = Package(
     name: "Anya2Engine",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    platforms: [.iOS(.v16), .macOS(.v14)],
     products: [
         .library(name: "Anya2Engine", targets: ["Anya2Engine"]),
         .library(name: "Anya2Perception", targets: ["Anya2Perception"]),

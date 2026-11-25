@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct RecordView: View {
-    @Environment(AppModel.self) private var model
+    @EnvironmentObject private var model: AppModel
     @State private var preview: PreviewView?
     @State private var confirmStop = false
 
@@ -77,7 +77,7 @@ struct CourtOutline: View {
 
 /// After a phone call or leaving the app: the part so far is safe.
 struct PausedView: View {
-    @Environment(AppModel.self) private var model
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
         VStack(spacing: 20) {
