@@ -15,6 +15,38 @@ OpenCV only for camera-bump registration.
 | **M5** | **Live analysis while recording, and the reel** | **built; simulator replay end to end** |
 | **M6** | **Match info, Photos, Share, YouTube** | **built; YouTube waits for the OAuth client** |
 
+## Devices and compute
+
+The app runs on **iOS 16 and later, from the iPhone X (A11) up**. The iPhone X's last iOS is 16, and it records 4K30 and encodes HEVC, so capture is the same on every phone. The app uses `ObservableObject` rather than `@Observable`, because Observation needs iOS 17. The pose model is exported with `minimum_deployment_target=iOS16` (Core ML spec 7). It's the same weights as the earlier iOS 17 export, and its outputs were bit-identical on the CPU and the Neural Engine.
+
+Pose runs wherever is fastest on the phone. `ComputeProfile` (in `Anya2Perception`) decides once per launch:
+
+| Device | Detected by | Runs on | Planning hints |
+|---|---|---|---|
+| A12 and later on iOS 17+ | `MLModel.availableComputeDevices` lists the Neural Engine | Neural Engine (`.all`; Core ML spills unsupported ops to GPU/CPU) | 17.4+: `reshapeFrequency .infrequent` |
+| A12 and later on iOS 16 | Metal GPU family `apple5` | Neural Engine (`.all`) | none on iOS 16 |
+| iPhone X / 8 (A11) | not `apple5` | GPU (`.cpuAndGPU`): A11 has a Neural Engine, but Core ML can't use it | none on iOS 16 |
+| Simulator | | CPU | |
+
+**Benchmark** (`anya2-bench`, M4 MacBook Pro on battery, macOS 15.6.1). The input is 240 samples from an app-recorded 4K match, with a 1152×320 far band. Each figure is the second of two runs and covers both passes: letterbox, pose, decode and NMS. Decoding the proxies adds 0.96 ms per sample on every configuration. Hint levels stand in for iOS versions on the same hardware.
+
+| Runs on | Pose ms/sample (iOS 16 / 17.4 / 18 hints) | Analysis s per minute recorded | × real time |
+|---|---|---|---|
+| CPU | 20.96 / 21.09 / 21.83 | ≈ 20 | 3.0× |
+| GPU | 12.16 / 11.71 / 11.82 | ≈ 11.5 | 5.2× |
+| Neural Engine | 7.75 / 7.69 / 7.63 | ≈ 7.8 | 7.7× |
+| `.all` (shipped on A12+) | 7.60 / 7.47 / 7.53 | ≈ 7.6 | 7.8× |
+
+The chip decides speed. The OS hints don't change steady-state speed (under 2%, within noise).
+
+The iOS 18 hint `specializationStrategy = .fastPrediction` made the Neural Engine's first load take 20.6 s, against 7.7 s without it. The far band's shape changes from match to match, so that cost could recur. It isn't used.
+
+A phone is slower than the M4. On an A11's GPU, expect analysis to fall further behind the camera while recording. `AnalysisScheduler` already queues segments, so the only cost is a longer "Analysing the last of the recording…" wait after Stop.
+
+Rerun the benchmark with `swift build -c release --product anya2-bench`, then `.build/release/anya2-bench MATCH_DIR PoseModel.mlpackage [SEGMENTS] [ROUNDS]`. MATCH_DIR is an app match folder with `manifest.json` and `proxies/`.
+
+To time the options on a phone, Debug builds accept `-AnyaComputeUnits cpu|gpu|ane|all` as a launch argument. `anya2-perceive` takes the same words, or `auto`, as its 7th argument.
+
 ## The app (`AnyaTennis/`)
 
 | Folder | What |

@@ -30,9 +30,7 @@ struct CameraPreview: UIViewRepresentable {
         let view = PreviewView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspect
-        if let connection = view.previewLayer.connection, connection.isVideoRotationAngleSupported(0) {
-            connection.videoRotationAngle = 0
-        }
+        view.previewLayer.connection?.useSensorOrientation()
         view.backgroundColor = .black
         DispatchQueue.main.async { onView?(view) }
         return view

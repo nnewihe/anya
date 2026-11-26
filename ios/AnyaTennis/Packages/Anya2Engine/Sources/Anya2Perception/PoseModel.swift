@@ -35,19 +35,25 @@ public struct DetectedPerson {
 public final class PoseModel {
     private let model: MLModel
 
-    /// `computeUnits`: .all lets Core ML use the Neural Engine (fp16);
-    /// .cpuOnly is the deterministic reference used by parity tests.
-    public init(compiledModelURL: URL, computeUnits: MLComputeUnits = .all) throws {
-        let configuration = MLModelConfiguration()
-        configuration.computeUnits = computeUnits
+    /// `computeUnits`: nil (the default) runs on this device's fastest
+    /// hardware (ComputeProfile.current); .cpuOnly is the deterministic
+    /// reference used by parity tests. Either way the OS's planning hints apply.
+    public init(compiledModelURL: URL, computeUnits: MLComputeUnits? = nil) throws {
+        let configuration = ComputeProfile.current.configuration()
+        if let computeUnits { configuration.computeUnits = computeUnits }
         #if targetEnvironment(simulator)
         configuration.computeUnits = .cpuOnly   // the simulator has no Neural Engine
         #endif
         model = try MLModel(contentsOf: compiledModelURL, configuration: configuration)
     }
 
+    /// An explicit configuration, used as given (benchmarks: anya2-bench).
+    public init(compiledModelURL: URL, configuration: MLModelConfiguration) throws {
+        model = try MLModel(contentsOf: compiledModelURL, configuration: configuration)
+    }
+
     /// Compile an .mlpackage at runtime (tests and tools; the app bundles a compiled model).
-    public convenience init(packageURL: URL, computeUnits: MLComputeUnits = .all) throws {
+    public convenience init(packageURL: URL, computeUnits: MLComputeUnits? = nil) throws {
         try self.init(compiledModelURL: try MLModel.compileModel(at: packageURL), computeUnits: computeUnits)
     }
 

@@ -6,7 +6,7 @@ import AVKit
 import SwiftUI
 
 struct MatchDetailView: View {
-    @Environment(AppModel.self) private var model
+    @EnvironmentObject private var model: AppModel
     let matchID: String
     @State private var player: AVPlayer?
     @State private var busy = ""

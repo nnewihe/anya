@@ -14,17 +14,16 @@
 import Anya2Engine
 import Anya2Perception
 import AVFoundation
-import Observation
+import Combine
 import UIKit
 
 @MainActor
-@Observable
-final class MatchController {
-    private(set) var manifest: MatchManifest
-    private(set) var analysisStatus = AnalysisScheduler.Status()
-    private(set) var recordingSince: Date?
-    private(set) var finishingStep = ""
-    private(set) var error: String?
+final class MatchController: ObservableObject {
+    @Published private(set) var manifest: MatchManifest
+    @Published private(set) var analysisStatus = AnalysisScheduler.Status()
+    @Published private(set) var recordingSince: Date?
+    @Published private(set) var finishingStep = ""
+    @Published private(set) var error: String?
 
     let camera: CameraSession
     private var scheduler: AnalysisScheduler?

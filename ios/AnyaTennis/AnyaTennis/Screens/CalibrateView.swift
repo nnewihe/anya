@@ -10,7 +10,7 @@ import CoreVideo
 import SwiftUI
 
 struct CalibrateView: View {
-    @Environment(AppModel.self) private var model
+    @EnvironmentObject private var model: AppModel
     @State private var corners: [CGPoint] = []          // analysis px
     @State private var preview: PreviewView?
     @State private var latestFrame = LatestFrame()

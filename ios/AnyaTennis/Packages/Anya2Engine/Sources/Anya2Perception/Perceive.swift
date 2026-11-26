@@ -92,8 +92,9 @@ public final class Perceiver {
     private let farGeometry: LetterboxGeometry
     private let farToAnalysis: (scaleX: Float, offsetX: Float, scaleY: Float, offsetY: Float)
 
-    /// `compiledModelURL`: PoseModel.mlmodelc.
-    public convenience init(compiledModelURL: URL, computeUnits: MLComputeUnits = .all, band: FarBand) throws {
+    /// `compiledModelURL`: PoseModel.mlmodelc. `computeUnits`: nil = this
+    /// device's fastest hardware (ComputeProfile.current).
+    public convenience init(compiledModelURL: URL, computeUnits: MLComputeUnits? = nil, band: FarBand) throws {
         self.init(nearModel: try PoseModel(compiledModelURL: compiledModelURL, computeUnits: computeUnits),
                   farModel: try PoseModel(compiledModelURL: compiledModelURL, computeUnits: computeUnits), band: band)
     }
