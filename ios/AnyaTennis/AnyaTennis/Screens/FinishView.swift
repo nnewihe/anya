@@ -41,7 +41,7 @@ struct FinishView: View {
             Image(systemName: "checkmark.circle.fill").font(.system(size: 54)).foregroundStyle(.green)
             Text("The reel is ready").font(.title2.bold())
             if let reel = controller?.manifest.reel {
-                Text("\(reel.points) points · \(RecordView.clock(reel.seconds))").foregroundStyle(.secondary)
+                Text("\(RecordView.points(reel.points)) · \(RecordView.clock(reel.seconds))").foregroundStyle(.secondary)
             }
             Button("Open the reel") {
                 if let controller { controller.updateInfo(info); model.showDetail(controller.manifest.id) }
