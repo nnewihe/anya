@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Anya Tennis privacy manifest. The app has no server, no analytics and no
+  tracking: recordings stay on the phone unless the user saves them to their
+  own Photos or uploads them to their own YouTube channel (GoogleSignIn ships
+  its own manifest).
+
+  Required-reason APIs the app itself calls:
+    disk space    MatchStore.freeBytes (volumeAvailableCapacityForImportantUsage):
+                  refuses to start recording under 10 GB free, ends a part
+                  before the disk fills (E174.1), and shows "N GB left" while
+                  recording (85F4.1)
+    UserDefaults  the app's own settings and Debug launch options (CA92.1)
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>E174.1</string>
+				<string>85F4.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

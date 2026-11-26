@@ -15,10 +15,12 @@
 		4F254144801E0794B762C7A4 /* ProxyRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C56AE5F75FD39ECF287EDCD6 /* ProxyRecorder.swift */; };
 		583FBD1876F1ECF500ACE5F0 /* CameraPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0E77552294D4540A182C382 /* CameraPreview.swift */; };
 		61A8E74F4F0F1F3CEB7CC831 /* MatchStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1FABC764EF7BFAB27FF4B72 /* MatchStore.swift */; };
+		8035B674BC6D5299CDDC701E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A03008560C924CA7B38F042C /* Assets.xcassets */; };
 		80416AE2F1B182DDD028C3C3 /* Anya2Engine in Frameworks */ = {isa = PBXBuildFile; productRef = FEB7C6CD54AA582B5A2D0B32 /* Anya2Engine */; };
 		99609078DB8BF5EDFB1822EC /* CalibrationFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB12216385564D1316AFE2D1 /* CalibrationFrame.swift */; };
 		9D380A1688F4D86680C39BA3 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 46B8C811E9BEFEFCBBDA85F0 /* GoogleSignIn */; };
 		9EF4F2494A628AB069B66588 /* MatchDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D6A34AC2FAF3330F5128784 /* MatchDetailView.swift */; };
+		A4E5921F4C3AAD76667DFE0E /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 0FE049A10218655B547F9540 /* PrivacyInfo.xcprivacy */; };
 		AA94398728B561A823CA6A73 /* AnalysisScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1DD78041645BB10B534FD12 /* AnalysisScheduler.swift */; };
 		ACBF1FBFE06B2B040C91B7EC /* YouTubeUploader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EBAD796CBCA3626B10CA416 /* YouTubeUploader.swift */; };
 		B1D618BAB6E1B9827C656A4E /* MasterRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2A47F3F1A782C2D1DBEE5BD /* MasterRecorder.swift */; };
@@ -37,6 +39,7 @@
 		09BD757128CDEBFD41F4E855 /* MatchController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MatchController.swift; sourceTree = "<group>"; };
 		0DB2B5251C6026ECF2832646 /* MatchManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MatchManifest.swift; sourceTree = "<group>"; };
 		0EBE873FFB297A967D66DA8A /* Anya2Engine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Anya2Engine; path = Packages/Anya2Engine; sourceTree = SOURCE_ROOT; };
+		0FE049A10218655B547F9540 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		12209BF467475B042C9D8C60 /* ReelExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelExporter.swift; sourceTree = "<group>"; };
 		167C76EC496D4A58C97487B0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		2B8BE258F71D968A78551B90 /* AnyaTennis.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AnyaTennis.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -48,6 +51,7 @@
 		791471E97A7CAB9788E5F42E /* PhotosSaver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotosSaver.swift; sourceTree = "<group>"; };
 		9176C026AB92BC938CBD2E62 /* CalibrateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrateView.swift; sourceTree = "<group>"; };
 		9324D25332D16E7994081A9A /* PoseModel.mlpackage */ = {isa = PBXFileReference; path = PoseModel.mlpackage; sourceTree = "<group>"; };
+		A03008560C924CA7B38F042C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1DD78041645BB10B534FD12 /* AnalysisScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnalysisScheduler.swift; sourceTree = "<group>"; };
 		A21CA2E6846830BF1BFB7D36 /* FileReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileReplay.swift; sourceTree = "<group>"; };
 		A2A47F3F1A782C2D1DBEE5BD /* MasterRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterRecorder.swift; sourceTree = "<group>"; };
@@ -179,7 +183,9 @@
 		EA5630EC37FE9EE8011765C4 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				A03008560C924CA7B38F042C /* Assets.xcassets */,
 				9324D25332D16E7994081A9A /* PoseModel.mlpackage */,
+				0FE049A10218655B547F9540 /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -192,6 +198,7 @@
 			buildConfigurationList = 32AAEA6478B9EC4D7CBAB5C0 /* Build configuration list for PBXNativeTarget "AnyaTennis" */;
 			buildPhases = (
 				6B2073B209B4E2BAB488300E /* Sources */,
+				5769C59559D88AC0C12A1B88 /* Resources */,
 				225D86AC9EAF04AB10460EFF /* Frameworks */,
 			);
 			buildRules = (
@@ -245,6 +252,18 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5769C59559D88AC0C12A1B88 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8035B674BC6D5299CDDC701E /* Assets.xcassets in Resources */,
+				A4E5921F4C3AAD76667DFE0E /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		6B2073B209B4E2BAB488300E /* Sources */ = {
