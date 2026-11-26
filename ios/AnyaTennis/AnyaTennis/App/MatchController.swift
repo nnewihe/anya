@@ -247,7 +247,10 @@ final class MatchController: ObservableObject {
         let made = try await opening.value
         if scheduler == nil {
             scheduler = made
-            await made.setStatusHandler { status in
+            // Weak at the OUTER closure: the scheduler keeps this handler, so a
+            // strong capture here would keep the controller (and its
+            // scheduler) alive after the match is closed.
+            await made.setStatusHandler { [weak self] status in
                 Task { @MainActor [weak self] in
                     self?.analysisStatus = status
                     self?.manifest.samplesAnalysed = status.samplesAnalysed
