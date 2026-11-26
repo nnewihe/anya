@@ -225,7 +225,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					996F4F30673BF3A31F1D06BC = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 696S9GCN96;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -303,7 +303,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 696S9GCN96;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = AnyaTennis/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -442,7 +442,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 696S9GCN96;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = AnyaTennis/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
