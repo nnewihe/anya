@@ -22,8 +22,9 @@
 // per match, see Perceiver):
 //   iOS 17.4+ / macOS 14.4+   reshapeFrequency = .infrequent: plan once for
 //                             that shape and keep the plan
-//   iOS 18+ / macOS 15+       specializationStrategy = .fastPrediction: spend
-//                             longer on the first load for faster predictions
+// NOT specializationStrategy = .fastPrediction (iOS 18): anya2-bench on an M4
+// measured no steady-state gain (7.53 vs 7.47 ms/sample) for a 20.6 s first
+// load (7.7 s without it), and the far shape changes from match to match.
 //
 // Debug builds can force a choice for A/B timing on a device with the
 // UserDefaults key AnyaComputeUnits = cpu | gpu | ane | all.
@@ -66,14 +67,12 @@ public struct ComputeProfile: CustomStringConvertible {
         if #available(iOS 17.4, macOS 14.4, *) {
             var hints = configuration.optimizationHints
             hints.reshapeFrequency = .infrequent
-            if #available(iOS 18.0, macOS 15.0, *) { hints.specializationStrategy = .fastPrediction }
             configuration.optimizationHints = hints
         }
     }
 
     /// The hint names applied on this OS, for the log.
     static var hintSummary: String {
-        if #available(iOS 18.0, macOS 15.0, *) { return "reshape .infrequent, .fastPrediction" }
         if #available(iOS 17.4, macOS 14.4, *) { return "reshape .infrequent" }
         return "no planning hints (OS too old)"
     }

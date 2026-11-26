@@ -47,6 +47,11 @@ public final class PoseModel {
         model = try MLModel(contentsOf: compiledModelURL, configuration: configuration)
     }
 
+    /// An explicit configuration, used as given (benchmarks: anya2-bench).
+    public init(compiledModelURL: URL, configuration: MLModelConfiguration) throws {
+        model = try MLModel(contentsOf: compiledModelURL, configuration: configuration)
+    }
+
     /// Compile an .mlpackage at runtime (tests and tools; the app bundles a compiled model).
     public convenience init(packageURL: URL, computeUnits: MLComputeUnits? = nil) throws {
         try self.init(compiledModelURL: try MLModel.compileModel(at: packageURL), computeUnits: computeUnits)

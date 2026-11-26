@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "Anya2Perception", targets: ["Anya2Perception"]),
         .executable(name: "anya2-replay", targets: ["Anya2Replay"]),
         .executable(name: "anya2-perceive", targets: ["Anya2Perceive"]),
+        .executable(name: "anya2-bench", targets: ["Anya2Bench"]),
     ],
     targets: [
         .target(name: "Anya2Engine",
@@ -36,6 +37,8 @@ let package = Package(
         // The app's perception on a corpus clip's proxies, for scoring it
         // against ground truth (tools/score_swift_perception.py).
         .executableTarget(name: "Anya2Perceive", dependencies: ["Anya2Engine", "Anya2Perception"]),
+        // Times the analysis per sample for each compute choice x OS hint level.
+        .executableTarget(name: "Anya2Bench", dependencies: ["Anya2Engine", "Anya2Perception"]),
         .testTarget(name: "Anya2EngineTests", dependencies: ["Anya2Engine", "Anya2Perception"]),
     ]
 )
