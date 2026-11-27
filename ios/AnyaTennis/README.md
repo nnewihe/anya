@@ -52,7 +52,7 @@ To time the options on a phone, Debug builds accept `-AnyaComputeUnits cpu|gpu|a
 | Folder | What |
 |---|---|
 | `App/` | `AnyaTennisApp` (screens, app model), `MatchController` (one match from calibration to reel) |
-| `Screens/` | Calibrate (tap the 4 singles corners), Record (live status), Paused, Finish (match info while the reel is cut), match list, match detail |
+| `Screens/` | Home (tagline, the anyatennis.com poster, Start a match, My matches), Calibrate (tap the 4 singles corners), Record (live status), Paused, Finish (match info while the reel is cut), match list, match detail; `Theme.swift` holds the colours, cards and buttons |
 | `Capture/` | `CameraSession` (4K30, stabilisation off), `MasterRecorder` (fragmented HEVC .mov), `ProxyRecorder` (2 s near/far proxy segments at 15 Hz), `FrameScaler`, `FileReplay` (Debug: a file instead of the camera) |
 | `Analysis/` | `AnalysisScheduler`: segment → pose → camera track → live anya2 → perception log |
 | `Storage/` | `MatchStore` (one folder per match), `MatchManifest`, `CalibrationFrame` |
