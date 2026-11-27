@@ -28,22 +28,35 @@ struct CalibrateView: View {
                     .onEnded { value in endDrag(value) })
             courtOverlay
             VStack {
-                HStack {
-                    Button("Cancel") { model.home() }.buttonStyle(.bordered)
+                HStack(alignment: .top) {
+                    CircleIconButton(systemImage: "xmark") { model.showHome() }
                     Spacer()
-                    Text(instruction).font(.headline).padding(10)
-                        .background(.black.opacity(0.6), in: Capsule())
+                    VStack(spacing: 8) {
+                        Text(instruction).font(.headline)
+                        HStack(spacing: 6) {
+                            ForEach(0..<4, id: \.self) { i in
+                                Capsule().fill(i < corners.count ? Theme.court : Color.white.opacity(0.25))
+                                    .frame(width: i == corners.count ? 22 : 12, height: 6)
+                            }
+                        }
+                        .animation(.spring(response: 0.3), value: corners.count)
+                    }
+                    .padding(.horizontal, 18).padding(.vertical, 10)
+                    .glass(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     Spacer()
-                    Button("Clear") { corners.removeAll() }.buttonStyle(.bordered).disabled(corners.isEmpty)
+                    CircleIconButton(systemImage: "arrow.counterclockwise") { corners.removeAll() }
+                        .disabled(corners.isEmpty)
+                        .opacity(corners.isEmpty ? 0.4 : 1)
                 }
                 Spacer()
                 Button {
                     Task { await confirm() }
                 } label: {
-                    Label("Start recording", systemImage: "record.circle").font(.title3.bold()).padding(.horizontal)
+                    Label("Start recording", systemImage: "record.circle")
                 }
-                .buttonStyle(.borderedProminent).tint(.red)
+                .buttonStyle(.primary(Theme.record, large: true))
                 .disabled(corners.count < 4 || working)
+                .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
             }
             .padding()
         }
@@ -64,12 +77,15 @@ struct CalibrateView: View {
             var path = Path()
             path.addLines(points)
             if points.count == 4 { path.closeSubpath() }
-            context.stroke(path, with: .color(.yellow), lineWidth: 2)
+            if points.count == 4 { context.fill(path, with: .color(Theme.court.opacity(0.12))) }
+            context.stroke(path, with: .color(Theme.court), lineWidth: 2)
             for (i, point) in points.enumerated() {
-                let handle = CGRect(x: point.x - 9, y: point.y - 9, width: 18, height: 18)
-                context.stroke(Path(ellipseIn: handle), with: .color(.yellow), lineWidth: 2)
-                context.draw(Text(Self.names[i]).font(.caption2).foregroundColor(.yellow),
-                             at: CGPoint(x: point.x, y: point.y - 18))
+                let handle = CGRect(x: point.x - 10, y: point.y - 10, width: 20, height: 20)
+                context.fill(Path(ellipseIn: handle), with: .color(.black.opacity(0.35)))
+                context.stroke(Path(ellipseIn: handle), with: .color(Theme.court), lineWidth: 2.5)
+                context.fill(Path(ellipseIn: handle.insetBy(dx: 7, dy: 7)), with: .color(Theme.court))
+                context.draw(Text(Self.names[i]).font(.caption.weight(.semibold)).foregroundColor(Theme.court),
+                             at: CGPoint(x: point.x, y: point.y - 22))
             }
         }
         .allowsHitTesting(false)

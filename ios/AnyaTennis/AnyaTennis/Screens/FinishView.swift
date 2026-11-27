@@ -10,62 +10,85 @@ struct FinishView: View {
     @State private var info = MatchManifest.Info()
 
     var body: some View {
-        HStack(alignment: .top, spacing: 30) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Match info").font(.title2.bold())
-                MatchInfoForm(info: $info)
-                Button("Save info") { model.current?.updateInfo(info) }.buttonStyle(.bordered)
+        HStack(alignment: .center, spacing: 24) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Match info").font(Theme.display(24, .heavy))
+                    Text("Fill this in while the reel is cut.").font(.subheadline).foregroundStyle(.secondary)
+                    MatchInfoForm(info: $info)
+                    Button { model.current?.updateInfo(info) } label: { Label("Save info", systemImage: "square.and.arrow.down") }
+                        .buttonStyle(.secondary)
+                }
+                .card(padding: 18)
             }
-            .frame(maxWidth: 420)
+            .scrollIndicators(.hidden)
+            .frame(maxWidth: 440)
             VStack(spacing: 16) {
                 progress
             }
+            .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
         }
-        .padding(30)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(Theme.background.ignoresSafeArea())
         .onAppear { info = model.current?.manifest.info ?? .init() }
+    }
+
+    /// A big status symbol in a tinted circle.
+    private func badge(_ systemImage: String, _ tint: Color) -> some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 40, weight: .bold)).foregroundStyle(tint)
+            .frame(width: 92, height: 92)
+            .background(tint.opacity(0.16), in: Circle())
+    }
+
+    private func openMatch() {
+        guard let controller = model.current else { return }
+        controller.updateInfo(info)
+        model.showDetail(controller.manifest.id)
     }
 
     @ViewBuilder private var progress: some View {
         let controller = model.current
         switch controller?.manifest.state {
         case .finished where controller?.manifest.reel == nil:
-            Image(systemName: "questionmark.circle").font(.system(size: 54)).foregroundStyle(.orange)
-            Text(controller?.manifest.lastError ?? "No points were found.").font(.title3)
+            badge("questionmark", Theme.warning)
+            Text(controller?.manifest.lastError ?? "No points were found.").font(.title3.weight(.semibold))
             Text("The full recording is kept; save it to Photos from the match.").foregroundStyle(.secondary)
-            Button("Open the match") {
-                if let controller { controller.updateInfo(info); model.showDetail(controller.manifest.id) }
-            }
-            .buttonStyle(.borderedProminent)
+            Button("Open the match") { openMatch() }.buttonStyle(.primary(Theme.accent, large: true))
         case .finished:
-            Image(systemName: "checkmark.circle.fill").font(.system(size: 54)).foregroundStyle(.green)
-            Text("The reel is ready").font(.title2.bold())
+            badge("checkmark", Theme.done)
+            Text("The reel is ready").font(Theme.display(28, .heavy))
             if let reel = controller?.manifest.reel {
-                Text("\(RecordView.points(reel.points)) · \(RecordView.clock(reel.seconds))").foregroundStyle(.secondary)
+                Text("\(RecordView.points(reel.points)) · \(RecordView.clock(reel.seconds))")
+                    .font(.headline).foregroundStyle(.secondary).monospacedDigit()
             }
-            Button("Open the reel") {
-                if let controller { controller.updateInfo(info); model.showDetail(controller.manifest.id) }
-            }
-            .buttonStyle(.borderedProminent)
+            Button { openMatch() } label: { Label("Open the reel", systemImage: "play.fill") }
+                .buttonStyle(.primary(Theme.accent, large: true))
         case .failed:
-            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 54)).foregroundStyle(.orange)
-            Text(controller?.manifest.lastError ?? "Something went wrong.").multilineTextAlignment(.center)
+            badge("exclamationmark.triangle", Theme.warning)
+            Text(controller?.manifest.lastError ?? "Something went wrong.").font(.headline)
             HStack {
                 Button("Try again") {
                     if let manifest = controller?.manifest { Task { await model.finish(manifest) } }
                 }
-                .buttonStyle(.borderedProminent)
-                Button("Back to matches") { controller?.updateInfo(info); model.home() }
-                    .buttonStyle(.bordered)
+                .buttonStyle(.primary)
+                Button("Back to matches") { controller?.updateInfo(info); model.showMatches() }
+                    .buttonStyle(.secondary)
             }
         default:
-            ProgressView().controlSize(.large)
-            Text(controller?.finishingStep.isEmpty == false ? controller!.finishingStep : "Finishing…").font(.headline)
+            ProgressView().controlSize(.large).tint(Theme.accent)
+                .frame(width: 92, height: 92)
+                .background(Theme.accent.opacity(0.12), in: Circle())
+            Text(controller?.finishingStep.isEmpty == false ? controller!.finishingStep : "Finishing…")
+                .font(Theme.display(24, .bold))
             let status = controller?.analysisStatus
             if let status, status.segmentsWaiting > 0 {
-                Text("\(status.segmentsWaiting * 2) s of recording left to analyse").foregroundStyle(.secondary)
+                Text("\(status.segmentsWaiting * 2) s of recording left to analyse")
+                    .font(.headline).foregroundStyle(.secondary).monospacedDigit()
             }
-            Text("Keep the app open until the reel is ready.").font(.footnote).foregroundStyle(.secondary)
+            Text("Keep the app open until the reel is ready.").font(.footnote).foregroundStyle(.tertiary)
         }
     }
 }
@@ -87,6 +110,16 @@ struct MatchInfoForm: View {
             TextField("Where", text: $info.location)
             TextField("Notes", text: $info.notes, axis: .vertical).lineLimit(2...4)
         }
-        .textFieldStyle(.roundedBorder)
+        .textFieldStyle(FilledFieldStyle())
+    }
+}
+
+/// A filled rounded field, for dark cards.
+struct FilledFieldStyle: TextFieldStyle {
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Theme.field, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }

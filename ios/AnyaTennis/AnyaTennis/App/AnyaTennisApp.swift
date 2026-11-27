@@ -3,7 +3,8 @@
 // Record a tennis match; get the highlight reel seconds after Stop.
 //
 // Screens, in the order a match goes through them:
-//   MatchListView     home: past matches, "New match", interrupted matches
+//   HomeView          what Anya Tennis is, how it works; New match / My matches
+//   MatchListView     past matches, "New match", interrupted matches
 //   CalibrateView     camera preview; tap the four singles corners
 //   RecordView        recording, with live analysis status; Stop
 //   (PausedView)      after a phone call / backgrounding: resume or finish
@@ -57,6 +58,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 @MainActor
 final class AppModel: ObservableObject {
     enum Screen: Equatable {
+        case home
         case list
         case calibrate
         case record
@@ -65,7 +67,7 @@ final class AppModel: ObservableObject {
         case detail(String)
     }
 
-    @Published var screen: Screen = .list
+    @Published var screen: Screen = .home
     @Published var matches: [MatchManifest] = []
     @Published var current: MatchController? {
         didSet {
@@ -182,10 +184,16 @@ final class AppModel: ObservableObject {
         screen = .detail(id)
     }
 
-    func home() {
+    /// The home page: what the app is, and the way in.
+    func showHome() { leave(to: .home) }
+
+    /// The match list.
+    func showMatches() { leave(to: .list) }
+
+    private func leave(to destination: Screen) {
         if current?.isRecording != true { current = nil; camera.stop() }
         refresh()
-        screen = .list
+        screen = destination
     }
 
     func delete(_ id: String) {

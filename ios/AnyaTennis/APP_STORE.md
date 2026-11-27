@@ -1,7 +1,7 @@
 # Anya Tennis on TestFlight and the App Store
 
 The app record is `com.build2launch.anyatennis`, team `696S9GCN96` (set in `project.yml`).
-Build 0.1.0 (1) was uploaded on 2026-11-26 with Xcode 27.2 / the iOS 27.2 SDK, minimum iOS 16.0.
+Build 0.1.0 (1) was uploaded on 2026-11-26 and 0.1.0 (2), the UI refresh, on 2026-11-27, both with Xcode 27.2 / the iOS 27.2 SDK, minimum iOS 16.0.
 
 ## Uploading a build
 
