@@ -21,7 +21,7 @@ struct MatchDetailView: View {
             VStack {
                 if let player { VideoPlayer(player: player).aspectRatio(16 / 9, contentMode: .fit) }
                 if let reel = manifest?.reel {
-                    Text("\(reel.points) points · \(RecordView.clock(reel.seconds)) · "
+                    Text("\(RecordView.points(reel.points)) · \(RecordView.clock(reel.seconds)) · "
                          + "\(reel.nearServes + reel.farServes) serves found")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

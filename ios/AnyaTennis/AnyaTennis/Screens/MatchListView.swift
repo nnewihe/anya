@@ -70,7 +70,7 @@ struct MatchListView: View {
                                 VStack(alignment: .leading) {
                                     Text(match.displayTitle).font(.headline)
                                     if let reel = match.reel {
-                                        Text("\(reel.points) points · reel \(RecordView.clock(reel.seconds))")
+                                        Text("\(RecordView.points(reel.points)) · reel \(RecordView.clock(reel.seconds))")
                                             .font(.footnote).foregroundStyle(.secondary)
                                     }
                                 }

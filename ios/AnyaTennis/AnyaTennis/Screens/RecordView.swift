@@ -51,6 +51,9 @@ struct RecordView: View {
         .background(.black.opacity(0.6), in: Capsule())
     }
 
+    /// "1 point", "3 points".
+    static func points(_ count: Int) -> String { count == 1 ? "1 point" : "\(count) points" }
+
     static func clock(_ seconds: Double) -> String {
         let s = Int(seconds)
         return String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
