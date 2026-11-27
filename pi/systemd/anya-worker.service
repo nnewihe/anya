@@ -1,0 +1,22 @@
+[Unit]
+Description=anya: cut dead time out of queued recordings
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+User=anya
+Group=anya
+Environment=PYTHONPATH=/opt/anya/src:/opt/anya/src/pi
+Environment=PYTHONUNBUFFERED=1
+Environment=ANYA_PI_CONFIG=/srv/anya/config.toml
+ExecStart=/opt/anya/venv/bin/python -m anya_pi worker
+# SIGTERM sets the pipeline's cancel flag; the job is resumed on next start
+# from anya2's per-stage caches.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

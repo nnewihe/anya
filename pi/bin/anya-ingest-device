@@ -1,0 +1,41 @@
+#!/bin/bash
+# Mount /dev/$1 read-only, copy any new DJI recordings off it, unmount.
+# Started by anya-ingest@.service from the udev rule; runs as root only for
+# the mount -- the copy runs as the anya user.
+set -euo pipefail
+
+DEV="/dev/$1"
+MNT="/run/anya/mnt/$1"
+ANYA_USER=anya
+APP=/opt/anya
+
+# A disk that is already mounted is not a camera that was just plugged in --
+# typically it is the USB SSD /srv/anya itself lives on, announced at boot.
+if findmnt -rn -S "$DEV" > /dev/null; then
+  echo "anya: $DEV is already mounted; not a camera, ignoring"
+  exit 0
+fi
+
+FSTYPE="$(blkid -o value -s TYPE "$DEV" || true)"
+[ -n "$FSTYPE" ] || { echo "anya: $DEV has no filesystem; ignoring"; exit 0; }
+
+mkdir -p "$MNT"
+case "$FSTYPE" in
+  vfat|exfat|ntfs|ntfs3)
+    OPTS="ro,nosuid,nodev,noexec,uid=$(id -u $ANYA_USER),gid=$(id -g $ANYA_USER),umask=0222" ;;
+  *)
+    OPTS="ro,nosuid,nodev,noexec" ;;
+esac
+mount -t "$FSTYPE" -o "$OPTS" "$DEV" "$MNT"
+cleanup() { umount "$MNT" 2>/dev/null || umount -l "$MNT"; rmdir "$MNT" 2>/dev/null || true; }
+trap cleanup EXIT
+
+if ! compgen -G "$MNT/DCIM/DJI_*" > /dev/null; then
+  echo "anya: no DCIM/DJI_* on $DEV ($FSTYPE); not a DJI card, ignoring"
+  exit 0
+fi
+
+echo "anya: DJI card on $DEV -- ingesting"
+runuser -u "$ANYA_USER" -- env PYTHONPATH="$APP/src:$APP/src/pi" \
+  ANYA_PI_CONFIG=/srv/anya/config.toml PYTHONUNBUFFERED=1 \
+  "$APP/venv/bin/python" -m anya_pi ingest "$MNT"

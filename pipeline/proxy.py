@@ -76,6 +76,41 @@ def proxy_path_for(video_path: str, suffix: str = PROXY_SUFFIX) -> str:
     return os.path.join(d, f"{stem}{suffix}")
 
 
+def hwaccel_args() -> list:
+    """`-hwaccel X` for every ffmpeg DECODE of a source, from ANYA_FFMPEG_HWACCEL.
+
+    Off unless set.  On a Raspberry Pi 5 `drm` puts HEVC decode on the SoC's
+    hardware decoder, which is the difference between the two 4K proxy decodes
+    costing about as much as pose inference and costing a fraction of it.  An
+    input the accelerator cannot take (H.264 on a Pi 5) is not an error:
+    ffmpeg falls back to software decode by itself.  Frames come back in system
+    memory, so every software filter below works unchanged.
+    """
+    v = os.environ.get("ANYA_FFMPEG_HWACCEL", "").strip()
+    return ["-hwaccel", v] if v and v.lower() not in ("0", "off", "none") else []
+
+
+def _cached(out: str, want: dict, label: str) -> bool:
+    """True when `out` exists, was built as `want`, and is still frame-exact."""
+    if not os.path.isfile(out):
+        return False
+    meta_path = out + ".build.json"
+    try:
+        have = json.load(open(meta_path)) if os.path.isfile(meta_path) else None
+        if have == want and int(probe_video(out)["frame_count"]) == int(want["frames"]):
+            return True
+        print(f"[{label}] Cached proxy was built with {have} but {want} is "
+              f"wanted — rebuilding.")
+    except Exception:
+        pass
+    return False
+
+
+def _encode_args(crf: int, preset: str) -> list:
+    return ["-fps_mode", "passthrough", "-c:v", "libx264", "-crf", str(crf),
+            "-preset", preset, "-pix_fmt", "yuv420p", "-an"]
+
+
 def _transcode(video_path: str, out: str, vf: str, want: dict,
                crf: int, preset: str, label: str, force: bool) -> str:
     """Build `out` from `video_path` with filter `vf`, or reuse a matching one.
@@ -88,16 +123,9 @@ def _transcode(video_path: str, out: str, vf: str, want: dict,
     meta_path = out + ".build.json"
     src_n = int(want["frames"])
 
-    if not force and os.path.isfile(out):
-        try:
-            have = json.load(open(meta_path)) if os.path.isfile(meta_path) else None
-            if have == want and int(probe_video(out)["frame_count"]) == src_n:
-                print(f"[{label}] Using cached proxy: {out}")
-                return out
-            print(f"[{label}] Cached proxy was built with {have} but {want} is "
-                  f"wanted — rebuilding.")
-        except Exception:
-            pass
+    if not force and _cached(out, want, label):
+        print(f"[{label}] Using cached proxy: {out}")
+        return out
 
     if shutil.which("ffmpeg") is None:
         _warn(f"[{label}] WARN: ffmpeg not found — decoding the source "
@@ -106,10 +134,8 @@ def _transcode(video_path: str, out: str, vf: str, want: dict,
         return video_path
 
     tmp = out + ".part.mp4"
-    cmd = ["ffmpeg", "-v", "error", "-y", "-i", video_path,
-           "-vf", vf, "-fps_mode", "passthrough",
-           "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
-           "-pix_fmt", "yuv420p", "-an", tmp]
+    cmd = ["ffmpeg", "-v", "error", "-y", *hwaccel_args(), "-i", video_path,
+           "-vf", vf, *_encode_args(crf, preset), tmp]
     print(f"[{label}] Building proxy ({vf}, crf {crf}, one-time)…")
     t0 = time.perf_counter()
     try:
@@ -164,11 +190,32 @@ def ensure_proxy(video_path: str, size: Tuple[int, int] = (960, 540),
         source -> [28, 34, 24, 18, 19, 12, 34, 21]
     Callers that care about the ball should pass crf <= 14.
     """
-    w, h = size
-    want = {"size": [w, h], "crf": int(crf), "preset": str(preset),
-            "frames": int(probe_video(video_path)["frame_count"])}
+    want, vf = _proxy_spec(video_path, size, crf, preset)
     return _transcode(video_path, proxy_path_for(video_path, PROXY_SUFFIX),
-                      f"scale={w}:{h}", want, crf, preset, label, force)
+                      vf, want, crf, preset, label, force)
+
+
+def _proxy_spec(video_path, size, crf, preset, frames=None):
+    """(sidecar description, filter) of a whole-frame proxy.  ONE definition,
+    shared with `ensure_proxies_once`, so a proxy built either way is the
+    cache hit of the other."""
+    w, h = size
+    n = frames if frames is not None else int(probe_video(video_path)["frame_count"])
+    return ({"size": [w, h], "crf": int(crf), "preset": str(preset),
+             "frames": int(n)}, f"scale={w}:{h}")
+
+
+def _crop_spec(video_path, crop, crf, preset, extra=None, frames=None):
+    """(sidecar description, filter) of a crop proxy; see `_proxy_spec`."""
+    x1, y1, x2, y2 = (int(v) for v in crop)
+    w = (x2 - x1) & ~1
+    h = (y2 - y1) & ~1
+    n = frames if frames is not None else int(probe_video(video_path)["frame_count"])
+    want = {"crop": [x1, y1, w, h], "crf": int(crf), "preset": str(preset),
+            "frames": int(n)}
+    if extra:
+        want.update(extra)
+    return want, f"crop={w}:{h}:{x1}:{y1}"
 
 
 def ensure_crop_proxy(video_path: str, crop: Sequence[int],
@@ -187,13 +234,74 @@ def ensure_crop_proxy(video_path: str, crop: Sequence[int],
     ffmpeg needs even width/height for yuv420p; the rectangle is rounded
     outward and the effective one is returned to the caller in the sidecar.
     """
-    x1, y1, x2, y2 = (int(v) for v in crop)
-    w = (x2 - x1) & ~1
-    h = (y2 - y1) & ~1
-    want = {"crop": [x1, y1, w, h], "crf": int(crf), "preset": str(preset),
-            "frames": int(probe_video(video_path)["frame_count"])}
-    if extra:
-        want.update(extra)
+    want, vf = _crop_spec(video_path, crop, crf, preset, extra)
     out = _transcode(video_path, proxy_path_for(video_path, suffix),
-                     f"crop={w}:{h}:{x1}:{y1}", want, crf, preset, label, force)
+                     vf, want, crf, preset, label, force)
     return out
+
+
+def ensure_proxies_once(video_path: str, size: Tuple[int, int],
+                        crop: Sequence[int], crf: int = 14,
+                        preset: str = "veryfast",
+                        crop_suffix: str = FAR_BAND_SUFFIX,
+                        label: str = "PROXIES") -> bool:
+    """Build the whole-frame AND the crop proxy from ONE decode of the source.
+
+    Each proxy on its own is a full decode of a 4K source, and on a CPU without
+    a fast decoder (a Raspberry Pi) the two of them cost about as much as the
+    pose passes they feed.  One `split` filter graph halves that.
+
+    Pure pre-warming: both files and sidecars are exactly what `ensure_proxy`
+    and `ensure_crop_proxy` would have written for the same arguments (same
+    spec functions), so the later calls are cache hits.  If either proxy is
+    already cached, or anything goes wrong, this does nothing and returns
+    False, and those calls build what is missing the ordinary way.  The crop
+    is only a GUESS at the band `perceive.far` will want -- if the camera track
+    later widens it, `far` rebuilds its proxy, which is what it would have done
+    anyway.
+    """
+    if shutil.which("ffmpeg") is None:
+        return False
+    n = int(probe_video(video_path)["frame_count"])
+    want_p, vf_p = _proxy_spec(video_path, size, crf, preset, frames=n)
+    want_c, vf_c = _crop_spec(video_path, crop, crf, preset, frames=n)
+    out_p = proxy_path_for(video_path, PROXY_SUFFIX)
+    out_c = proxy_path_for(video_path, crop_suffix)
+    if _cached(out_p, want_p, label) or _cached(out_c, want_c, label):
+        return False
+    tmp_p, tmp_c = out_p + ".part.mp4", out_c + ".part.mp4"
+    enc = _encode_args(crf, preset)
+    cmd = ["ffmpeg", "-v", "error", "-y", *hwaccel_args(), "-i", video_path,
+           "-filter_complex", f"[0:v]split=2[a][b];[a]{vf_p}[p];[b]{vf_c}[c]",
+           "-map", "[p]", *enc, tmp_p, "-map", "[c]", *enc, tmp_c]
+    print(f"[{label}] Building both proxies from one decode ({vf_p} + {vf_c})…")
+    t0 = time.perf_counter()
+    try:
+        _cancel.run(cmd, check=True, capture_output=True)
+        ok = all(int(probe_video(t)["frame_count"]) == n for t in (tmp_p, tmp_c))
+    except _cancel.Cancelled:
+        for t in (tmp_p, tmp_c):
+            if os.path.isfile(t):
+                os.remove(t)
+        raise
+    except subprocess.CalledProcessError as ex:
+        err = ex.stderr or b""
+        if isinstance(err, (bytes, bytearray)):
+            err = err.decode("utf-8", "replace")
+        _warn(f"[{label}] WARN: single-decode proxies failed ({ex}); building "
+              f"them one at a time. ffmpeg said: {err.strip()[-2000:] or '(nothing)'}")
+        ok = False
+    except Exception as ex:
+        _warn(f"[{label}] WARN: single-decode proxies unreadable ({ex})")
+        ok = False
+    if not ok:
+        for t in (tmp_p, tmp_c):
+            if os.path.isfile(t):
+                os.remove(t)
+        return False
+    for tmp, out, want in ((tmp_p, out_p, want_p), (tmp_c, out_c, want_c)):
+        os.replace(tmp, out)
+        with open(out + ".build.json", "w") as fh:
+            json.dump(want, fh)
+    print(f"[{label}] both proxies built ({time.perf_counter() - t0:.1f}s, {n} frames)")
+    return True

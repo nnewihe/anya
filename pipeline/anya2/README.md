@@ -83,6 +83,27 @@ python -m pipeline.anya2.eval --mode near_serve --arm mine:_anya2_near_serve.jso
 
 Use the `anya-build` pyenv environment: Python 3.13 hits a torch import error.
 
+### Headless: one command, a fixed camera, other pose runtimes
+
+```bash
+python -m pipeline.anya2 CHAPTER1.MP4 CHAPTER2.MP4 \
+    --site site/ --backend ncnn --device cpu -o reel.mp4
+```
+
+This never prompts (`headless.py`). The court corners come from a **site profile**:
+corners clicked once plus the frame they were clicked on (`site.py`, made with
+`python -m pipeline.anya2.site save`). Each new recording is registered against the
+profile frame with the camera track's ORB/ground-plane fit, and the corners move with
+that warp. A move of more than 15 px raises `NeedsCalibration` instead of guessing.
+
+`ANYA_POSE_BACKEND=ncnn|onnx` (`pose_backend.py`) swaps the pose runtime without
+touching the passes. NCNN exports are made at exactly the rectangle PyTorch infers
+at; `export_pose parity` measured IoU p5 ≥ 0.968 and conf p95 ≤ 0.015 there. That is
+parity only: an `eval.py` corpus run with the backend set is still owed.
+`ANYA_FFMPEG_HWACCEL` and `ANYA_SINGLE_DECODE_PROXIES` cut source-decode cost
+(`proxy.py`), and `Anya2Config.copy_video` cuts the reel as a lossless stream copy.
+The Raspberry Pi service that uses all of this is in `pi/`.
+
 ## Changing things safely
 
 1. **If you expect the output to stay the same** (a refactor or a rename),

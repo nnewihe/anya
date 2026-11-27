@@ -227,12 +227,18 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
                   edge: they are cut off by the crop, so the box bottom is not
                   their feet and would project somewhere they never stood.
     """
-    from ultralytics import YOLO
-    model = YOLO(POSE_MODEL)
+    from pipeline.anya2 import pose_backend as PB
 
     cap = open_video(video, label)
     src_fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_hw = ((to_analysis[1], to_analysis[0]) if to_analysis is not None else
+                (int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                 int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))))
+    # torch (default), or an NCNN/ONNX export -- see pose_backend.py for why an
+    # NCNN export must match this frame's letterbox scale and runs batch-1.
+    model = PB.load(frame_hw, imgsz)
+    print(f"[{label}] pose model: {model}")
     if limit:
         total = min(total, limit)
     sampled_frames = list(range(0, total, stride))
@@ -251,9 +257,13 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
     def run_batch():
         if not batch_frames:
             return
-        results = model.predict(batch_frames if len(batch_frames) > 1 else batch_frames[0],
-                                imgsz=imgsz, conf=POSE_CONF, device=device,
+        results = model.predict(list(batch_frames), conf=POSE_CONF, device=device,
                                 classes=[0], verbose=False)
+        if len(results) != len(batch_rows):
+            # zip() below would otherwise truncate silently and leave the
+            # remaining frames looking like frames with nobody in them.
+            raise RuntimeError(f"[{label}] {model} returned {len(results)} results "
+                               f"for {len(batch_rows)} frames")
         for row, result in zip(batch_rows, results):
             progress["done"] += 1
             people = _people_in_result(result, drop_bottom_edge, crop_height, edge_px)
@@ -271,10 +281,16 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
     wanted = set(sampled_frames)
     frame = 0
     while frame < total:
-        ok, image = cap.read()
-        if not ok:
+        # grab() for every frame, retrieve() only for the sampled ones: a
+        # skipped frame still has to be decoded (it is a reference for the
+        # next), but not colour-converted and copied out.  Half the frames at
+        # 30 fps / stride 2, and it matters on a CPU that is also running pose.
+        if not cap.grab():
             break
         if frame in wanted:
+            ok, image = cap.retrieve()
+            if not ok:
+                break
             if to_analysis is not None:
                 image = cv2.resize(image, to_analysis, interpolation=cv2.INTER_AREA)
             batch_frames.append(image)
@@ -301,6 +317,7 @@ def _pose_pass(video, out_path, stride, imgsz, device, to_analysis=None,
                         src_fps=np.float64(src_fps),
                         stride=np.float64(stride),
                         n_src_frames=np.float64(total),
+                        pose_backend=np.str_(model.kind),
                         # The crop travels with the detections so far() can tell
                         # whether a cached pass still covers the right band.
                         crop=np.asarray(crop if crop is not None else (0, 0, 0, 0),
